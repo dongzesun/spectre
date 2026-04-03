@@ -60,52 +60,6 @@ namespace PUP {
 class er;
 }  // namespace PUP
 
-namespace DQ::Actions {
-
-template <size_t Dim>
-struct OverrideFixedSource {
-  template <typename DbTags, typename... InboxTags, typename Metavariables,
-            typename ArrayIndex, typename ActionList,
-            typename ParallelComponent>
-  static Parallel::iterable_action_return_t apply(
-      db::DataBox<DbTags>& box,
-      tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
-      const Parallel::GlobalCache<Metavariables>& /*cache*/,
-      const ArrayIndex& /*array_index*/, const ActionList /*meta*/,
-      const ParallelComponent* const /*meta*/) {
-
-    // Inertial coords on this element
-    const auto& x = db::get<domain::Tags::Coordinates<Dim,
-                                    Frame::Inertial>>(box);
-    const DataVector r2 = get(dot_product(x, x));
-
-    // Overwrite the fixed source used by the elliptic solve.
-    //
-    // CHOOSE ONE:
-    //   (A) f(x) = -2/r^2  (your “-2m/r^2” with m=1)
-    //   (B) f(x) = 0
-    //
-    db::mutate<typename Metavariables::solver::fixed_sources_tag>(
-        [&r2](const gsl::not_null<
-              typename Metavariables::solver::fixed_sources_tag::type*>
-                  fixed_sources_vars) {
-          auto& fs = get<::Tags::FixedSource<DQ::Tags::Field<DataVector>>>(
-              *fixed_sources_vars);
-
-          // (A) -2/r^2:
-          get(fs) = -2.0 / r2;
-
-          // (B) zero source:
-          // get(fs) = 0.0;
-        },
-        make_not_null(&box));
-
-    return {Parallel::AlgorithmExecution::Continue, std::nullopt};
-  }
-};
-
-}  // namespace DQ::Actions
-
 template <size_t Dim>
 struct Metavariables {
   static constexpr Options::String help{
@@ -120,7 +74,9 @@ struct Metavariables {
   using error_compute = ::Tags::ErrorsCompute<analytic_solution_fields>;
   using error_tags = db::wrap_tags_in<Tags::Error, analytic_solution_fields>;
   using observe_fields = tmpl::append<
-      analytic_solution_fields, error_tags, typename solver::observe_fields,
+      analytic_solution_fields, error_tags,
+      typename solver::fixed_sources_tag::tags_list,
+      tmpl::list<DQ::Tags::ObservedSourceCompute<DataVector, volume_dim>>,
       tmpl::list<domain::Tags::Coordinates<volume_dim, Frame::Inertial>,
                  ::Events::Tags::ObserverDetInvJacobianCompute<
                      Frame::ElementLogical, Frame::Inertial>,
@@ -186,16 +142,13 @@ struct Metavariables {
 
   using initialization_actions =
       tmpl::push_back<typename solver::initialization_actions,
-                      DQ::Actions::OverrideFixedSource<volume_dim>,
                       Parallel::Actions::TerminatePhase>;
 
   using register_actions =
       tmpl::push_back<typename solver::register_actions,
                       observers::Actions::RegisterEventsWithObservers>;
 
-  using solve_actions =
-      tmpl::push_front<typename solver::template solve_actions<tmpl::list<>>,
-                     DQ::Actions::OverrideFixedSource<volume_dim>>;
+  using solve_actions = typename solver::template solve_actions<tmpl::list<>>;
 
   using dg_element_array = elliptic::DgElementArray<
       Metavariables,

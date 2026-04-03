@@ -8,8 +8,13 @@
 
 #include <string>
 
+#include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Domain/Tags.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Options/String.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -46,6 +51,36 @@ namespace Tags {
 template <typename DataType>
 struct Field : db::SimpleTag {
   using type = Scalar<DataType>;
+};
+
+/*!
+ * \brief The raw continuum source \f$f(x) = -2m/r^2\f$ used in the DQ
+ * equation.
+ *
+ * This tag is used for observation so volume output can show the physical
+ * source rather than the linear-solver RHS after boundary-condition
+ * contributions have been folded in.
+ */
+template <typename DataType>
+struct ObservedSource : db::SimpleTag {
+  using type = Scalar<DataType>;
+  static std::string name() { return "PhysicalSource(Field)"; }
+};
+
+template <typename DataType, size_t Dim>
+struct ObservedSourceCompute : ObservedSource<DataType>, db::ComputeTag {
+  using base = ObservedSource<DataType>;
+  using return_type = typename base::type;
+  using argument_tags =
+      tmpl::list<domain::Tags::Coordinates<Dim, Frame::Inertial>>;
+  static std::string name() { return base::name(); }
+
+  static void function(
+      const gsl::not_null<return_type*> observed_source,
+      const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
+    const DataVector r2 = get(dot_product(inertial_coords, inertial_coords));
+    get(*observed_source) = -2.0 / r2;
+  }
 };
 
 struct Mass : db::SimpleTag {
