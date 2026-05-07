@@ -290,9 +290,10 @@ void first_index_to_different_frame(
       "index");
   using first_index = tmpl::front<typename InputTensor::index_list>;
   static_assert(
-      std::is_same_v<first_index, SpatialIndex<Dim, UpLo::Up, TargetFrame>>,
-      "This function is currently only tested for transforming an upper "
-      "spatial index but can be generalized.");
+      std::is_same_v<first_index, SpatialIndex<Dim, UpLo::Up, TargetFrame>> or
+          std::is_same_v<first_index, SpatialIndex<Dim, UpLo::Lo, TargetFrame>>,
+      "This function is currently only tested for transforming a spatial "
+      "index in the target frame.");
   for (size_t storage_index = 0; storage_index < ResultTensor::size();
        ++storage_index) {
     const auto result_index = ResultTensor::get_tensor_index(storage_index);
@@ -447,6 +448,86 @@ template auto transform::first_index_to_different_frame(
                           Frame::Inertial>& inv_jacobian)
     -> TensorMetafunctions::prepend_spatial_index<
         tnsr::aa<ComplexDataVector, 3, Frame::Inertial>, 2, UpLo::Up,
+        Frame::ElementLogical>;
+
+template void transform::first_index_to_different_frame(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        tnsr::a<DataVector, 3, Frame::Inertial>, 3, UpLo::Up,
+        Frame::ElementLogical>*>
+        result,
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::a<DataVector, 3, Frame::Inertial>, 3, UpLo::Up, Frame::Inertial>&
+        input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian);
+
+template auto transform::first_index_to_different_frame(
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::a<DataVector, 3, Frame::Inertial>, 3, UpLo::Up, Frame::Inertial>&
+        input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian)
+    -> TensorMetafunctions::prepend_spatial_index<
+        tnsr::a<DataVector, 3, Frame::Inertial>, 3, UpLo::Up,
+        Frame::ElementLogical>;
+
+template void transform::first_index_to_different_frame(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        Scalar<DataVector>, 3, UpLo::Lo, Frame::ElementLogical>*>
+        result,
+    const TensorMetafunctions::prepend_spatial_index<
+        Scalar<DataVector>, 3, UpLo::Lo, Frame::Inertial>& input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian);
+
+template auto transform::first_index_to_different_frame(
+    const TensorMetafunctions::prepend_spatial_index<
+        Scalar<DataVector>, 3, UpLo::Lo, Frame::Inertial>& input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian)
+    -> TensorMetafunctions::prepend_spatial_index<
+        Scalar<DataVector>, 3, UpLo::Lo, Frame::ElementLogical>;
+
+template void transform::first_index_to_different_frame(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        tnsr::A<DataVector, 3, Frame::Inertial>, 3, UpLo::Lo,
+        Frame::ElementLogical>*>
+        result,
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::A<DataVector, 3, Frame::Inertial>, 3, UpLo::Lo, Frame::Inertial>&
+        input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian);
+
+template auto transform::first_index_to_different_frame(
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::A<DataVector, 3, Frame::Inertial>, 3, UpLo::Lo, Frame::Inertial>&
+        input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian)
+    -> TensorMetafunctions::prepend_spatial_index<
+        tnsr::A<DataVector, 3, Frame::Inertial>, 3, UpLo::Lo,
+        Frame::ElementLogical>;
+
+template void transform::first_index_to_different_frame(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        tnsr::ia<DataVector, 3, Frame::Inertial>, 3, UpLo::Up,
+        Frame::ElementLogical>*>
+        result,
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::ia<DataVector, 3, Frame::Inertial>, 3, UpLo::Up, Frame::Inertial>&
+        input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian);
+
+template auto transform::first_index_to_different_frame(
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::ia<DataVector, 3, Frame::Inertial>, 3, UpLo::Up, Frame::Inertial>&
+        input,
+    const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                          Frame::Inertial>& inv_jacobian)
+    -> TensorMetafunctions::prepend_spatial_index<
+        tnsr::ia<DataVector, 3, Frame::Inertial>, 3, UpLo::Up,
         Frame::ElementLogical>;
 
 #undef DIM

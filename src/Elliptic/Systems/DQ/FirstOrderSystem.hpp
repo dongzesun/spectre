@@ -23,7 +23,7 @@
 namespace DQ {
 
 /*!
- * \brief The Poisson equation formulated as a set of coupled first-order PDEs.
+ * \brief The DQ equation formulated as a mixed first-order PDE system.
  *
  * \details This system formulates the Poisson equation \f$-\Delta_\gamma u(x) =
  * f(x)\f$ on a background metric \f$\gamma_{ij}\f$ as the set of coupled
@@ -72,11 +72,10 @@ struct FirstOrderSystem
     : tt::ConformsTo<elliptic::protocols::FirstOrderSystem> {
   static constexpr size_t volume_dim = Dim;
 
-  using primal_fields = tmpl::list<Tags::Field<DataType>>;
-  // We just use the standard `Flux` prefix because the fluxes don't have
-  // symmetries and we don't need to give them a particular meaning.
-  using primal_fluxes = tmpl::list<
-      ::Tags::Flux<Tags::Field<DataType>, tmpl::size_t<Dim>, Frame::Inertial>>;
+  using primal_fields = tmpl::list<Tags::Xi<DataType, Dim>>;
+  using primal_fluxes =
+      tmpl::list<::Tags::Flux<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                              Frame::Inertial>>;
 
   using background_fields = tmpl::conditional_t<
       BackgroundGeometry == Geometry::FlatCartesian, tmpl::list<>,
@@ -89,7 +88,8 @@ struct FirstOrderSystem
 
   using fluxes_computer = Fluxes<Dim, BackgroundGeometry, DataType>;
   using sources_computer =
-      tmpl::conditional_t<BackgroundGeometry == Geometry::FlatCartesian, void,
+      tmpl::conditional_t<BackgroundGeometry == Geometry::FlatCartesian,
+                          FlatCartesianSources<Dim, DataType>,
                           Sources<Dim, BackgroundGeometry, DataType>>;
 
   using boundary_conditions_base =

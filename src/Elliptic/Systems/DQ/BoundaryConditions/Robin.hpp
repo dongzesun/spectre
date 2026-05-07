@@ -81,25 +81,29 @@ class Robin : public elliptic::BoundaryConditions::BoundaryCondition<Dim> {
 
   std::vector<elliptic::BoundaryConditionType> boundary_condition_types()
       const override {
-    return {1, neumann_weight_ == 0.
-                   ? elliptic::BoundaryConditionType::Dirichlet
-                   : elliptic::BoundaryConditionType::Neumann};
+    return std::vector<elliptic::BoundaryConditionType>(
+        Dim + 1, neumann_weight_ == 0.
+                     ? elliptic::BoundaryConditionType::Dirichlet
+                     : elliptic::BoundaryConditionType::Neumann);
   }
 
   using argument_tags = tmpl::list<>;
   using volume_tags = tmpl::list<>;
 
-  void apply(gsl::not_null<Scalar<DataVector>*> field,
-             gsl::not_null<Scalar<DataVector>*> n_dot_field_gradient,
-             const tnsr::i<DataVector, Dim>& deriv_field) const;
+  void apply(
+      gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> xi,
+      gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> n_dot_deriv_xi,
+      const tnsr::ia<DataVector, Dim, Frame::Inertial>& deriv_xi) const;
 
   using argument_tags_linearized = tmpl::list<>;
   using volume_tags_linearized = tmpl::list<>;
 
   void apply_linearized(
-      gsl::not_null<Scalar<DataVector>*> field_correction,
-      gsl::not_null<Scalar<DataVector>*> n_dot_field_gradient_correction,
-      const tnsr::i<DataVector, Dim>& deriv_field_correction) const;
+      gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> xi_correction,
+      gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*>
+          n_dot_deriv_xi_correction,
+      const tnsr::ia<DataVector, Dim, Frame::Inertial>& deriv_xi_correction)
+      const;
 
   void pup(PUP::er& p) override;
 

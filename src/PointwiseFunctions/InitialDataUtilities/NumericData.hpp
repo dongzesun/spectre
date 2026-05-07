@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -24,6 +25,13 @@ namespace PUP {
 class er;
 }  // namespace PUP
 /// \endcond
+
+namespace numeric_data_detail {
+inline std::mutex& hdf5_interpolation_mutex() {
+  static std::mutex mutex{};
+  return mutex;
+}
+}  // namespace numeric_data_detail
 
 /*!
  * \brief Load numeric data from volume data files
@@ -115,6 +123,7 @@ class NumericData {
   tuples::TaggedTuple<RequestedTags...> variables(
       const tnsr::I<DataType, Dim>& x,
       tmpl::list<RequestedTags...> /*meta*/) const {
+    const std::lock_guard lock(numeric_data_detail::hdf5_interpolation_mutex());
     return spectre::Exporter::interpolate_to_points<
         tmpl::list<RequestedTags...>>(
         file_glob_, subgroup_,

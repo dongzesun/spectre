@@ -24,6 +24,7 @@ set(LIBS_TO_LINK
   Parallel
   ParallelAmr
   ParallelLinearSolver
+  ParallelNonlinearSolver
   ParallelMultigrid
   ParallelSchwarz
   PhaseControl

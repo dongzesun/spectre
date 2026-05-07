@@ -56,7 +56,7 @@ void logical_weak_divergence(const gsl::not_null<ResultTensor*> div_flux,
 GENERATE_INSTANTIATIONS(INSTANTIATION_SCALAR, (DataVector, ComplexDataVector),
                         (1, 2, 3))
 GENERATE_INSTANTIATIONS(INSTANTIATION_TENSOR, (DataVector, ComplexDataVector),
-                        (1, 2, 3), (i, I, aa))
+                        (1, 2, 3), (a, A, i, I, aa))
 
 template void logical_weak_divergence(
     const gsl::not_null<tnsr::aa<ComplexDataVector, 3, Frame::Inertial>*>
@@ -65,6 +65,20 @@ template void logical_weak_divergence(
         tnsr::aa<ComplexDataVector, 3, Frame::Inertial>, 2, UpLo::Up,
         Frame::ElementLogical>& flux,
     const Mesh<2>& mesh);
+
+template void logical_weak_divergence(
+    const gsl::not_null<tnsr::A<DataVector, 3, Frame::Inertial>*> div_flux,
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::A<DataVector, 3, Frame::Inertial>, 3, UpLo::Lo,
+        Frame::ElementLogical>& flux,
+    const Mesh<3>& mesh);
+
+template void logical_weak_divergence(
+    const gsl::not_null<tnsr::ia<DataVector, 3, Frame::Inertial>*> div_flux,
+    const TensorMetafunctions::prepend_spatial_index<
+        tnsr::ia<DataVector, 3, Frame::Inertial>, 3, UpLo::Up,
+        Frame::ElementLogical>& flux,
+    const Mesh<3>& mesh);
 
 #undef INSTANTIATION_SCALAR
 #undef INSTANTIATION_TENSOR

@@ -102,9 +102,7 @@ void apply_boundary_condition(
                                  volume_tags_transformed>(
             [&](const auto&... args) {
               if constexpr (Linearized) {
-                derived->apply_linearized(
-                    local_fields_and_fluxes...,
-                    args...);
+                derived->apply_linearized(local_fields_and_fluxes..., args...);
               } else {
                 derived->apply(local_fields_and_fluxes..., args...);
               }

@@ -172,16 +172,19 @@
 #include "PointwiseFunctions/GeneralRelativity/Christoffel.hpp"
 #include "PointwiseFunctions/GeneralRelativity/DerivativeSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/DetAndInverseSpatialMetric.hpp"
+#include "PointwiseFunctions/GeneralRelativity/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintGammas.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/DerivSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/SpatialDerivOfLapse.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/SpatialDerivOfShift.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Psi4Real.hpp"
+#include "PointwiseFunctions/GeneralRelativity/QuadraticCurvatureScalars.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Ricci.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/WeylElectric.hpp"
+#include "PointwiseFunctions/GeneralRelativity/WeylMagnetic.hpp"
 #include "PointwiseFunctions/GeneralRelativity/WeylTypeD1.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/InitialData.hpp"
 #include "Time/Actions/SelfStartActions.hpp"
@@ -306,17 +309,18 @@ struct EvolutionMetavars {
     using temporal_id = ::Tags::Time;
     using tags_to_observe =
         tmpl::list<gr::Tags::Lapse<DataVector>,
-                   gr::Tags::Shift<DataVector, 3, Frame::Grid>>;
+                   gr::Tags::Shift<DataVector, 3, Frame::Inertial>>;
     using compute_vars_to_interpolate =
         ah::ComputeExcisionBoundaryVolumeQuantities;
     using vars_to_interpolate_to_target = tags_to_observe;
     using compute_items_on_source = tmpl::list<>;
     using compute_items_on_target = tmpl::list<>;
     using compute_target_points =
-        intrp::TargetPoints::Sphere<ExcisionBoundary<Excision>, ::Frame::Grid>;
+        intrp::TargetPoints::Sphere<ExcisionBoundary<Excision>,
+                                    ::Frame::Inertial>;
     using post_interpolation_callbacks =
         tmpl::list<intrp::callbacks::ObserveSurfaceData<
-            tags_to_observe, ExcisionBoundary<Excision>, ::Frame::Grid>>;
+            tags_to_observe, ExcisionBoundary<Excision>, ::Frame::Inertial>>;
     // run_callbacks
     template <typename metavariables>
     using interpolating_component = typename metavariables::gh_dg_element_array;
@@ -445,9 +449,15 @@ struct EvolutionMetavars {
                   ::domain::Tags::InverseJacobian<
                       volume_dim, Frame::ElementLogical, Frame::Inertial>,
                   ::domain::Tags::Mesh<volume_dim>>,
+              gr::Tags::CovariantDerivativeOfExtrinsicCurvatureCompute<
+                  3, Frame::Inertial>,
               gr::Tags::WeylElectricCompute<DataVector, 3, Frame::Inertial>,
               gr::Tags::WeylElectricScalarCompute<DataVector, 3,
                                                   Frame::Inertial>,
+              gr::Tags::WeylMagneticCompute<DataVector, 3, Frame::Inertial>,
+              gr::Tags::WeylMagneticScalarCompute<DataVector, 3,
+                                                  Frame::Inertial>,
+              gr::Tags::GaussBonnetScalarCompute<DataVector>,
               gr::Tags::WeylTypeD1Compute<DataVector, 3, Frame::Inertial>,
               gr::Tags::WeylTypeD1ScalarCompute<DataVector, 3, Frame::Inertial>,
               gr::Tags::Psi4RealCompute<Frame::Inertial>>,

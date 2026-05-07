@@ -258,13 +258,14 @@ ErrorDiagnostics control_error(
                 gr::surfaces::surface_integral_of_scalar(area_element, unity,
                                                          excision_boundary))
           : std::nullopt;
+  const double min_radial_distance = min(get(radial_distance));
 
   // Update the info, possibly changing the state inside of info.
   std::string update_message = info->state->get_clone()->update(
       info,
       StateUpdateArgs{min_char_speed, min_comoving_char_speed, horizon_00,
                       control_error_delta_r, average_radial_distance,
-                      max_allowed_radial_distance,
+                      min_radial_distance, max_allowed_radial_distance,
                       avg_distorted_normal_dot_unit_coord_vector,
                       inward_drift_velocity, min_allowed_radial_distance,
                       min_allowed_char_speed,
@@ -284,8 +285,8 @@ ErrorDiagnostics control_error(
   return ErrorDiagnostics{
       control_error,
       info->state->number(),
-      min(get(radial_distance)),
-      min(get(radial_distance)) / apparent_horizon.average_radius(),
+      min_radial_distance,
+      min_radial_distance / apparent_horizon.average_radius(),
       min_comoving_char_speed,
       char_speed_crossing_time.value_or(0.0),
       comoving_char_speed_crossing_time.value_or(0.0),

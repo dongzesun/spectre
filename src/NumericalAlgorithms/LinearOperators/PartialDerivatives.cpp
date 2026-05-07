@@ -350,6 +350,46 @@ partial_derivative(const tnsr::aa<ComplexDataVector, 3, Frame::Inertial>& u,
                    const InverseJacobian<DataVector, 2, Frame::ElementLogical,
                                          Frame::Inertial>& inverse_jacobian);
 
+template void logical_partial_derivative(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        tnsr::I<DataVector, 3, Frame::Inertial>, 2, UpLo::Lo,
+        Frame::ElementLogical>*>
+        logical_derivative_of_u,
+    gsl::not_null<gsl::span<DataVector::value_type>*> buffer,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& u, const Mesh<2>& mesh);
+template void logical_partial_derivative(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        tnsr::I<DataVector, 3, Frame::Inertial>, 2, UpLo::Lo,
+        Frame::ElementLogical>*>
+        logical_derivative_of_u,
+    const tnsr::I<DataVector, 3, Frame::Inertial>& u, const Mesh<2>& mesh);
+template TensorMetafunctions::prepend_spatial_index<
+    tnsr::I<DataVector, 3, Frame::Inertial>, 2, UpLo::Lo, Frame::ElementLogical>
+logical_partial_derivative(const tnsr::I<DataVector, 3, Frame::Inertial>& u,
+                           const Mesh<2>& mesh);
+
+template void logical_partial_derivative(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        tnsr::I<DataVector, 2, Frame::ElementLogical>, 2, UpLo::Lo,
+        Frame::ElementLogical>*>
+        logical_derivative_of_u,
+    gsl::not_null<gsl::span<DataVector::value_type>*> buffer,
+    const tnsr::I<DataVector, 2, Frame::ElementLogical>& u,
+    const Mesh<2>& mesh);
+template void logical_partial_derivative(
+    gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        tnsr::I<DataVector, 2, Frame::ElementLogical>, 2, UpLo::Lo,
+        Frame::ElementLogical>*>
+        logical_derivative_of_u,
+    const tnsr::I<DataVector, 2, Frame::ElementLogical>& u,
+    const Mesh<2>& mesh);
+template TensorMetafunctions::prepend_spatial_index<
+    tnsr::I<DataVector, 2, Frame::ElementLogical>, 2, UpLo::Lo,
+    Frame::ElementLogical>
+logical_partial_derivative(
+    const tnsr::I<DataVector, 2, Frame::ElementLogical>& u,
+    const Mesh<2>& mesh);
+
 #define INSTANTIATION(r, data)                                                 \
   template void logical_partial_derivative(                                    \
       gsl::not_null<TensorMetafunctions::prepend_spatial_index<                \

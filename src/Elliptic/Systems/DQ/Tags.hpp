@@ -10,12 +10,10 @@
 
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
-#include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
-#include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Domain/Tags.hpp"
-#include "Utilities/Gsl.hpp"
 #include "Options/String.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -46,41 +44,28 @@ struct Mass {
 namespace Tags {
 
 /*!
- * \brief The scalar field \f$u(x)\f$ to solve for
+ * \brief The coordinate correction \f$\xi_a(x)\f$ to solve for
  */
+template <typename DataType, size_t Dim>
+struct Xi : db::SimpleTag {
+  using type = tnsr::a<DataType, Dim, Frame::Inertial>;
+};
+
 template <typename DataType>
 struct Field : db::SimpleTag {
   using type = Scalar<DataType>;
 };
 
 /*!
- * \brief The raw continuum source \f$f(x) = -2m/r^2\f$ used in the DQ
- * equation.
+ * \brief The observed source for the \f$\xi_a\f$ equation.
  *
- * This tag is used for observation so volume output can show the physical
- * source rather than the linear-solver RHS after boundary-condition
- * contributions have been folded in.
+ * This tag is populated from the background so volume output can show the
+ * source being supplied to the solve for all four spacetime components.
  */
-template <typename DataType>
-struct ObservedSource : db::SimpleTag {
-  using type = Scalar<DataType>;
-  static std::string name() { return "PhysicalSource(Field)"; }
-};
-
 template <typename DataType, size_t Dim>
-struct ObservedSourceCompute : ObservedSource<DataType>, db::ComputeTag {
-  using base = ObservedSource<DataType>;
-  using return_type = typename base::type;
-  using argument_tags =
-      tmpl::list<domain::Tags::Coordinates<Dim, Frame::Inertial>>;
-  static std::string name() { return base::name(); }
-
-  static void function(
-      const gsl::not_null<return_type*> observed_source,
-      const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
-    const DataVector r2 = get(dot_product(inertial_coords, inertial_coords));
-    get(*observed_source) = -2.0 / r2;
-  }
+struct ObservedSource : db::SimpleTag {
+  using type = tnsr::a<DataType, Dim, Frame::Inertial>;
+  static std::string name() { return "PhysicalSource(Xi)"; }
 };
 
 struct Mass : db::SimpleTag {
@@ -91,4 +76,4 @@ struct Mass : db::SimpleTag {
 };
 
 }  // namespace Tags
-}  // namespace Poisson
+}  // namespace DQ

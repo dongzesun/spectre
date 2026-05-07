@@ -8,7 +8,9 @@ add_spectre_library(${LIBRARY})
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  HorizonRobin.cpp
   Robin.cpp
+  SingleBhOuterBoundary.cpp
   )
 
 spectre_target_headers(
@@ -16,7 +18,9 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   Factory.hpp
+  HorizonRobin.hpp
   Robin.hpp
+  SingleBhOuterBoundary.hpp
   )
 
 target_link_libraries(
@@ -24,7 +28,12 @@ target_link_libraries(
   PUBLIC
   DataStructures
   Elliptic
+  GeneralizedHarmonic
+  GeneralRelativity
+  InitialDataUtilities
   Options
   Parallel
+  SphericalHarmonics
+  SphericalHarmonicsIO
   Utilities
   )

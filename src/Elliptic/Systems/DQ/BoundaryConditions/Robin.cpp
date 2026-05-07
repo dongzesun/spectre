@@ -29,37 +29,49 @@ Robin<Dim>::Robin(const double dirichlet_weight, const double neumann_weight,
 
 template <size_t Dim>
 void Robin<Dim>::apply(
-    const gsl::not_null<Scalar<DataVector>*> field,
-    const gsl::not_null<Scalar<DataVector>*> n_dot_field_gradient,
-    const tnsr::i<DataVector, Dim>& /*deriv_field*/) const {
+    const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> xi,
+    const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*>
+        n_dot_deriv_xi,
+    const tnsr::ia<DataVector, Dim, Frame::Inertial>& /*deriv_xi*/) const {
   if (neumann_weight_ == 0.) {
     ASSERT(
         not equal_within_roundoff(dirichlet_weight_, 0.),
         "The dirichlet_weight is close to zero. Set it to a non-zero value to "
         "avoid divisions by small numbers.");
-    get(*field) = constant_ / dirichlet_weight_;
+    for (size_t a = 0; a < Dim + 1; ++a) {
+      xi->get(a) = constant_ / dirichlet_weight_;
+    }
   } else {
     ASSERT(not equal_within_roundoff(neumann_weight_, 0.),
            "The neumann_weight is close to zero. Set it to a non-zero value to "
            "avoid divisions by small numbers.");
-    get(*n_dot_field_gradient) =
-        (constant_ - dirichlet_weight_ * get(*field)) / neumann_weight_;
+    for (size_t a = 0; a < Dim + 1; ++a) {
+      n_dot_deriv_xi->get(a) =
+          (constant_ - dirichlet_weight_ * xi->get(a)) / neumann_weight_;
+    }
   }
 }
 
 template <size_t Dim>
 void Robin<Dim>::apply_linearized(
-    const gsl::not_null<Scalar<DataVector>*> field_correction,
-    const gsl::not_null<Scalar<DataVector>*> n_dot_field_gradient_correction,
-    const tnsr::i<DataVector, Dim>& /*deriv_field_correction*/) const {
+    const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*>
+        xi_correction,
+    const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*>
+        n_dot_deriv_xi_correction,
+    const tnsr::ia<DataVector, Dim, Frame::Inertial>& /*deriv_xi_correction*/)
+    const {
   if (neumann_weight_ == 0.) {
-    get(*field_correction) = 0.;
+    for (size_t a = 0; a < Dim + 1; ++a) {
+      xi_correction->get(a) = 0.;
+    }
   } else {
     ASSERT(not equal_within_roundoff(neumann_weight_, 0.),
            "The neumann_weight is close to zero. Set it to a non-zero value to "
            "avoid divisions by small numbers.");
-    get(*n_dot_field_gradient_correction) =
-        -dirichlet_weight_ / neumann_weight_ * get(*field_correction);
+    for (size_t a = 0; a < Dim + 1; ++a) {
+      n_dot_deriv_xi_correction->get(a) =
+          -dirichlet_weight_ / neumann_weight_ * xi_correction->get(a);
+    }
   }
 }
 

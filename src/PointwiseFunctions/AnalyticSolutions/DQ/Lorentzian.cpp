@@ -11,6 +11,7 @@
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Elliptic/Systems/DQ/Equations.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
@@ -21,97 +22,88 @@ namespace DQ::Solutions::detail {
 
 template <typename DataType, size_t Dim>
 void LorentzianVariables<DataType, Dim>::operator()(
-    const gsl::not_null<Scalar<DataType>*> field,
+    const gsl::not_null<tnsr::a<DataType, Dim, Frame::Inertial>*> xi,
     const gsl::not_null<Cache*> /*cache*/,
-    Tags::Field<DataType> /*meta*/) const {
-
-  constexpr double m = 1.0;  // hard-coded mass for now
-
+    Tags::Xi<DataType, Dim> /*meta*/) const {
   const DataVector r2 = get(dot_product(x, x));
   const DataVector r = sqrt(r2);
-
-  // u = 2 m log(r) + constant  (here m = 1)
-  get(*field) = make_with_value<DataType>(r, 0.0)
-                - make_with_value<DataType>(r, 2.0 * m)
-                * log(make_with_value<DataType>(r, 2.0 * m)/r)
-                + make_with_value<DataType>(r, constant);
-
+  xi->get(0) = make_with_value<DataType>(r, 2.0 * mass) *
+                   log(make_with_value<DataType>(r, 2.0 * mass) / r) +
+               make_with_value<DataType>(r, constant);
+  for (size_t d = 0; d < Dim; ++d) {
+    xi->get(d + 1) = -make_with_value<DataType>(r, mass) * x.get(d) / r;
+  }
   if constexpr (std::is_same_v<DataType, ComplexDataVector>) {
-    get(*field) *= std::complex<double>{cos(complex_phase), sin(complex_phase)};
+    const std::complex<double> phase{cos(complex_phase), sin(complex_phase)};
+    for (size_t a = 0; a < Dim + 1; ++a) {
+      xi->get(a) *= phase;
+    }
   }
 }
 
 template <typename DataType, size_t Dim>
 void LorentzianVariables<DataType, Dim>::operator()(
-    const gsl::not_null<tnsr::i<DataType, Dim>*> field_gradient,
+    const gsl::not_null<tnsr::ia<DataType, Dim, Frame::Inertial>*> xi_gradient,
     const gsl::not_null<Cache*> /*cache*/,
-    ::Tags::deriv<Tags::Field<DataType>, tmpl::size_t<Dim>,
+    ::Tags::deriv<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
                   Frame::Inertial> /*meta*/) const {
-
-  constexpr double m = 1.0;  // hard-coded mass for now
-
   const DataVector r2 = get(dot_product(x, x));
   const DataVector r = sqrt(r2);
-
-  DataType prefactor = make_with_value<DataType>(r2, (2.0 * m)) / r2;
-
+  DataType time_prefactor = -make_with_value<DataType>(r2, 2.0 * mass) / r2;
   if constexpr (std::is_same_v<DataType, ComplexDataVector>) {
-    prefactor *= std::complex<double>{cos(complex_phase), sin(complex_phase)};
-  }
-
-  for (size_t d = 0; d < Dim; ++d) {
-    field_gradient->get(d) = prefactor * x.get(d);
-  }
-}
-
-template <typename DataType, size_t Dim>
-void LorentzianVariables<DataType, Dim>::operator()(
-    const gsl::not_null<tnsr::I<DataType, Dim>*> flux_for_field,
-    const gsl::not_null<Cache*> cache,
-    ::Tags::Flux<Tags::Field<DataType>, tmpl::size_t<Dim>,
-                 Frame::Inertial> /*meta*/) const {
-
-  constexpr double m = 1.0;  // hard-coded mass for now
-
-  const auto& grad_u = cache->get_var(
-      *this, ::Tags::deriv<Tags::Field<DataType>, tmpl::size_t<Dim>,
-                           Frame::Inertial>{});
-
-  const DataVector r2 = get(dot_product(x, x));
-  const DataVector r = sqrt(r2);
-  const DataVector inv_r2 = 1.0 / r2;
-  const DataVector inv_r = 1.0 / r;
-
-  // n·grad u = (x·grad u)/r
-  const DataType x_dot_grad_u = get(dot_product(x, grad_u));
-  const DataType n_dot_grad_u = x_dot_grad_u * inv_r;
-
-  // flux F^i = grad u^i - (2m/r) n^i (n·grad u)
-  // (2m/r) n^i = 2m x^i / r^2  (here m = 1)
-  const DataVector coeff = (2.0 * m) * inv_r2;
-
-  for (size_t d = 0; d < Dim; ++d) {
-    flux_for_field->get(d) =
-        grad_u.get(d) - (coeff * x.get(d)) * n_dot_grad_u;
-  }
-}
-
-template <typename DataType, size_t Dim>
-void LorentzianVariables<DataType, Dim>::operator()(
-    const gsl::not_null<Scalar<DataType>*> fixed_source_for_field,
-    const gsl::not_null<Cache*> /*cache*/,
-    ::Tags::FixedSource<Tags::Field<DataType>> /*meta*/) const {
-
-  constexpr double m = 1.0;  // hard-coded mass for now
-
-  const DataVector r2 = get(dot_product(x, x));
-
-  // RHS f = -2m/r^2  (here m = 1)
-  get(*fixed_source_for_field) = -make_with_value<DataType>(r2, 2.0 * m) / r2;
-
-  if constexpr (std::is_same_v<DataType, ComplexDataVector>) {
-    get(*fixed_source_for_field) *=
+    time_prefactor *=
         std::complex<double>{cos(complex_phase), sin(complex_phase)};
+  }
+  for (size_t d = 0; d < Dim; ++d) {
+    xi_gradient->get(d, 0) = time_prefactor * x.get(d);
+  }
+
+  for (size_t s = 0; s < Dim; ++s) {
+    for (size_t d = 0; d < Dim; ++d) {
+      xi_gradient->get(d, s + 1) =
+          make_with_value<DataType>(r, 0.0) +
+          make_with_value<DataType>(r, mass) * x.get(s) * x.get(d) / (r2 * r);
+      if (d == s) {
+        xi_gradient->get(d, s + 1) -= make_with_value<DataType>(r, mass) / r;
+      }
+      if constexpr (std::is_same_v<DataType, ComplexDataVector>) {
+        xi_gradient->get(d, s + 1) *=
+            std::complex<double>{cos(complex_phase), sin(complex_phase)};
+      }
+    }
+  }
+}
+
+template <typename DataType, size_t Dim>
+void LorentzianVariables<DataType, Dim>::operator()(
+    const gsl::not_null<DQ::FluxXiTensor<DataType, Dim>*> flux_for_xi,
+    const gsl::not_null<Cache*> cache,
+    ::Tags::Flux<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                 Frame::Inertial> /*meta*/) const {
+  const auto& xi_gradient = cache->get_var(
+      *this, ::Tags::deriv<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                           Frame::Inertial>{});
+  dq_fluxes_flat_cartesian<DataType, Dim>(flux_for_xi, mass, x, xi_gradient);
+}
+
+template <typename DataType, size_t Dim>
+void LorentzianVariables<DataType, Dim>::operator()(
+    const gsl::not_null<tnsr::a<DataType, Dim, Frame::Inertial>*>
+        fixed_source_for_xi,
+    const gsl::not_null<Cache*> /*cache*/,
+    ::Tags::FixedSource<Tags::Xi<DataType, Dim>> /*meta*/) const {
+  const DataVector r2 = get(dot_product(x, x));
+  const DataVector r = sqrt(r2);
+  fixed_source_for_xi->get(0) = make_with_value<DataType>(r2, 2.0 * mass) / r2;
+  for (size_t d = 0; d < Dim; ++d) {
+    fixed_source_for_xi->get(d + 1) =
+        -make_with_value<DataType>(r2, 2.0 * mass) * x.get(d) / (r2 * r);
+  }
+  if constexpr (std::is_same_v<DataType, ComplexDataVector>) {
+    const std::complex<double> phase{cos(complex_phase), sin(complex_phase)};
+    for (size_t a = 0; a < Dim + 1; ++a) {
+      fixed_source_for_xi->get(a) *= phase;
+    }
   }
 }
 
@@ -127,4 +119,4 @@ GENERATE_INSTANTIATIONS(INSTANTIATE, (DataVector, ComplexDataVector), (3))
 #undef DIM
 #undef INSTANTIATE
 
-}  // namespace Poisson::Solutions::detail
+}  // namespace DQ::Solutions::detail

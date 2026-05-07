@@ -26,48 +26,46 @@ namespace detail {
 template <typename DataType, size_t Dim>
 struct LorentzianVariables {
   using Cache = CachedTempBuffer<
-      Tags::Field<DataType>,
-      ::Tags::deriv<Tags::Field<DataType>, tmpl::size_t<Dim>, Frame::Inertial>,
-      ::Tags::Flux<Tags::Field<DataType>, tmpl::size_t<Dim>, Frame::Inertial>,
-      ::Tags::FixedSource<Tags::Field<DataType>>>;
+      Tags::Xi<DataType, Dim>,
+      ::Tags::deriv<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                    Frame::Inertial>,
+      ::Tags::Flux<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>, Frame::Inertial>,
+      ::Tags::FixedSource<Tags::Xi<DataType, Dim>>>;
 
   // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   const tnsr::I<DataVector, Dim>& x;
+  double mass;
   double constant;
   double complex_phase;
 
-  void operator()(gsl::not_null<Scalar<DataType>*> field,
+  void operator()(gsl::not_null<tnsr::a<DataType, Dim, Frame::Inertial>*> xi,
                   gsl::not_null<Cache*> cache,
-                  Tags::Field<DataType> /*meta*/) const;
-  void operator()(gsl::not_null<tnsr::i<DataType, Dim>*> field_gradient,
+                  Tags::Xi<DataType, Dim> /*meta*/) const;
+  void operator()(
+      gsl::not_null<tnsr::ia<DataType, Dim, Frame::Inertial>*> xi_gradient,
+      gsl::not_null<Cache*> cache,
+      ::Tags::deriv<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                    Frame::Inertial> /*meta*/) const;
+  void operator()(
+      gsl::not_null<typename ::Tags::Flux<
+          Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>, Frame::Inertial>::type*>
+          flux_for_xi,
+      gsl::not_null<Cache*> cache,
+      ::Tags::Flux<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                   Frame::Inertial> /*meta*/) const;
+  void operator()(gsl::not_null<tnsr::a<DataType, Dim, Frame::Inertial>*>
+                      fixed_source_for_xi,
                   gsl::not_null<Cache*> cache,
-                  ::Tags::deriv<Tags::Field<DataType>, tmpl::size_t<Dim>,
-                                Frame::Inertial> /*meta*/) const;
-  void operator()(gsl::not_null<tnsr::I<DataType, Dim>*> flux_for_field,
-                  gsl::not_null<Cache*> cache,
-                  ::Tags::Flux<Tags::Field<DataType>, tmpl::size_t<Dim>,
-                               Frame::Inertial> /*meta*/) const;
-  void operator()(gsl::not_null<Scalar<DataType>*> fixed_source_for_field,
-                  gsl::not_null<Cache*> cache,
-                  ::Tags::FixedSource<Tags::Field<DataType>> /*meta*/) const;
+                  ::Tags::FixedSource<Tags::Xi<DataType, Dim>> /*meta*/) const;
 };
 }  // namespace detail
 
 /*!
- * \brief A Lorentzian solution to the Poisson equation
+ * \brief An analytic solution for the damped-harmonic coordinate correction
+ * \f$\xi_a\f$.
  *
- * \details This implements the Lorentzian solution
- * \f$u(\boldsymbol{x})=\left(1+r^2\right)^{-\frac{1}{2}}\f$ to the
- * three-dimensional Poisson equation
- * \f$-\Delta u(\boldsymbol{x})=f(\boldsymbol{x})\f$, where
- * \f$r^2=x^2+y^2+z^2\f$. The corresponding source is
- * \f$f(\boldsymbol{x})=3\left(1+r^2\right)^{-\frac{5}{2}}\f$.
- *
- * If `DataType` is `ComplexDataVector`, the solution is multiplied by
- * `exp(i * complex_phase)` to rotate it in the complex plane. This allows to
- * use this solution for the complex Poisson equation.
- *
- * \note Corresponding 1D and 2D solutions are not implemented yet.
+ * \details This implements the analytic solution
+ * \f$\xi_t = 2m \log(2m/r) + C\f$ and \f$\xi_i = -m x_i / r\f$ in 3D.
  */
 template <size_t Dim, typename DataType = DataVector>
 class Lorentzian : public elliptic::analytic_data::AnalyticSolution {
@@ -80,6 +78,11 @@ class Lorentzian : public elliptic::analytic_data::AnalyticSolution {
     using type = double;
     static constexpr Options::String help{"Constant added to the solution."};
   };
+  struct Mass {
+    using type = double;
+    static constexpr Options::String help{
+        "Mass parameter m in the DQ solution."};
+  };
 
   struct ComplexPhase {
     using type = double;
@@ -89,7 +92,7 @@ class Lorentzian : public elliptic::analytic_data::AnalyticSolution {
   };
 
   using options = tmpl::flatten<tmpl::list<
-      PlusConstant,
+      Mass, PlusConstant,
       tmpl::conditional_t<std::is_same_v<DataType, ComplexDataVector>,
                           ComplexPhase, tmpl::list<>>>>;
   static constexpr Options::String help{
@@ -102,12 +105,14 @@ class Lorentzian : public elliptic::analytic_data::AnalyticSolution {
   Lorentzian& operator=(Lorentzian&&) = default;
   ~Lorentzian() override = default;
 
-  explicit Lorentzian(const double constant, const double complex_phase = 0.)
-      : constant_(constant), complex_phase_(complex_phase) {
+  explicit Lorentzian(const double mass, const double constant,
+                      const double complex_phase = 0.)
+      : mass_(mass), constant_(constant), complex_phase_(complex_phase) {
     ASSERT((std::is_same_v<DataType, ComplexDataVector> or complex_phase == 0.),
            "The complex phase is only supported for ComplexDataVector.");
   }
 
+  double mass() const { return mass_; }
   double constant() const { return constant_; }
   double complex_phase() const { return complex_phase_; }
 
@@ -129,17 +134,19 @@ class Lorentzian : public elliptic::analytic_data::AnalyticSolution {
       tmpl::list<RequestedTags...> /*meta*/) const {
     using VarsComputer = detail::LorentzianVariables<DataType, Dim>;
     typename VarsComputer::Cache cache{get_size(*x.begin())};
-    const VarsComputer computer{x, constant_, complex_phase_};
+    const VarsComputer computer{x, mass_, constant_, complex_phase_};
     return {cache.get_var(computer, RequestedTags{})...};
   }
 
   void pup(PUP::er& p) override {
     elliptic::analytic_data::AnalyticSolution::pup(p);
+    p | mass_;
     p | constant_;
     p | complex_phase_;
   }
 
  private:
+  double mass_ = std::numeric_limits<double>::signaling_NaN();
   double constant_ = std::numeric_limits<double>::signaling_NaN();
   double complex_phase_ = std::numeric_limits<double>::signaling_NaN();
 };
@@ -152,7 +159,7 @@ PUP::able::PUP_ID Lorentzian<Dim, DataType>::my_PUP_ID = 0;  // NOLINT
 template <size_t Dim, typename DataType>
 bool operator==(const Lorentzian<Dim, DataType>& lhs,
                 const Lorentzian<Dim, DataType>& rhs) {
-  return lhs.constant() == rhs.constant() and
+  return lhs.mass() == rhs.mass() and lhs.constant() == rhs.constant() and
          lhs.complex_phase() == rhs.complex_phase();
 }
 

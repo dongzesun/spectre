@@ -51,12 +51,13 @@ class Zero : public elliptic::analytic_data::AnalyticSolution {
   tuples::TaggedTuple<RequestedTags...> variables(
       const tnsr::I<DataVector, Dim>& x,
       tmpl::list<RequestedTags...> /*meta*/) const {
-    using supported_tags = tmpl::list<
-        Tags::Field<DataType>,
-        ::Tags::deriv<Tags::Field<DataType>, tmpl::size_t<Dim>,
-                      Frame::Inertial>,
-        ::Tags::Flux<Tags::Field<DataType>, tmpl::size_t<Dim>, Frame::Inertial>,
-        ::Tags::FixedSource<Tags::Field<DataType>>>;
+    using supported_tags =
+        tmpl::list<Tags::Xi<DataType, Dim>,
+                   ::Tags::deriv<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                                 Frame::Inertial>,
+                   ::Tags::Flux<Tags::Xi<DataType, Dim>, tmpl::size_t<Dim>,
+                                Frame::Inertial>,
+                   ::Tags::FixedSource<Tags::Xi<DataType, Dim>>>;
     static_assert(tmpl::size<tmpl::list_difference<tmpl::list<RequestedTags...>,
                                                    supported_tags>>::value == 0,
                   "The requested tag is not supported");

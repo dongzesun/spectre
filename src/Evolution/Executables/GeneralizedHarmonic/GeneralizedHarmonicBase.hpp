@@ -115,17 +115,20 @@
 #include "PointwiseFunctions/GeneralRelativity/Christoffel.hpp"
 #include "PointwiseFunctions/GeneralRelativity/DerivativeSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/DetAndInverseSpatialMetric.hpp"
+#include "PointwiseFunctions/GeneralRelativity/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintGammas.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/DerivSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/SpatialDerivOfLapse.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/SpatialDerivOfShift.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Psi4Real.hpp"
+#include "PointwiseFunctions/GeneralRelativity/QuadraticCurvatureScalars.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Ricci.hpp"
 #include "PointwiseFunctions/GeneralRelativity/SpacetimeNormalVector.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/WeylElectric.hpp"
+#include "PointwiseFunctions/GeneralRelativity/WeylMagnetic.hpp"
 #include "PointwiseFunctions/GeneralRelativity/WeylTypeD1.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/InitialData.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/Tags/InitialData.hpp"
@@ -257,9 +260,15 @@ struct ObserverTags {
                   ::domain::Tags::InverseJacobian<
                       volume_dim, Frame::ElementLogical, Frame::Inertial>,
                   ::domain::Tags::Mesh<volume_dim>>,
+              gr::Tags::CovariantDerivativeOfExtrinsicCurvatureCompute<
+                  3, Frame::Inertial>,
               gr::Tags::WeylElectricCompute<DataVector, 3, Frame::Inertial>,
               gr::Tags::WeylElectricScalarCompute<DataVector, 3,
                                                   Frame::Inertial>,
+              gr::Tags::WeylMagneticCompute<DataVector, 3, Frame::Inertial>,
+              gr::Tags::WeylMagneticScalarCompute<DataVector, 3,
+                                                  Frame::Inertial>,
+              gr::Tags::GaussBonnetScalarCompute<DataVector>,
               gr::Tags::WeylTypeD1Compute<DataVector, 3, Frame::Inertial>,
               gr::Tags::WeylTypeD1ScalarCompute<DataVector, 3, Frame::Inertial>,
               gr::Tags::Psi4RealCompute<Frame::Inertial>>,

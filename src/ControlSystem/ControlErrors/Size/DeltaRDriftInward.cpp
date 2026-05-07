@@ -207,30 +207,29 @@ bool should_activate_inward_drift(const StateUpdateArgs& update_args) {
   // This drift factor was chosen in SpEC arbitrarily to be 0.9.
   constexpr double inward_drift_limit_buffer_factor = 0.9;
 
-  // The idea of these variables is to check whether either DeltaR or
-  // char speed are close to going above the
-  // min_average_radial_distance or min_allowed_char_speed values.  If
-  // so, then we don't need state DeltaRDriftInward at the moment.
-  // For reference, in SpEC these variables are called
-  // "DeltaRAlmostAboveState3Limit" and
-  // "CharSpeedAlmostAboveState3Limit".
-  const bool delta_r_almost_above_inward_drift_limit =
+  const bool min_delta_r_requires_inward_drift =
       update_args.min_allowed_radial_distance.has_value() and
-      update_args.average_radial_distance.value() >
+      update_args.min_radial_distance <
           inward_drift_limit_buffer_factor *
               update_args.min_allowed_radial_distance.value();
-  const bool char_speed_almost_above_inward_drift_limit =
+  const bool min_char_speed_requires_inward_drift =
       update_args.min_allowed_char_speed.has_value() and
-      update_args.min_char_speed >
+      update_args.min_char_speed <
           inward_drift_limit_buffer_factor *
               update_args.min_allowed_char_speed.value();
 
+  // TEMPORARY D80 stabilization:
+  // The original logic used average_radial_distance and required both the
+  // radial-distance and char-speed guards to prefer inward drift. The D80
+  // failure is instead a localized collapse of min(radial_distance), while the
+  // average gap and characteristic speed stay large enough that the state
+  // remains DeltaR until the surface enters the excision region. Force inward
+  // drift as soon as the measured minimum gap violates the safety radius. Keep
+  // the derivative gate only for the char-speed-only trigger.
   return (update_args.inward_drift_velocity.has_value() and
-          update_args.comoving_char_speed_increasing_inward and
-          (update_args.min_allowed_char_speed.has_value() or
-           update_args.min_allowed_radial_distance.has_value()) and
-          (not delta_r_almost_above_inward_drift_limit) and
-          (not char_speed_almost_above_inward_drift_limit));
+          (min_delta_r_requires_inward_drift or
+           (update_args.comoving_char_speed_increasing_inward and
+            min_char_speed_requires_inward_drift)));
 }
 
 bool ok_to_return_to_state_deltar(const StateUpdateArgs& update_args) {
@@ -245,7 +244,7 @@ bool ok_to_return_to_state_deltar(const StateUpdateArgs& update_args) {
   constexpr double stop_inward_drift_buffer_factor = 0.99;
   const bool delta_r_large_enough_to_stop_inward_drift =
       update_args.min_allowed_radial_distance.has_value() and
-      update_args.average_radial_distance.value() >
+      update_args.min_radial_distance >
           stop_inward_drift_buffer_factor *
               update_args.min_allowed_radial_distance.value();
   const bool char_speed_large_enough_to_stop_inward_drift =

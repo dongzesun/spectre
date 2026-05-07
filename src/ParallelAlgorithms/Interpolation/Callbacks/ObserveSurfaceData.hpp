@@ -87,6 +87,8 @@ struct ObserveSurfaceData
                     const TemporalId& temporal_id) {
     const auto& strahlkorper = get<ylm::Tags::Strahlkorper<HorizonFrame>>(box);
     const ylm::Spherepack& ylm = strahlkorper.ylm_spherepack();
+    const double time =
+        InterpolationTarget_detail::get_temporal_id_value(temporal_id);
 
     // Output the inertial-frame coordinates of the Stralhlkorper.
     // Note that these coordinates are not
@@ -133,8 +135,6 @@ struct ObserveSurfaceData
         2, Spectral::Basis::SphericalHarmonic};
     const std::vector<Spectral::Quadrature> quadratures_vector{
         {Spectral::Quadrature::Gauss, Spectral::Quadrature::Equiangular}};
-    const double time =
-        InterpolationTarget_detail::get_temporal_id_value(temporal_id);
     const observers::ObservationId observation_id{time, subfile_path + ".vol"};
 
     auto& proxy = Parallel::get_parallel_component<
