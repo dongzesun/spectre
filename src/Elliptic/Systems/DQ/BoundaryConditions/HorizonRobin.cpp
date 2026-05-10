@@ -280,6 +280,11 @@ void HorizonRobin<Dim>::apply(
     const tnsr::I<DataVector, Dim, Frame::Inertial>& face_inertial_coords,
     const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
     const Direction<Dim>& direction, const Mesh<Dim>& volume_mesh) const {
+  if (zero_source_) {
+    apply_linearized_impl(xi, n_dot_flux_xi, face_inertial_coords,
+                          face_normal, direction, volume_mesh, mass_);
+    return;
+  }
   apply_impl(xi, n_dot_flux_xi, face_inertial_coords, face_normal, direction,
              volume_mesh, mass_, gauge_h(face_inertial_coords));
 }
@@ -294,9 +299,14 @@ void HorizonRobin<Dim>::apply(
     const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
     const Direction<Dim>& direction,
     const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes) const {
+  const auto& volume_mesh = extract_volume_mesh(volume_meshes);
+  if (zero_source_) {
+    apply_linearized_impl(xi, n_dot_flux_xi, face_inertial_coords,
+                          face_normal, direction, volume_mesh, mass_);
+    return;
+  }
   apply_impl(xi, n_dot_flux_xi, face_inertial_coords, face_normal, direction,
-             extract_volume_mesh(volume_meshes), mass_,
-             gauge_h(face_inertial_coords));
+             volume_mesh, mass_, gauge_h(face_inertial_coords));
 }
 
 template <size_t Dim>
@@ -336,6 +346,7 @@ void HorizonRobin<Dim>::pup(PUP::er& p) {
   numeric_data_.pup(p);
   p | use_gauge_h_;
   p | affine_map_file_;
+  p | zero_source_;
   if (p.isUnpacking()) {
     affine_map_ = DQ::detail::BbhAffineMap::from_file(affine_map_file_);
   }

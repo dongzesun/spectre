@@ -101,9 +101,16 @@ class HorizonRobin
         "Optional text file describing the corotating-to-inertial affine map. "
         "Leave empty for the identity map.";
   };
+  struct ZeroSource {
+    using type = bool;
+    static constexpr Options::String help =
+        "If true, impose the homogeneous horizon-regular condition, i.e. "
+        "use zero source on the right-hand side for all components.";
+  };
   using options =
       tmpl::list<Mass, FileGlob, Subgroup, ObservationStep,
-                 ExtrapolateIntoExcisions, UseGaugeH, AffineMapFile>;
+                 ExtrapolateIntoExcisions, UseGaugeH, AffineMapFile,
+                 ZeroSource>;
 
   HorizonRobin() = default;
   HorizonRobin(const HorizonRobin&) = default;
@@ -121,13 +128,14 @@ class HorizonRobin
   HorizonRobin(const double mass, std::string file_glob, std::string subgroup,
                const int observation_step,
                const bool extrapolate_into_excisions, const bool use_gauge_h,
-               std::string affine_map_file)
+               std::string affine_map_file, const bool zero_source)
       : mass_(mass),
         numeric_data_(std::move(file_glob), std::move(subgroup),
                       observation_step, extrapolate_into_excisions),
         use_gauge_h_(use_gauge_h),
         affine_map_file_(std::move(affine_map_file)),
-        affine_map_(DQ::detail::BbhAffineMap::from_file(affine_map_file_)) {
+        affine_map_(DQ::detail::BbhAffineMap::from_file(affine_map_file_)),
+        zero_source_(zero_source) {
     ASSERT(Dim == 3, "HorizonRobin is implemented only in 3D.");
   }
 
@@ -205,6 +213,7 @@ class HorizonRobin
   bool use_gauge_h_{false};
   std::string affine_map_file_{};
   DQ::detail::BbhAffineMap affine_map_{};
+  bool zero_source_{false};
 };
 
 template <size_t Dim>

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -49,6 +50,15 @@ struct BbhAffineMap {
   // Constant spatial shift applied before the time tilt:
   // Z_shift^i = Z_base^i - d^i.
   std::array<double, 3> local_frame_spatial_shift{{0.0, 0.0, 0.0}};
+  // Direct physical affine map Z^a = L^a_b Y^b.  When present in the map
+  // file, this replaces the older PN-coefficient construction below.
+  bool has_local_frame_physical_affine{false};
+  std::array<std::array<double, 4>, 4> local_frame_physical_affine{{
+      {{1.0, 0.0, 0.0, 0.0}},
+      {{0.0, 1.0, 0.0, 0.0}},
+      {{0.0, 0.0, 1.0, 0.0}},
+      {{0.0, 0.0, 0.0, 1.0}},
+  }};
   // Quadratic pre-map coefficients in
   // Z^a = M^a_b Y^b + 1/2 Q^a_ij Y^i Y^j, with i,j spatial.
   // Stored by component a=t,x,y,z, each as xx, xy, xz, yy, yz, zz.
@@ -142,7 +152,32 @@ struct BbhAffineMap {
                "Failed to parse optional value for key 'companion_potential' "
                "in BBH affine map file");
       } else if (key == "local_frame_coefficients") {
-        read_optional_values(result.local_frame_coefficients.data(), 6);
+        std::vector<double> values{};
+        double value = 0.0;
+        while (stream >> value) {
+          values.push_back(value);
+        }
+        ASSERT(values.size() == 5 or values.size() == 6,
+               "local_frame_coefficients must have 5 legacy values or 6 "
+               "values, got " << values.size()
+                              << " values in BBH affine map file");
+        for (size_t i = 0; i < values.size(); ++i) {
+          result.local_frame_coefficients[i] = values[i];
+        }
+      } else if (key == "local_frame_space_time_vector") {
+        std::array<double, 3> legacy_space_time_vector{};
+        read_optional_values(legacy_space_time_vector.data(), 3);
+        const double beta2 = result.boost_speed_squared();
+        if (beta2 > 0.0) {
+          const double gamma = result.boost_gamma();
+          double beta_dot_vector = 0.0;
+          for (size_t i = 0; i < 3; ++i) {
+            beta_dot_vector +=
+                result.boost_velocity[i] * legacy_space_time_vector[i];
+          }
+          result.local_frame_coefficients[5] =
+              beta_dot_vector / (gamma * beta2);
+        }
       } else if (key == "local_frame_spatial_affine_correction") {
         read_optional_values(
             result.local_frame_spatial_affine_correction.data(), 6);
@@ -150,6 +185,12 @@ struct BbhAffineMap {
         read_optional_values(result.local_frame_time_tilt.data(), 3);
       } else if (key == "local_frame_spatial_shift") {
         read_optional_values(result.local_frame_spatial_shift.data(), 3);
+      } else if (key == "local_frame_physical_affine") {
+        read_optional_values(
+            reinterpret_cast<double*>(
+                result.local_frame_physical_affine.data()),
+            16);
+        result.has_local_frame_physical_affine = true;
       } else if (key == "local_frame_quadratic") {
         read_optional_values(
             reinterpret_cast<double*>(result.local_frame_quadratic.data()), 24);
@@ -186,6 +227,9 @@ struct BbhAffineMap {
   }
 
   std::array<std::array<double, 4>, 4> local_from_corot_matrix() const {
+    if (has_local_frame_physical_affine) {
+      return local_frame_physical_affine;
+    }
     std::array<std::array<double, 4>, 4> result{{
         {{0.0, 0.0, 0.0, 0.0}},
         {{0.0, 0.0, 0.0, 0.0}},
@@ -302,18 +346,19 @@ struct BbhAffineMap {
   }
 
   std::array<std::array<double, 3>, 3> local_to_corot_spatial_matrix() const {
-    const auto full_inverse = corot_from_local_matrix();
-    std::array<std::array<double, 3>, 3> result{};
-    for (size_t i = 0; i < 3; ++i) {
-      for (size_t j = 0; j < 3; ++j) {
-        result[i][j] = full_inverse[i + 1][j + 1];
-      }
-    }
-    return result;
+    const auto spatial_block = corot_to_local_spatial_matrix();
+    return invert_matrix(spatial_block);
   }
 
   std::array<std::array<double, 3>, 3> corot_to_local_spatial_matrix() const {
-    return invert_matrix(local_to_corot_spatial_matrix());
+    const auto full_matrix = local_from_corot_matrix();
+    std::array<std::array<double, 3>, 3> result{};
+    for (size_t i = 0; i < 3; ++i) {
+      for (size_t j = 0; j < 3; ++j) {
+        result[i][j] = full_matrix[i + 1][j + 1];
+      }
+    }
+    return result;
   }
 
   double quadratic_coefficient(const size_t component, const size_t i,
@@ -323,9 +368,10 @@ struct BbhAffineMap {
     const size_t pair_index = min_i == 0 ? max_i : (min_i == 1 ? max_i + 2 : 5);
     double coefficient = local_frame_quadratic[component][pair_index];
     if (component == 0) {
-      for (size_t i = 0; i < 3; ++i) {
+      for (size_t tilt_dim = 0; tilt_dim < 3; ++tilt_dim) {
         coefficient -=
-            local_frame_time_tilt[i] * local_frame_quadratic[i + 1][pair_index];
+            local_frame_time_tilt[tilt_dim] *
+            local_frame_quadratic[tilt_dim + 1][pair_index];
       }
     }
     return coefficient;

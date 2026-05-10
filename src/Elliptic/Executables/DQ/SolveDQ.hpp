@@ -192,10 +192,17 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
         "used to pull BBH volume data into the DQ coordinates. Leave empty "
         "for the identity map.";
   };
+  struct ZeroSource {
+    using type = bool;
+    static constexpr Options::String help =
+        "If true, ignore GaugeH and the analytic Kerr-Schild source and use "
+        "FixedSource(Xi_a)=0. This is intended for homogeneous solves such as "
+        "dtXi_a.";
+  };
 
   using options = tmpl::list<PlusConstant, FileGlob, Subgroup, ObservationStep,
                              ExtrapolateIntoExcisions, UseSingleBhGaugeH, Mass,
-                             AffineMapFile>;
+                             AffineMapFile, ZeroSource>;
   static constexpr Options::String help =
       "Analytic xi_a solution with a source that is either "
       "(2m/r^2, -2m/r^2 n^i) or (-H^t + 2m/r^2, "
@@ -215,14 +222,15 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
                  std::string subgroup, const int observation_step,
                  const bool extrapolate_into_excisions,
                  const bool use_single_bh_gauge_h, const double mass,
-                 std::string affine_map_file)
+                 std::string affine_map_file, const bool zero_source)
       : lorentzian_solution_(mass, plus_constant),
         numeric_data_(std::move(file_glob), std::move(subgroup),
                       observation_step, extrapolate_into_excisions),
         use_single_bh_gauge_h_(use_single_bh_gauge_h),
         mass_(mass),
         affine_map_file_(std::move(affine_map_file)),
-        affine_map_(DQ::detail::BbhAffineMap::from_file(affine_map_file_)) {}
+        affine_map_(DQ::detail::BbhAffineMap::from_file(affine_map_file_)),
+        zero_source_(zero_source) {}
 
   std::unique_ptr<elliptic::analytic_data::AnalyticSolution> get_clone()
       const override {
@@ -250,6 +258,7 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
     p | use_single_bh_gauge_h_;
     p | mass_;
     p | affine_map_file_;
+    p | zero_source_;
     if (p.isUnpacking()) {
       affine_map_ = DQ::detail::BbhAffineMap::from_file(affine_map_file_);
     }
@@ -266,6 +275,12 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
     const DataVector r2 = get(dot_product(x, x));
     const DataVector r = sqrt(r2);
     tnsr::a<DataVector, Dim, Frame::Inertial> result{get_size(r2)};
+    if (zero_source_) {
+      for (size_t a = 0; a < Dim + 1; ++a) {
+        result.get(a) = 0.0;
+      }
+      return result;
+    }
     const auto source_coords = affine_map_.map_point(x);
     if (use_single_bh_gauge_h_) {
       const auto gauge_h_vars = numeric_data_.variables(
@@ -326,6 +341,7 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
   double mass_{std::numeric_limits<double>::signaling_NaN()};
   std::string affine_map_file_{};
   DQ::detail::BbhAffineMap affine_map_{};
+  bool zero_source_{false};
 };
 
 template <size_t Dim>
