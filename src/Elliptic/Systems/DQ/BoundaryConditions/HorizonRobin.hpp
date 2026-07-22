@@ -19,6 +19,7 @@
 #include "Elliptic/BoundaryConditions/BoundaryCondition.hpp"
 #include "Elliptic/BoundaryConditions/BoundaryConditionType.hpp"
 #include "Elliptic/Systems/DQ/BbhAffineMap.hpp"
+#include "Elliptic/Systems/DQ/Tags.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
 #include "Options/String.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
@@ -41,8 +42,10 @@ namespace DQ::BoundaryConditions {
  * \details This imposes the full surface equation
  *
  * \f{align*}
- * \partial_r \xi_t + \frac{1}{2m}\Delta_{S^2}\xi_t &= -1 + 2m H^t \\
- * \partial_r \xi_i + \frac{1}{2m}\Delta_{S^2}\xi_i &= n_i + 2m H^i
+ * \partial_r \xi_t + \frac{1}{2m}\Delta_{S^2}\xi_t
+ *     &= -1 + 2m H^t - \partial_t\xi^t \\
+ * \partial_r \xi_i + \frac{1}{2m}\Delta_{S^2}\xi_i
+ *     &= n_i + 2m H^i - \partial_t\xi^i
  * \f}
  *
  * converted to the DQ normal flux
@@ -107,10 +110,38 @@ class HorizonRobin
         "If true, impose the homogeneous horizon-regular condition, i.e. "
         "use zero source on the right-hand side for all components.";
   };
+  struct DtXiFileGlob {
+    using type = std::string;
+    static constexpr Options::String help =
+        "Optional path or glob pattern to DQ volume data containing dtXi_a. "
+        "Leave empty when UseDtXi is false.";
+  };
+  struct DtXiSubgroup {
+    using type = std::string;
+    static constexpr Options::String help =
+        "The subgroup in the dtXi volume file, excluding extensions.";
+  };
+  struct DtXiObservationStep {
+    using type = int;
+    static constexpr Options::String help =
+        "Observation step used to read dtXi_a.";
+  };
+  struct DtXiExtrapolateIntoExcisions {
+    using type = bool;
+    static constexpr Options::String help =
+        "Whether to extrapolate dtXi_a into excised regions.";
+  };
+  struct UseDtXi {
+    using type = bool;
+    static constexpr Options::String help =
+        "If true, subtract dtXi_a in the horizon-regular source. This uses "
+        "the r=2m limiting coefficient 4m^2/r^2 -> 1.";
+  };
   using options =
       tmpl::list<Mass, FileGlob, Subgroup, ObservationStep,
-                 ExtrapolateIntoExcisions, UseGaugeH, AffineMapFile,
-                 ZeroSource>;
+                 ExtrapolateIntoExcisions, UseGaugeH, AffineMapFile, ZeroSource,
+                 DtXiFileGlob, DtXiSubgroup, DtXiObservationStep,
+                 DtXiExtrapolateIntoExcisions, UseDtXi>;
 
   HorizonRobin() = default;
   HorizonRobin(const HorizonRobin&) = default;
@@ -128,14 +159,20 @@ class HorizonRobin
   HorizonRobin(const double mass, std::string file_glob, std::string subgroup,
                const int observation_step,
                const bool extrapolate_into_excisions, const bool use_gauge_h,
-               std::string affine_map_file, const bool zero_source)
+               std::string affine_map_file, const bool zero_source,
+               std::string dtxi_file_glob, std::string dtxi_subgroup,
+               const int dtxi_observation_step,
+               const bool dtxi_extrapolate_into_excisions, const bool use_dtxi)
       : mass_(mass),
         numeric_data_(std::move(file_glob), std::move(subgroup),
                       observation_step, extrapolate_into_excisions),
         use_gauge_h_(use_gauge_h),
         affine_map_file_(std::move(affine_map_file)),
         affine_map_(DQ::detail::BbhAffineMap::from_file(affine_map_file_)),
-        zero_source_(zero_source) {
+        zero_source_(zero_source),
+        dtxi_data_(std::move(dtxi_file_glob), std::move(dtxi_subgroup),
+                   dtxi_observation_step, dtxi_extrapolate_into_excisions),
+        use_dtxi_(use_dtxi) {
     ASSERT(Dim == 3, "HorizonRobin is implemented only in 3D.");
   }
 
@@ -207,6 +244,8 @@ class HorizonRobin
  private:
   tnsr::A<DataVector, Dim, Frame::Inertial> gauge_h(
       const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) const;
+  tnsr::a<DataVector, Dim, Frame::Inertial> dtxi(
+      const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) const;
 
   double mass_ = std::numeric_limits<double>::signaling_NaN();
   ::NumericData numeric_data_{};
@@ -214,6 +253,8 @@ class HorizonRobin
   std::string affine_map_file_{};
   DQ::detail::BbhAffineMap affine_map_{};
   bool zero_source_{false};
+  ::NumericData dtxi_data_{};
+  bool use_dtxi_{false};
 };
 
 template <size_t Dim>

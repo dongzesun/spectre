@@ -199,10 +199,38 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
         "FixedSource(Xi_a)=0. This is intended for homogeneous solves such as "
         "dtXi_a.";
   };
+  struct DtXiFileGlob {
+    using type = std::string;
+    static constexpr Options::String help =
+        "Optional path or glob pattern to DQ volume data containing dtXi_a. "
+        "Leave empty when UseDtXi is false.";
+  };
+  struct DtXiSubgroup {
+    using type = std::string;
+    static constexpr Options::String help =
+        "The subgroup in the dtXi volume file, excluding extensions.";
+  };
+  struct DtXiObservationStep {
+    using type = int;
+    static constexpr Options::String help =
+        "Observation step used to read dtXi_a.";
+  };
+  struct DtXiExtrapolateIntoExcisions {
+    using type = bool;
+    static constexpr Options::String help =
+        "Whether to extrapolate dtXi_a into excised regions.";
+  };
+  struct UseDtXi {
+    using type = bool;
+    static constexpr Options::String help =
+        "If true, add +(2m/r^2) dtXi_a to the fixed source.";
+  };
 
-  using options = tmpl::list<PlusConstant, FileGlob, Subgroup, ObservationStep,
-                             ExtrapolateIntoExcisions, UseSingleBhGaugeH, Mass,
-                             AffineMapFile, ZeroSource>;
+  using options =
+      tmpl::list<PlusConstant, FileGlob, Subgroup, ObservationStep,
+                 ExtrapolateIntoExcisions, UseSingleBhGaugeH, Mass,
+                 AffineMapFile, ZeroSource, DtXiFileGlob, DtXiSubgroup,
+                 DtXiObservationStep, DtXiExtrapolateIntoExcisions, UseDtXi>;
   static constexpr Options::String help =
       "Analytic xi_a solution with a source that is either "
       "(2m/r^2, -2m/r^2 n^i) or (-H^t + 2m/r^2, "
@@ -222,7 +250,11 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
                  std::string subgroup, const int observation_step,
                  const bool extrapolate_into_excisions,
                  const bool use_single_bh_gauge_h, const double mass,
-                 std::string affine_map_file, const bool zero_source)
+                 std::string affine_map_file, const bool zero_source,
+                 std::string dtxi_file_glob, std::string dtxi_subgroup,
+                 const int dtxi_observation_step,
+                 const bool dtxi_extrapolate_into_excisions,
+                 const bool use_dtxi)
       : lorentzian_solution_(mass, plus_constant),
         numeric_data_(std::move(file_glob), std::move(subgroup),
                       observation_step, extrapolate_into_excisions),
@@ -230,7 +262,10 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
         mass_(mass),
         affine_map_file_(std::move(affine_map_file)),
         affine_map_(DQ::detail::BbhAffineMap::from_file(affine_map_file_)),
-        zero_source_(zero_source) {}
+        zero_source_(zero_source),
+        dtxi_data_(std::move(dtxi_file_glob), std::move(dtxi_subgroup),
+                   dtxi_observation_step, dtxi_extrapolate_into_excisions),
+        use_dtxi_(use_dtxi) {}
 
   std::unique_ptr<elliptic::analytic_data::AnalyticSolution> get_clone()
       const override {
@@ -259,12 +294,24 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
     p | mass_;
     p | affine_map_file_;
     p | zero_source_;
+    dtxi_data_.pup(p);
+    p | use_dtxi_;
     if (p.isUnpacking()) {
       affine_map_ = DQ::detail::BbhAffineMap::from_file(affine_map_file_);
     }
   }
 
  private:
+  tnsr::a<DataVector, Dim, Frame::Inertial> dtxi(
+      const tnsr::I<DataVector, Dim>& x) const {
+    tnsr::a<DataVector, Dim, Frame::Inertial> result{get_size(x.get(0)), 0.0};
+    if (not use_dtxi_) {
+      return result;
+    }
+    return tuples::get<DQ::Tags::Xi<DataVector, Dim>>(
+        dtxi_data_.variables(x, tmpl::list<DQ::Tags::Xi<DataVector, Dim>>{}));
+  }
+
   template <typename RequestedTag>
   typename RequestedTag::type compute_variable(
       const tnsr::I<DataVector, Dim>& x) const {
@@ -311,10 +358,13 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
       for (size_t a = 0; a < Dim + 1; ++a) {
         gauge_h.get(a) += wave_map_correction.get(a);
       }
-      result.get(0) = -gauge_h.get(0) + 2.0 * mass_ / r2;
+      const auto dtxi_value = dtxi(x);
+      result.get(0) = -gauge_h.get(0) + 2.0 * mass_ / r2 +
+                      2.0 * mass_ * dtxi_value.get(0) / r2;
       for (size_t d = 0; d < Dim; ++d) {
-        result.get(d + 1) =
-            -gauge_h.get(d + 1) - 2.0 * mass_ * x.get(d) / (r2 * r);
+        result.get(d + 1) = -gauge_h.get(d + 1) -
+                            2.0 * mass_ * x.get(d) / (r2 * r) +
+                            2.0 * mass_ * dtxi_value.get(d + 1) / r2;
       }
     } else {
       result.get(0) = 2.0 * mass_ / r2;
@@ -342,6 +392,8 @@ class SingleBhGaugeH final : public elliptic::analytic_data::AnalyticSolution {
   std::string affine_map_file_{};
   DQ::detail::BbhAffineMap affine_map_{};
   bool zero_source_{false};
+  ::NumericData dtxi_data_{};
+  bool use_dtxi_{false};
 };
 
 template <size_t Dim>

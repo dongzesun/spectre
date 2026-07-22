@@ -166,8 +166,8 @@ void apply_impl(
     const tnsr::I<DataVector, Dim, Frame::Inertial>& face_inertial_coords,
     const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
     const Direction<Dim>& direction, const Mesh<Dim>& volume_mesh,
-    const double mass,
-    const tnsr::A<DataVector, Dim, Frame::Inertial>& gauge_h) {
+    const double mass, const tnsr::A<DataVector, Dim, Frame::Inertial>& gauge_h,
+    const tnsr::a<DataVector, Dim, Frame::Inertial>& dtxi) {
   const auto face_mesh = volume_mesh.slice_away(direction.dimension());
   const DataVector r = radius(face_inertial_coords);
   DataVector normal_dot_radial =
@@ -184,7 +184,7 @@ void apply_impl(
   // condition is still written for the regular radial derivative, so convert it
   // to the physical normal flux by multiplying by (1 - 2m/r).
   n_dot_flux_xi->get(0) = dq_flux_prefactor * normal_dot_radial *
-                          (-1.0 + 2.0 * mass * gauge_h.get(0) -
+                          (-1.0 + 2.0 * mass * gauge_h.get(0) - dtxi.get(0) -
                            0.5 * angular_laplacian_xi_t / mass);
   for (size_t d = 0; d < Dim; ++d) {
     const DataVector angular_laplacian_xi_i =
@@ -193,7 +193,7 @@ void apply_impl(
     n_dot_flux_xi->get(d + 1) =
         dq_flux_prefactor * normal_dot_radial *
         (face_inertial_coords.get(d) / r + 2.0 * mass * gauge_h.get(d + 1) -
-         0.5 * angular_laplacian_xi_i / mass);
+         dtxi.get(d + 1) - 0.5 * angular_laplacian_xi_i / mass);
   }
 }
 
@@ -272,6 +272,18 @@ tnsr::A<DataVector, Dim, Frame::Inertial> HorizonRobin<Dim>::gauge_h(
 }
 
 template <size_t Dim>
+tnsr::a<DataVector, Dim, Frame::Inertial> HorizonRobin<Dim>::dtxi(
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) const {
+  tnsr::a<DataVector, Dim, Frame::Inertial> result{get_size(coords.get(0)),
+                                                   0.0};
+  if (not use_dtxi_) {
+    return result;
+  }
+  return tuples::get<DQ::Tags::Xi<DataVector, Dim>>(dtxi_data_.variables(
+      coords, tmpl::list<DQ::Tags::Xi<DataVector, Dim>>{}));
+}
+
+template <size_t Dim>
 void HorizonRobin<Dim>::apply(
     const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> xi,
     const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*>
@@ -286,7 +298,8 @@ void HorizonRobin<Dim>::apply(
     return;
   }
   apply_impl(xi, n_dot_flux_xi, face_inertial_coords, face_normal, direction,
-             volume_mesh, mass_, gauge_h(face_inertial_coords));
+             volume_mesh, mass_, gauge_h(face_inertial_coords),
+             dtxi(face_inertial_coords));
 }
 
 template <size_t Dim>
@@ -306,7 +319,8 @@ void HorizonRobin<Dim>::apply(
     return;
   }
   apply_impl(xi, n_dot_flux_xi, face_inertial_coords, face_normal, direction,
-             volume_mesh, mass_, gauge_h(face_inertial_coords));
+             volume_mesh, mass_, gauge_h(face_inertial_coords),
+             dtxi(face_inertial_coords));
 }
 
 template <size_t Dim>
@@ -347,6 +361,8 @@ void HorizonRobin<Dim>::pup(PUP::er& p) {
   p | use_gauge_h_;
   p | affine_map_file_;
   p | zero_source_;
+  dtxi_data_.pup(p);
+  p | use_dtxi_;
   if (p.isUnpacking()) {
     affine_map_ = DQ::detail::BbhAffineMap::from_file(affine_map_file_);
   }
