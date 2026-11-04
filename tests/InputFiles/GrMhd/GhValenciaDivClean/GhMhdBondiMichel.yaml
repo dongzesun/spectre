@@ -21,11 +21,16 @@ ResourceInfo:
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.0001
+  InitialTimeStep: &initial_time_step 0.0001
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper:
     AdamsBashforth:
       Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 PhaseChangeAndTriggers:
   - Trigger:
@@ -104,12 +109,6 @@ PrimitiveFromConservative:
   DensityWhenSkippingInversion: *MinimumD
   KastaunMaxLorentzFactor: 10.0
 
-Limiter:
-  Minmod:
-    Type: Muscl
-    TvbConstant: 50.0
-    DisableForDebugging: false
-
 EvolutionSystem:
   ValenciaDivClean:
     DampingParameter: 0.0
@@ -141,17 +140,19 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 420
+          Enable: false
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
   BoundaryCorrection:
     ProductAveragedUpwindPenaltyAndRusanov:
       AveragedUpwindPenalty:
       Rusanov:
-
-Filtering:
-  ExpFilter0:
-    Enable: false
-    Alpha: 64
-    HalfPower: 420
-    BlocksToFilter: All
 
 EventsAndTriggersAtCheckpoints:
 
@@ -208,6 +209,8 @@ EventsAndTriggersAtSlabs:
             - Name: Error(Pressure)
               NormType: L2Norm
               Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   - Trigger:
       Slabs:
         EvenlySpaced:
@@ -241,13 +244,18 @@ EventsAndTriggersAtSlabs:
     Events:
       - Completion
 
+EventsAndTriggersAtSteps:
+
 ApparentHorizons:
   LMax: 4
   AhA:
+    Criteria:
     InitialGuess:
-      LMax: 4
-      Radius: 2.2
-      Center: [0.0, 0.0, 0.0]
+      InitialL: 4
+      InitialShape:
+        Sphere:
+          Radius: 2.2
+          Center: [0.0, 0.0, 0.0]
     FastFlow:
       Flow: Fast
       Alpha: 1.0
@@ -258,8 +266,8 @@ ApparentHorizons:
       DivergenceIter: 5
       MaxIts: 100
     Verbosity: Verbose
-    MaxInterpolationRetries: 3
-    BlocksForInterpolation: All
+    MaxComputeCoordsRetries: 3
+    BlocksForHorizonFind: All
 
 InterpolationTargets:
   BondiSachsInterpolation:
@@ -276,7 +284,6 @@ Observers:
   ReductionFileName: "GhMhdBondiMichelReductions"
 
 Interpolator:
-  DumpVolumeDataOnFailure: false
   Verbosity: Silent
 
 EventsAndDenseTriggers:

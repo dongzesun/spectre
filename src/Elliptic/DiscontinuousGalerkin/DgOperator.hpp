@@ -12,6 +12,7 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/SliceVariables.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/Variables/FrameTransform.hpp"
@@ -43,7 +44,6 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /*!
  * \brief Functionality related to discontinuous Galerkin discretizations of
@@ -197,13 +197,11 @@ Variables<TagsList> mass_conservative_restriction(
   if constexpr (FaceDim == 0) {
     return mortar_vars;
   } else {
-    const auto projection_matrices =
-        Spectral::projection_matrix_child_to_parent(mortar_mesh, face_mesh,
-                                                    mortar_size, true);
     mortar_vars *= get(mortar_jacobian);
     ::dg::apply_mass_matrix(make_not_null(&mortar_vars), mortar_mesh);
-    auto face_vars =
-        apply_matrices(projection_matrices, mortar_vars, mortar_mesh.extents());
+    auto face_vars = Spectral::project(
+        mortar_vars, mortar_mesh, face_mesh, mortar_size,
+        make_array<FaceDim>(Spectral::SegmentSize::Full), true);
     face_vars /= get(face_jacobian);
     ::dg::apply_inverse_mass_matrix(make_not_null(&face_vars), face_mesh);
     return face_vars;
@@ -522,7 +520,8 @@ struct DgOperatorImpl<System, Linearized, tmpl::list<PrimalFields...>,
             typename... DerivVars, typename... PrimalFluxesVars,
             typename... PrimalMortarVars, typename... PrimalMortarFluxes,
             typename TemporalId, typename... FluxesArgs,
-            typename... SourcesArgs, typename DataIsZero = NoDataIsZero,
+            typename... SourcesArgs, typename... ModifyBoundaryDataArgs,
+            typename DataIsZero = NoDataIsZero,
             typename DirectionsPredicate = AllDirections>
   static void apply_operator(
       const gsl::not_null<Variables<tmpl::list<OperatorTags...>>*>
@@ -561,6 +560,7 @@ struct DgOperatorImpl<System, Linearized, tmpl::list<PrimalFields...>,
       const TemporalId& /*temporal_id*/,
       const DirectionMap<Dim, std::tuple<FluxesArgs...>>& fluxes_args_on_faces,
       const std::tuple<SourcesArgs...>& sources_args,
+      const std::tuple<ModifyBoundaryDataArgs...>& modify_boundary_data_args,
       const DataIsZero& data_is_zero = NoDataIsZero{},
       const DirectionsPredicate& directions_predicate = AllDirections{}) {
     static_assert(
@@ -702,6 +702,30 @@ struct DgOperatorImpl<System, Linearized, tmpl::list<PrimalFields...>,
 
       const auto face_mesh = mesh.slice_away(direction.dimension());
       auto [local_data, remote_data] = mortar_data.extract();
+
+      if (is_internal) {
+        if constexpr (Linearized and
+                      not std::is_same_v<typename System::modify_boundary_data,
+                                         void>) {
+          // Apply a linearized modification to received boundary data.
+          // This allows modifications to depend linearly on the variables.
+          std::apply(
+              [&rem_data = remote_data, &loc_data = local_data,
+               m_id = mortar_id](const auto&... args) {
+                System::modify_boundary_data::apply_linearized(
+                    make_not_null(
+                        &get<PrimalMortarVars>(rem_data.field_data))...,
+                    make_not_null(&get<::Tags::NormalDotFlux<PrimalMortarVars>>(
+                        rem_data.field_data))...,
+                    get<PrimalMortarVars>(loc_data.field_data)...,
+                    get<::Tags::NormalDotFlux<PrimalMortarVars>>(
+                        loc_data.field_data)...,
+                    m_id, args...);
+              },
+              modify_boundary_data_args);
+        }
+      }
+
       const size_t face_num_points = face_mesh.number_of_grid_points();
       const auto& face_normal = face_normals.at(direction);
       const auto& face_normal_vector = face_normal_vectors.at(direction);
@@ -1098,7 +1122,7 @@ struct DgOperatorImpl<System, Linearized, tmpl::list<PrimalFields...>,
         face_normal_magnitudes, face_jacobians,
         face_jacobian_times_inv_jacobians, all_mortar_meshes, all_mortar_sizes,
         mortar_jacobians, penalty_factors, massive, formulation, temporal_id,
-        fluxes_args_on_faces, sources_args);
+        fluxes_args_on_faces, sources_args, modify_boundary_data_args);
     // Impose the nonlinear (constant) boundary contribution as fixed sources on
     // the RHS of the equations
     *fixed_sources -= operator_applied_to_zero_vars;

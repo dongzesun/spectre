@@ -13,6 +13,7 @@
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
@@ -23,6 +24,7 @@
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/Actions/TciAndRollback.hpp"
 #include "Evolution/DgSubcell/ActiveGrid.hpp"
@@ -40,6 +42,7 @@
 #include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
 #include "Evolution/DgSubcell/Tags/TciGridHistory.hpp"
 #include "Evolution/DgSubcell/Tags/TciStatus.hpp"
+#include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -57,7 +60,6 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 class DummyReconstructor {
@@ -138,7 +140,8 @@ struct Metavariables {
   using system = System<Dim, HasPrims>;
   using analytic_variables_tags = typename system::variables_tag::tags_list;
   using const_global_cache_tags =
-      tmpl::list<evolution::dg::subcell::Tags::SubcellOptions<Dim>>;
+      tmpl::list<evolution::dg::subcell::Tags::SubcellOptions<Dim>,
+                 evolution::dg::Tags::OnlyDgBlockIds<Dim>>;
 
   // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
   static bool rdmp_fails;
@@ -157,6 +160,10 @@ struct Metavariables {
         const db::DataBox<DbTagsList>& box) {
       return db::get<Tags::Reconstructor>(box).ghost_zone_size();
     }
+
+    struct GhostVariables {
+      using ghost_variables_tag_list = tmpl::list<Var1>;
+    };
   };
 
   struct TciOnDgGrid {
@@ -232,7 +239,8 @@ Element<Dim> create_element(const bool with_neighbors) {
           {ElementId<Dim>{i + 1, {}}}, OrientationMap<Dim>::create_aligned()};
     }
   }
-  return Element<Dim>{ElementId<Dim>{0, {}}, neighbors};
+  return Element<Dim>{ElementId<Dim>{0, {}}, neighbors,
+                      domain::topologies::hypercube<Dim>};
 }
 
 template <size_t Dim>
@@ -283,20 +291,28 @@ void test_impl(const bool rdmp_fails, const bool tci_fails,
   // Sets neighboring block "Block1" to DG-only, if disable_subcell_in_block ==
   // true.
   using comp = component<Dim, metavars>;
-  const evolution::dg::subcell::SubcellOptions& subcell_options =
-      evolution::dg::subcell::SubcellOptions{
-          evolution::dg::subcell::SubcellOptions{
-              4.0, 1_st, 1.0e-3, 1.0e-4, always_use_subcell, false,
-              evolution::dg::subcell::fd::ReconstructionMethod::DimByDim,
-              use_halo,
-              disable_subcell_in_block
-                  ? std::optional{std::vector<std::string>{"Block1"}}
-                  : std::optional<std::vector<std::string>>{},
-              ::fd::DerivativeOrder::Two, 1, 1, 1},
-          TestCreator<Dim>{}};
+  const evolution::dg::subcell::SubcellOptions subcell_options{
+      4.0,
+      1_st,
+      1.0e-3,
+      1.0e-4,
+      always_use_subcell,
+      false,
+      evolution::dg::subcell::fd::ReconstructionMethod::DimByDim,
+      use_halo,
+      ::fd::DerivativeOrder::Two,
+      1,
+      1,
+      1};
+  const std::vector<size_t> only_dg_block_ids =
+      evolution::dg::compute_only_dg_block_ids(
+          disable_subcell_in_block
+              ? std::optional{std::vector<std::string>{"Block1"}}
+              : std::optional<std::vector<std::string>>{},
+          TestCreator<Dim>{});
 
   using MockRuntimeSystem = ActionTesting::MockRuntimeSystem<metavars>;
-  MockRuntimeSystem runner{{subcell_options}};
+  MockRuntimeSystem runner{{subcell_options, only_dg_block_ids}};
 
   const TimeStepId time_step_id{false, self_starting ? -1 : 1,
                                 Slab{1.0, 2.0}.end()};
@@ -339,18 +355,22 @@ void test_impl(const bool rdmp_fails, const bool tci_fails,
   // test FD/DG element neighbor disable_subcell_in_block
   const bool bordering_dg_block = alg::any_of(
       element.neighbors(),
-      [&subcell_options](const auto& direction_and_neighbor) {
+      [&only_dg_block_ids](const auto& direction_and_neighbor) {
         const size_t first_block_id =
             direction_and_neighbor.second.ids().begin()->block_id();
-        return alg::found(subcell_options.only_dg_block_ids(), first_block_id);
+        return alg::found(only_dg_block_ids, first_block_id);
       });
 
   const bool self_block_dg_only =
-      alg::found(subcell_options.only_dg_block_ids(), element.id().block_id());
+      alg::found(only_dg_block_ids, element.id().block_id());
 
-  // assign value of passed in variable.  Used as a test in apply() above
-  metavars::expected_evolve_on_dg_after_tci_failure =
-      bordering_dg_block or self_block_dg_only;
+  const bool subcell_allowed_in_element =
+      not self_block_dg_only and not bordering_dg_block;
+
+  // When subcell is not allowed, the TCI is skipped entirely (early return),
+  // so evolve_on_dg_after_tci_failure is never checked.  When subcell IS
+  // allowed, the TCI always receives false for this parameter.
+  metavars::expected_evolve_on_dg_after_tci_failure = false;
 
   const int tci_decision{-1};
 
@@ -527,7 +547,9 @@ void test_impl(const bool rdmp_fails, const bool tci_fails,
           expected_ghost_data.at(directional_element_id)
               .neighbor_ghost_data_for_reconstruction(),
           0, directional_element_id, neighbor_mesh, element, subcell_mesh, 2,
-          Interps{});
+          Interps{},
+          typename metavars::SubcellOptions::GhostVariables::
+              ghost_variables_tag_list{});
     }
     const auto& ghost_data_for_reconstruction = ActionTesting::get_databox_tag<
         comp, evolution::dg::subcell::Tags::GhostDataForReconstruction<Dim>>(
@@ -545,18 +567,25 @@ void test_impl(const bool rdmp_fails, const bool tci_fails,
     CHECK(active_grid_from_box == evolution::dg::subcell::ActiveGrid::Dg);
     CHECK_FALSE(did_rollback_from_box);
 
-    const auto subcell_vars = evolution::dg::subcell::fd::project(
-        evolved_vars, dg_mesh,
-        evolution::dg::subcell::fd::mesh(dg_mesh).extents());
-    const evolution::dg::subcell::RdmpTciData expected_rdmp_data{
-        {std::max(max(get(get<Var1>(evolved_vars))),
-                  max(get(get<Var1>(subcell_vars))))},
-        {std::min(min(get(get<Var1>(evolved_vars))),
-                  min(get(get<Var1>(subcell_vars))))}};
-
-    CHECK(ActionTesting::get_databox_tag<
-              comp, evolution::dg::subcell::Tags::DataForRdmpTci>(runner, 0) ==
-          expected_rdmp_data);
+    if (subcell_allowed_in_element) {
+      // TCI was invoked and updated RDMP data
+      const auto subcell_vars = evolution::dg::subcell::fd::project(
+          evolved_vars, dg_mesh,
+          evolution::dg::subcell::fd::mesh(dg_mesh).extents());
+      const evolution::dg::subcell::RdmpTciData expected_rdmp_data{
+          {std::max(max(get(get<Var1>(evolved_vars))),
+                    max(get(get<Var1>(subcell_vars))))},
+          {std::min(min(get(get<Var1>(evolved_vars))),
+                    min(get(get<Var1>(subcell_vars))))}};
+      CHECK(ActionTesting::get_databox_tag<
+                comp, evolution::dg::subcell::Tags::DataForRdmpTci>(
+                runner, 0) == expected_rdmp_data);
+    } else {
+      // Early return: RDMP data unchanged from initial value
+      CHECK(ActionTesting::get_databox_tag<
+                comp, evolution::dg::subcell::Tags::DataForRdmpTci>(
+                runner, 0) == initial_rdmp_tci_data);
+    }
 
     CHECK(time_stepper_history_from_box.size() == time_stepper_history.size());
     CHECK(time_stepper_history_from_box.substeps().size() ==
@@ -589,9 +618,16 @@ void test_impl(const bool rdmp_fails, const bool tci_fails,
         runner, 0);
     CHECK(ghost_data_for_reconstruction.empty());
   }
-  CHECK(ActionTesting::get_databox_tag<
-            comp, evolution::dg::subcell::Tags::TciDecision>(runner, 0) ==
-        (metavars::tci_invoked ? (rdmp_fails ? 10 : (tci_fails ? 5 : 0)) : -1));
+  // When subcell is not allowed in the element, the TCI is skipped and the
+  // decision is explicitly set to 0.  Otherwise the TCI is invoked and the
+  // decision comes from its return value.
+  const int expected_tci_decision =
+      subcell_allowed_in_element ? (rdmp_fails ? 10 : (tci_fails ? 5 : 0)) : 0;
+  CHECK(metavars::tci_invoked == subcell_allowed_in_element);
+  CHECK(
+      ActionTesting::get_databox_tag<comp,
+                                     evolution::dg::subcell::Tags::TciDecision>(
+          runner, 0) == expected_tci_decision);
 }
 
 template <size_t Dim>

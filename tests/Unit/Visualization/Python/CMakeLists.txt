@@ -2,6 +2,12 @@
 # See LICENSE.txt for details.
 
 spectre_add_python_bindings_test(
+  "Unit.Visualization.Python.ElementIdToParaview"
+  Test_ElementIdToParaview.py
+  "unit;visualization;python"
+  None)
+
+spectre_add_python_bindings_test(
   "Unit.Visualization.Python.GenerateTetrahedralConnectivity"
   Test_GenerateTetrahedralConnectivity.py
   "unit;visualization;python"
@@ -66,8 +72,8 @@ spectre_add_python_bindings_test(
   "Unit.Visualization.Python.PlotPowerMonitors"
   Test_PlotPowerMonitors.py
   "unit;visualization;python"
-  None
-  TIMEOUT 10)
+  PyEvolutionSystemsGeneralizedHarmonic
+  TIMEOUT 30)
 
 spectre_add_python_bindings_test(
   "Unit.Visualization.Python.PlotSizeControl"
@@ -102,5 +108,13 @@ spectre_add_python_bindings_test(
   "unit;visualization;python"
   None
   TIMEOUT 10)
+
+if(BUILD_PYTHON_BINDINGS)
+  # Test_PlotPowerMonitors imports the ScalarWave bindings for the '--sh' SW
+  # and CSW paths, in addition to the GeneralizedHarmonic ones it declares
+  # above. spectre_add_python_bindings_test takes only a single
+  # PY_MODULE_DEPENDENCY, so declare the second module here
+  add_dependencies(unit-tests PyEvolutionSystemsScalarWave)
+endif()
 
 add_subdirectory(Render3D)

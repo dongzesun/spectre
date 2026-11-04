@@ -8,6 +8,8 @@
 #include <optional>
 #include <string>
 
+#include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/DataBox/Tag.hpp"
 #include "Evolution/Systems/Cce/AnalyticBoundaryDataManager.hpp"
 #include "Evolution/Systems/Cce/AnalyticSolutions/BouncingBlackHole.hpp"
 #include "Evolution/Systems/Cce/AnalyticSolutions/GaugeWave.hpp"
@@ -29,7 +31,11 @@
 #include "Framework/TestCreation.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
 #include "Helpers/Evolution/Systems/Cce/BoundaryTestHelpers.hpp"
+// Option parsing instantiates every class in
+// SpanInterpolator::creatable_classes.
+#include "NumericalAlgorithms/Interpolation/BarycentricRationalSpanInterpolator.hpp"  // IWYU pragma: keep
 #include "NumericalAlgorithms/Interpolation/CubicSpanInterpolator.hpp"
+#include "NumericalAlgorithms/Interpolation/LinearSpanInterpolator.hpp"  // IWYU pragma: keep
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "Time/OptionTags/TimeStepper.hpp"
 #include "Time/Tags/TimeStepper.hpp"
@@ -38,6 +44,47 @@
 #include "Utilities/FileSystem.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/TypeTraits.hpp"
+
+namespace {
+struct Simple : db::SimpleTag {
+  using type = int;
+};
+
+struct SimpleDerived : Simple {
+  using base = Simple;
+};
+
+struct Simple2 : db::SimpleTag {
+  using type = int;
+};
+
+struct Ref : Simple2, db::ReferenceTag {
+  using base = Simple2;
+  using argument_tags = tmpl::list<Simple>;
+  static const int& get(const int& arg) { return arg; }
+};
+
+void test_cce_prefix_databox() {
+  TestHelpers::db::test_simple_tag<Simple>("Simple");
+  TestHelpers::db::test_simple_tag<SimpleDerived>("Simple");
+  TestHelpers::db::test_simple_tag<Simple2>("Simple2");
+  TestHelpers::db::test_reference_tag<Ref>("Simple2");
+
+  TestHelpers::db::test_simple_tag<Cce::Tags::CceEvolutionPrefix<Simple>>(
+      "Simple");
+  TestHelpers::db::test_simple_tag<
+      Cce::Tags::CceEvolutionPrefix<SimpleDerived>>("Simple");
+  TestHelpers::db::test_simple_tag<Cce::Tags::CceEvolutionPrefix<Simple2>>(
+      "Simple2");
+  TestHelpers::db::test_reference_tag<Cce::Tags::CceEvolutionPrefix<Ref>>(
+      "Simple2");
+
+  auto box = db::create<
+      db::AddSimpleTags<Cce::Tags::CceEvolutionPrefix<SimpleDerived>>,
+      db::AddComputeTags<Cce::Tags::CceEvolutionPrefix<Ref>>>(5);
+  CHECK(db::get<Cce::Tags::CceEvolutionPrefix<Simple>>(box) == 5);
+  CHECK(db::get<Cce::Tags::CceEvolutionPrefix<Simple2>>(box) == 5);
+}
 
 SPECTRE_TEST_CASE("Unit.Evolution.Systems.Cce.OptionTags", "[Unit][Cce]") {
   TestHelpers::db::test_simple_tag<
@@ -123,6 +170,30 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.Cce.OptionTags", "[Unit][Cce]") {
       "InverseCubic");
   TestHelpers::test_option_tag<Cce::OptionTags::InitializeJ<false>>(
       "InverseCubic");
+  TestHelpers::test_option_tag<Cce::OptionTags::InitializeJ<false>>(
+      "CauchySecondOrder:\n"
+      "  MaxPartiallyFlatJ0: 5e-12\n"
+      "  J0MaxIterations: 300\n"
+      "  J2Tolerance: 1e-14\n"
+      "  J2MaxIterations: 5\n"
+      "  MaxPartiallyFlatJ2: 1e-12\n"
+      "  MaxCauchyJ0: 5e-2\n"
+      "  DuDrJInterpolator:\n"
+      "    BarycentricRationalSpanInterpolator:\n"
+      "      MinOrder: 2\n"
+      "      MaxOrder: 2");
+  CHECK_FALSE(
+      TestHelpers::test_option_tag<Cce::OptionTags::AnalyticInitializeJ>(
+          "FromAnalyticSolution")
+          .has_value());
+  CHECK(TestHelpers::test_option_tag<Cce::OptionTags::AnalyticInitializeJ>(
+            "InverseCubic")
+            .has_value());
+  CHECK(TestHelpers::test_option_tag<Cce::OptionTags::DuDrJStencilStep>(
+            "0.005") == 0.005);
+  CHECK_THROWS_WITH(
+      TestHelpers::test_option_tag<Cce::OptionTags::DuDrJStencilStep>("0.0"),
+      Catch::Matchers::ContainsSubstring("below the lower bound"));
   TestHelpers::test_option_tag<Cce::OptionTags::AnalyticSolution>(
       "BouncingBlackHole:\n"
       "  Period: 40.0\n"
@@ -212,13 +283,19 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.Cce.OptionTags", "[Unit][Cce]") {
   CHECK(Cce::InitializationTags::ScriOutputDensity::create_from_options(4_st) ==
         4_st);
 
-  CHECK(Cce::Tags::AnalyticBoundaryDataManager::create_from_options(
-            10.0, 8,
-            std::make_unique<Cce::Solutions::RotatingSchwarzschild>(10.0, 1.0,
-                                                                    0.5))
-            .get_l_max() == 8);
+  const auto analytic_manager =
+      Cce::Tags::AnalyticBoundaryDataManager::create_from_options(
+          10.0, 8,
+          std::make_unique<Cce::Solutions::RotatingSchwarzschild>(10.0, 1.0,
+                                                                  0.5),
+          0.005);
+  CHECK(analytic_manager.get_l_max() == 8);
+  CHECK(analytic_manager.get_du_dr_j_stencil_step() == 0.005);
 
   if (file_system::check_if_file_exists(filename)) {
     file_system::rm(filename, true);
   }
+
+  test_cce_prefix_databox();
 }
+}  // namespace

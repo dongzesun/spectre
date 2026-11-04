@@ -4,6 +4,7 @@
 #pragma once
 
 #include <string>
+#include <type_traits>
 
 #include "ParallelAlgorithms/ApparentHorizonFinder/Destination.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Protocols/Callback.hpp"
@@ -12,10 +13,10 @@
 
 namespace ah::protocols {
 /*!
- * \brief A protocol for `InterpolationTargetTag`s that are used in the
- * intrp::InterpolationTarget parallel component.
+ * \brief A protocol for `HorizonMetavars`s that are used in the
+ * `ah::Component` parallel component.
  *
- * \details A struct conforming to the `InterpolationTargetTag` protocol must
+ * \details A struct conforming to the `HorizonMetavars` protocol must
  * have
  *
  * - a type alias `time_tag` to a tag that tells the horizon finder
@@ -59,9 +60,11 @@ struct HorizonMetavars {
     using compute_tags_on_element =
         typename ConformingType::compute_tags_on_element;
 
-    static constexpr Destination destination = ConformingType::destination;
+    static_assert(std::is_same_v<decltype(ConformingType::destination),
+                                 const Destination>);
 
-    static std::string name() { return ConformingType::name(); }
+    static_assert(
+        std::is_same_v<decltype(ConformingType::name()), std::string>);
   };
 };
 }  // namespace ah::protocols

@@ -33,6 +33,7 @@
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Neighbors.hpp"
 #include "Domain/Structure/Side.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/TagsTimeDependent.hpp"
 #include "Evolution/BoundaryCorrectionTags.hpp"
@@ -110,7 +111,8 @@ void test_neighbor_packaged_data(const gsl::not_null<std::mt19937*> gen) {
         Neighbors<3>{{ElementId<3>{i + 1, {}}},
                      OrientationMap<3>::create_aligned()};
   }
-  const Element<3> element{ElementId<3>{0, {}}, element_neighbors};
+  const Element<3> element{ElementId<3>{0, {}}, element_neighbors,
+                           domain::topologies::hypercube<3>};
 
   // Mesh (DG, Subcell), coordinate maps, logical and inertial coords.
   const size_t num_dg_pts_per_dimension = 5;
@@ -301,7 +303,7 @@ void test_neighbor_packaged_data(const gsl::not_null<std::mt19937*> gen) {
       evolution::dg::subcell::SubcellOptions{
           4.0, 1_st, 1.0e-3, 1.0e-4, false, false,
           evolution::dg::subcell::fd::ReconstructionMethod::DimByDim, false,
-          std::nullopt, ::fd::DerivativeOrder::Two, 1, 1, 1});
+          ::fd::DerivativeOrder::Two, 1, 1, 1});
 
   // Compute the packaged data
   std::vector<DirectionalId<3>> mortars_to_reconstruct_to{};

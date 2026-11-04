@@ -31,3 +31,5 @@ target_link_libraries(
   Serialization
   SpinWeightedSphericalHarmonics
   )
+
+add_subdirectory(ScalarField)

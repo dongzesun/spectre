@@ -17,11 +17,11 @@
 #include "Evolution/DiscontinuousGalerkin/MortarDataHolder.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarInfo.hpp"
 #include "Evolution/DiscontinuousGalerkin/NormalVectorTags.hpp"
-#include "Evolution/DiscontinuousGalerkin/TimeSteppingPolicy.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/MortarHelpers.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "NumericalAlgorithms/Spectral/SegmentSize.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
@@ -83,7 +83,7 @@ template <size_t Dim>
     const Domain<Dim>& domain, const Element<Dim>& element,
     const Mesh<Dim>& volume_mesh,
     const ::dg::MortarMap<Dim, Mesh<Dim>>& neighbor_mesh,
-    const bool local_time_stepping) {
+    const LtsMode lts_mode) {
   ::dg::MortarMap<Dim, MortarInfo<Dim>> result{};
   for (const auto& [direction, neighbors] : element.neighbors()) {
     const domain::FaceType face_type = element.face_types().at(direction);
@@ -108,17 +108,14 @@ template <size_t Dim>
           const auto& neighbor_orientation = neighbors.orientation(neighbor);
           result.emplace(
               mortar_id,
-              MortarInfo<Dim>{
-                  {.mortar_size = ::dg::mortar_size(element.id(), neighbor,
-                                                    direction.dimension(),
-                                                    neighbor_orientation),
-                   .interface_data_policy =
-                       neighbor_orientation.is_aligned()
-                           ? InterfaceDataPolicy::CopyProject
-                           : InterfaceDataPolicy::OrientCopyProject,
-                   .time_stepping_policy =
-                       local_time_stepping ? TimeSteppingPolicy::Conservative
-                                           : TimeSteppingPolicy::EqualRate}});
+              MortarInfo<Dim>{{.mortar_size = ::dg::mortar_size(
+                                   element.id(), neighbor,
+                                   direction.dimension(), neighbor_orientation),
+                               .interface_data_policy =
+                                   neighbor_orientation.is_aligned()
+                                       ? InterfaceDataPolicy::CopyProject
+                                       : InterfaceDataPolicy::OrientCopyProject,
+                               .time_stepping_policy = lts_mode}});
         }
         break;
       case (domain::FaceType::SingleNonconforming):
@@ -132,14 +129,12 @@ template <size_t Dim>
                     {.interpolator =
                          ::dg::MortarInterpolator<Dim>{
                              element.id(), mortar_id, domain,
-                             volume_mesh.slice_away(direction.dimension()),
-                             neighbor_mesh.at(mortar_id).slice_away(
+                             volume_mesh.on_interface(direction.dimension()),
+                             neighbor_mesh.at(mortar_id).on_interface(
                                  neighbor_orientation(direction.dimension()))},
                      .interface_data_policy =
                          InterfaceDataPolicy::NonconformingSelfInterpolates,
-                     .time_stepping_policy =
-                         local_time_stepping ? TimeSteppingPolicy::Conservative
-                                             : TimeSteppingPolicy::EqualRate}});
+                     .time_stepping_policy = lts_mode}});
           }
         }
         break;
@@ -155,9 +150,7 @@ template <size_t Dim>
             MortarInfo<Dim>{
                 {.interface_data_policy =
                      InterfaceDataPolicy::NonconformingNeighborInterpolates,
-                 .time_stepping_policy = local_time_stepping
-                                             ? TimeSteppingPolicy::Conservative
-                                             : TimeSteppingPolicy::EqualRate}});
+                 .time_stepping_policy = lts_mode}});
         break;
       }
       default:
@@ -186,7 +179,7 @@ mortars_apply_impl(const Element<Dim>& element,
   for (const auto& [direction, neighbors] : element.neighbors()) {
     normal_covector_quantities[direction] = std::nullopt;
     const Mesh<Dim - 1> face_mesh =
-        volume_mesh.slice_away(direction.dimension());
+        volume_mesh.on_interface(direction.dimension());
     const domain::FaceType face_type = element.face_types().at(direction);
     switch (face_type) {
       // NOLINTNEXTLINE(bugprone-branch-clone)
@@ -207,9 +200,10 @@ mortars_apply_impl(const Element<Dim>& element,
         for (const auto& neighbor : neighbors) {
           const DirectionalId<Dim> mortar_id{direction, neighbor};
           mortar_meshes.emplace(
-              mortar_id, ::dg::mortar_mesh(
-                             face_mesh, neighbor_mesh.at(mortar_id).slice_away(
-                                            direction.dimension())));
+              mortar_id,
+              ::dg::mortar_mesh(face_mesh,
+                                neighbor_mesh.at(mortar_id).on_interface(
+                                    direction.dimension())));
           // Since no communication needs to happen for boundary conditions
           // the temporal id is not advanced on the boundary, so we only need
           // to initialize it on internal boundaries
@@ -270,22 +264,25 @@ void h_refine_structure(
     const Domain<Dim>& domain, const Mesh<Dim>& new_mesh,
     const Element<Dim>& new_element,
     const ::dg::MortarMap<Dim, Mesh<Dim>>& neighbor_mesh,
-    const TimeStepId& current_temporal_id, const bool local_time_stepping) {
+    const TimeStepId& current_temporal_id, const LtsMode lts_mode) {
   *mortar_data = detail::empty_mortar_data(new_element);
   *mortar_infos = detail::mortar_infos(domain, new_element, new_mesh,
-                                       neighbor_mesh, local_time_stepping);
+                                       neighbor_mesh, lts_mode);
   for (const auto& direction : Direction<Dim>::all_directions()) {
     (*normal_covector_and_magnitude)[direction] = std::nullopt;
   }
 
   for (const auto& [direction, neighbors] : new_element.neighbors()) {
+    ASSERT(new_element.face_types().at(direction) !=
+               domain::FaceType::MultipleNonconforming,
+           "This code needs updating to handle nonconforming blocks");
     const auto sliced_away_dimension = direction.dimension();
-    const auto new_face_mesh = new_mesh.slice_away(sliced_away_dimension);
+    const auto new_face_mesh = new_mesh.on_interface(sliced_away_dimension);
     for (const auto& neighbor : neighbors) {
       const DirectionalId<Dim> mortar_id{direction, neighbor};
       const auto& new_neighbor_mesh = neighbor_mesh.at(mortar_id);
       const auto new_mortar_mesh = ::dg::mortar_mesh(
-          new_face_mesh, new_neighbor_mesh.slice_away(sliced_away_dimension));
+          new_face_mesh, new_neighbor_mesh.on_interface(sliced_away_dimension));
       mortar_mesh->emplace(mortar_id, new_mortar_mesh);
       // We only do h refinement at a slab boundary, so we know all
       // the neighbors are aligned with us temporally.
@@ -304,7 +301,7 @@ void h_refine_structure(
       const Domain<DIM(data)>& domain, const Element<DIM(data)>& element,    \
       const Mesh<DIM(data)>& volume_mesh,                                    \
       const ::dg::MortarMap<DIM(data), Mesh<DIM(data)>>& neighbor_mesh,      \
-      bool local_time_stepping);                                             \
+      LtsMode lts_mode);                                                     \
   template std::tuple<                                                       \
       ::dg::MortarMap<DIM(data), Mesh<DIM(data) - 1>>,                       \
       ::dg::MortarMap<DIM(data), TimeStepId>,                                \
@@ -335,7 +332,7 @@ void h_refine_structure(
       const Domain<DIM(data)>& domain, const Mesh<DIM(data)>& new_mesh,      \
       const Element<DIM(data)>& new_element,                                 \
       const ::dg::MortarMap<DIM(data), Mesh<DIM(data)>>& neighbor_mesh,      \
-      const TimeStepId& current_temporal_id, bool local_time_stepping);
+      const TimeStepId& current_temporal_id, LtsMode lts_mode);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 
@@ -343,8 +340,8 @@ GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 #undef DIM
 }  // namespace detail
 
-template <size_t Dim, bool LocalTimeStepping>
-void ProjectMortars<Dim, LocalTimeStepping>::apply(
+template <size_t Dim>
+void ProjectMortars<Dim>::apply(
     const gsl::not_null<
         ::dg::MortarMap<Dim, evolution::dg::MortarDataHolder<Dim>>*>
         mortar_data,
@@ -359,7 +356,7 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
     const Domain<Dim>& domain, const Mesh<Dim>& new_mesh,
     const Element<Dim>& new_element,
     const ::dg::MortarMap<Dim, Mesh<Dim>>& neighbor_mesh,
-    const TimeStepId& current_temporal_id,
+    const TimeStepId& current_temporal_id, const LtsMode lts_mode,
     const std::pair<Mesh<Dim>, Element<Dim>>& old_mesh_and_element) {
   const auto& [old_mesh, old_element] = old_mesh_and_element;
   ASSERT(old_element.id() == new_element.id(),
@@ -367,8 +364,8 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
 
   const bool mesh_changed = old_mesh != new_mesh;
 
-  auto new_mortar_infos = detail::mortar_infos(
-      domain, new_element, new_mesh, neighbor_mesh, LocalTimeStepping);
+  auto new_mortar_infos = detail::mortar_infos(domain, new_element, new_mesh,
+                                               neighbor_mesh, lts_mode);
 
   // The old mortars must be removed from the MortarMaps before the
   // new ones can be added to avoid potentially exceeding the
@@ -380,9 +377,12 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
   std::vector<NewMortarEntry> new_mortars{};
 
   for (const auto& [direction, neighbors] : new_element.neighbors()) {
+    ASSERT(new_element.face_types().at(direction) !=
+               domain::FaceType::MultipleNonconforming,
+           "This code needs updating to handle nonconforming blocks");
     const auto sliced_away_dimension = direction.dimension();
-    const auto old_face_mesh = old_mesh.slice_away(sliced_away_dimension);
-    const auto new_face_mesh = new_mesh.slice_away(sliced_away_dimension);
+    const auto old_face_mesh = old_mesh.on_interface(sliced_away_dimension);
+    const auto new_face_mesh = new_mesh.on_interface(sliced_away_dimension);
     const bool face_mesh_changed = old_face_mesh != new_face_mesh;
     if (face_mesh_changed) {
       (*normal_covector_and_magnitude)[direction] = std::nullopt;
@@ -391,7 +391,7 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
       const DirectionalId<Dim> mortar_id{direction, neighbor};
       const auto& new_neighbor_mesh = neighbor_mesh.at(mortar_id);
       const auto new_mortar_mesh = ::dg::mortar_mesh(
-          new_face_mesh, new_neighbor_mesh.slice_away(sliced_away_dimension));
+          new_face_mesh, new_neighbor_mesh.on_interface(sliced_away_dimension));
       if (mortar_mesh->contains(mortar_id)) {
         // Set the mortar mesh, but do not project any existing mesh
         // data.  The mesh needs to have a valid value in order to
@@ -450,13 +450,10 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
                     const gsl::not_null<::evolution::dg::MortarData<Dim>*>
                         data) {
                   const auto& old_mortar_mesh = data->mortar_mesh.value();
-                  const auto mortar_projection_matrices =
-                      Spectral::projection_matrices(
-                          old_mortar_mesh, new_mortar_mesh, old_mortar_size,
-                          new_mortar_size);
                   DataVector& vars = data->mortar_data.value();
-                  vars = apply_matrices(mortar_projection_matrices, vars,
-                                        old_mortar_mesh.extents());
+                  vars =
+                      Spectral::project(vars, old_mortar_mesh, new_mortar_mesh,
+                                        old_mortar_size, new_mortar_size);
                   data->mortar_mesh = new_mortar_mesh;
                   return true;
                 };
@@ -472,13 +469,9 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
                         data) {
                   const auto& old_data = old_local_history.data(id);
                   const auto& old_mortar_mesh = old_data.mortar_mesh.value();
-                  const auto mortar_projection_matrices =
-                      Spectral::projection_matrices(
-                          old_mortar_mesh, new_mortar_mesh, old_mortar_size,
-                          new_mortar_size);
-                  data->mortar_data.value() += apply_matrices(
-                      mortar_projection_matrices, old_data.mortar_data.value(),
-                      old_mortar_mesh.extents());
+                  data->mortar_data.value() += Spectral::project(
+                      old_data.mortar_data.value(), old_mortar_mesh,
+                      new_mortar_mesh, old_mortar_size, new_mortar_size);
                   return true;
                 };
             local_history.for_each(project_local_mortar_data);
@@ -510,8 +503,8 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
 
   for (const auto& direction : new_element.external_boundaries()) {
     const auto sliced_away_dimension = direction.dimension();
-    const auto old_face_mesh = old_mesh.slice_away(sliced_away_dimension);
-    const auto new_face_mesh = new_mesh.slice_away(sliced_away_dimension);
+    const auto old_face_mesh = old_mesh.on_interface(sliced_away_dimension);
+    const auto new_face_mesh = new_mesh.on_interface(sliced_away_dimension);
     const bool face_mesh_changed = old_face_mesh != new_face_mesh;
     if (face_mesh_changed) {
       (*normal_covector_and_magnitude)[direction] = std::nullopt;
@@ -520,14 +513,11 @@ void ProjectMortars<Dim, LocalTimeStepping>::apply(
 }
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
-#define LTS(data) BOOST_PP_TUPLE_ELEM(1, data)
 
-#define INSTANTIATION(r, data) \
-  template struct ProjectMortars<DIM(data), LTS(data)>;
+#define INSTANTIATION(r, data) template struct ProjectMortars<DIM(data)>;
 
-GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3), (true, false))
+GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 
 #undef INSTANTIATION
-#undef LTS
 #undef DIM
 }  // namespace evolution::dg::Initialization

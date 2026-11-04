@@ -16,11 +16,14 @@ Parallelization:
 
 InitialData:
   NumericInitialData:
-    FileGlob: "{{ IdFileGlob }}"
-    Subgroup: "{{ IdFileGlobSubgroup }}"
-    ObservationValue: &InitialTime {{ MatchTime }}
-    ObservationValueEpsilon: Auto
-    ElementsAreIdentical: False
+    VolumeData:
+      FileGlob: "{{ IdFileGlob }}"
+      Subgroup: "{{ IdFileGlobSubgroup }}"
+      ObservationValue: &InitialTime {{ MatchTime }}
+      ObservationValueEpsilon: Auto
+      ElementsAreIdentical: False
+      ExtrapolateIntoExcisions: False
+      NumThreads: 1
     Variables:
       SpacetimeMetric: SpacetimeMetric
       Pi: Pi
@@ -28,9 +31,7 @@ InitialData:
 
 DomainCreator:
   Sphere:
-    # InnerRadius is not yet set automatically. The value of 1.45 works
-    # for equal-mass, zero spin, quasicircular.
-    InnerRadius: &InnerRadius 1.45
+    InnerRadius: &InnerRadius {{ ExcisionRadius }}
     OuterRadius: "{{ OuterBdryRadius }}"
     Interior:
       ExciseWithBoundaryCondition:
@@ -80,9 +81,11 @@ DomainCreator:
       TranslationMap:
         InitialValues: {{ Translation }}
       TransitionRotScaleTrans: True
+      NumberOfRadialShellsWithShapeMap: Auto
     OuterBoundaryCondition:
       ConstraintPreservingBjorhus:
         Type: ConstraintPreservingPhysical
+        IncomingWaveProfile: None
 
 Evolution:
   InitialTime: *InitialTime
@@ -91,9 +94,10 @@ Evolution:
   # This is the smallest interval we'd need to observe time step/constraints. If
   # you would like more frequent output, consider using dense output.
   InitialSlabSize: 0.1
+  LocalTimeStepping: Conservative
   VariableOrderAlgorithm:
     GoalOrder: 4
-  StepChoosers:
+  LtsStepChoosers:
     - LimitIncrease:
         Factor: 2
     - ErrorControl:
@@ -157,19 +161,21 @@ EvolutionSystem:
           Center: [0.0, 0.0, 0.0]
         MovementMethod: ExpansionFactor
 
-Filtering:
-  ExpFilter0:
-    Alpha: 64.0
-    HalfPower: 210
-    Enable: true
-    BlocksToFilter: All
-
 SpatialDiscretization:
   BoundaryCorrection:
     AveragedUpwindPenalty:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 210
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
 
 Observers:
   VolumeFileName: "BbhVolume"
@@ -184,7 +190,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: Auto
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Quiet
@@ -238,6 +246,8 @@ EventsAndTriggersAtSlabs:
           - Name: PointwiseL2Norm(ThreeIndexConstraint)
             NormType: L2Norm
             Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   # Observe constraint energy more sparsely because it is expensive to compute.
   # Also use it for ErrorIfDataTooBig so we only compute it once.
   - Trigger:
@@ -252,6 +262,11 @@ EventsAndTriggersAtSlabs:
           - Name: ConstraintEnergy
             NormType: L2Norm
             Components: Sum
+          - Name: NormalizedConstraintEnergy
+            NormType: L2Norm
+            Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
       - ErrorIfDataTooBig:
           Threshold: 10
           VariablesToCheck: [ConstraintEnergy]
@@ -280,6 +295,7 @@ EventsAndTriggersAtSlabs:
             - SpacetimeMetric
             # For diagnostics:
             - ConstraintEnergy
+            - NormalizedConstraintEnergy
             - PointwiseL2Norm(GaugeConstraint)
             - PointwiseL2Norm(ThreeIndexConstraint)
             # For visualization:
@@ -331,9 +347,11 @@ ApparentHorizons:
   ApparentHorizon: &Ah
     Criteria:
     InitialGuess:
-      LMax: *MaximumL
-      Radius: 2.2
-      Center: [0., 0., 0.]
+      InitialL: *MaximumL
+      InitialShape:
+        Sphere:
+          Radius: 2.2
+          Center: [0., 0., 0.]
     FastFlow:
       Flow: Fast
       Alpha: 1.0

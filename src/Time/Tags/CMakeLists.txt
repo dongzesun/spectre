@@ -5,6 +5,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   StepperErrorTolerancesCompute.cpp
+  TimeStepper.cpp
   )
 
 spectre_target_headers(
@@ -14,8 +15,9 @@ spectre_target_headers(
   AdaptiveSteppingDiagnostics.hpp
   FixedLtsRatio.hpp
   HistoryEvolvedVariables.hpp
+  LtsMode.hpp
+  LtsStepChoosers.hpp
   MinimumTimeStep.hpp
-  StepChoosers.hpp
   StepNumberWithinSlab.hpp
   StepperErrorEstimatesEnabled.hpp
   StepperErrorTolerances.hpp

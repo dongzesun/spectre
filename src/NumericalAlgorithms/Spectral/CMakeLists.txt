@@ -19,9 +19,11 @@ spectre_target_sources(
   DifferentiationMatrix.cpp
   Filtering.cpp
   FiniteDifference.cpp
+  Hash.cpp
   IntegrationMatrix.cpp
   InterpolationWeights.cpp
   InterpolationMatrix.cpp
+  IsValidDgMesh.cpp
   LinearFilteringMatrix.cpp
   LogicalCoordinates.cpp
   Mesh.cpp
@@ -32,6 +34,7 @@ spectre_target_sources(
   Quadrature.cpp
   QuadratureWeights.cpp
   SegmentSize.cpp
+  ZernikeB2.cpp
   )
 
 spectre_target_headers(
@@ -50,12 +53,21 @@ spectre_target_headers(
   CollocationPointsAndWeights.hpp
   DifferentiationMatrix.hpp
   Filtering.hpp
+  FilteringB1.hpp
+  FilteringB1.tpp
+  FilteringB2.hpp
+  FilteringB2.tpp
+  FilteringB3.hpp
+  FilteringB3.tpp
   GetSpectralQuantityForMesh.hpp
+  Hash.hpp
   IntegrationMatrix.hpp
   InterpolationWeights.hpp
   InterpolationMatrix.hpp
   InverseWeightFunctionValues.hpp
+  IsValidDgMesh.hpp
   Legendre.hpp
+  Limits.hpp
   LinearFilteringMatrix.hpp
   LogicalCoordinates.hpp
   MaximumNumberOfPoints.hpp
@@ -65,12 +77,14 @@ spectre_target_headers(
   Namespace.hpp
   NodalToModalMatrix.hpp
   Parity.hpp
+  ParityFromSymmetry.hpp
   PrecomputedSpectralQuantity.hpp
   Projection.hpp
   Quadrature.hpp
   QuadratureWeights.hpp
   SegmentSize.hpp
   SpectralQuantityForMesh.hpp
+  ZernikeB2.hpp
   )
 
 target_link_libraries(
@@ -85,6 +99,7 @@ target_link_libraries(
   LAPACK::LAPACK
   RootFinding
   SPHEREPACK
+  SphericalHarmonics
   )
 
 add_subdirectory(BasisFunctions)

@@ -34,6 +34,7 @@ target_link_libraries(
   Options
   Parallel
   SphericalHarmonics
-  SphericalHarmonicsIO
+  Strahlkorper
+  StrahlkorperIO
   Utilities
   )

@@ -12,7 +12,6 @@ spectre_target_headers(
   Actions.hpp
   AddComputeTags.hpp
   AddSimpleTags.hpp
-  FilterAction.hpp
   FunctionsOfTimeAreReady.hpp
   GetItemFromDistributedObject.hpp
   Goto.hpp
@@ -21,6 +20,7 @@ spectre_target_headers(
   MutateApply.hpp
   RandomizeVariables.hpp
   SetData.hpp
+  SpectralFilter.hpp
   TerminatePhase.hpp
   UpdateMessageQueue.hpp
   )
@@ -34,9 +34,11 @@ target_link_libraries(
   DomainStructure
   ErrorHandling
   FunctionsOfTime
+  LinearOperators
   Parallel
   Serialization
   Spectral
+  Time
   Utilities
   )
 

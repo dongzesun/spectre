@@ -14,6 +14,7 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/AlgorithmMetafunctions.hpp"
@@ -35,7 +36,6 @@
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/System/Abort.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace Parallel {
@@ -443,7 +443,7 @@ bool DgElementArrayMember<Dim, Metavariables,
 
 #ifdef SPECTRE_CHARM_PROJECTIONS
   if constexpr (Parallel::is_array<ParallelComponent>::value) {
-    (void)Parallel::charmxx::RegisterInvokeIterableAction<
+    (void)&Parallel::charmxx::RegisterInvokeIterableAction<
         ParallelComponent, ThisAction, PhaseIndex, DataBoxIndex>::registrar;
   }
 #endif  // SPECTRE_CHARM_PROJECTIONS

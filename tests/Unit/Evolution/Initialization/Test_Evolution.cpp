@@ -19,6 +19,7 @@
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
@@ -34,10 +35,10 @@
 #include "Domain/Structure/OrientationMap.hpp"
 #include "Domain/Structure/SegmentId.hpp"
 #include "Domain/Structure/Side.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarInfo.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarTags.hpp"
-#include "Evolution/DiscontinuousGalerkin/TimeSteppingPolicy.hpp"
 #include "Evolution/Initialization/Evolution.hpp"
 #include "Evolution/Initialization/Tags.hpp"
 #include "Framework/TestHelpers.hpp"
@@ -56,12 +57,14 @@
 #include "Time/ChangeSlabSize/Tags.hpp"
 #include "Time/ChooseLtsStepSize.hpp"
 #include "Time/History.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Slab.hpp"
 #include "Time/StepChoosers/LimitIncrease.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/Tags/AdaptiveSteppingDiagnostics.hpp"
 #include "Time/Tags/HistoryEvolvedVariables.hpp"
+#include "Time/Tags/LtsMode.hpp"
 #include "Time/Tags/StepNumberWithinSlab.hpp"
 #include "Time/Tags/StepperErrors.hpp"
 #include "Time/Tags/Time.hpp"
@@ -79,7 +82,6 @@
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/Rational.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 template <typename TimeStepperType>
@@ -118,17 +120,18 @@ void test_gts() {
       db::AddSimpleTags<
           Parallel::Tags::GlobalCache<TestMetavariables<TimeStepper>>,
           ::Tags::Time, Initialization::Tags::InitialTimeDelta,
-          Initialization::Tags::InitialSlabSize<false>,
+          Initialization::Tags::InitialSlabSize, ::Tags::LtsMode,
           ::Tags::Next<::Tags::TimeStepId>, ::Tags::TimeStep,
           ::Tags::ChangeSlabSize::SlabSizeGoal>,
-      tmpl::list<Parallel::Tags::FromGlobalCache<
-          ::Tags::ConcreteTimeStepper<TimeStepper>,
-          TestMetavariables<TimeStepper>>>>(
-      &global_cache, initial_time, initial_dt, initial_slab_size, TimeStepId{},
-      TimeDelta{}, std::numeric_limits<double>::signaling_NaN());
+      tmpl::push_front<time_stepper_ref_tags<TimeStepper>,
+                       Parallel::Tags::FromGlobalCache<
+                           ::Tags::ConcreteTimeStepper<TimeStepper>,
+                           TestMetavariables<TimeStepper>>>>(
+      &global_cache, initial_time, initial_dt, initial_slab_size, LtsMode::Off,
+      TimeStepId{}, TimeDelta{}, std::numeric_limits<double>::signaling_NaN());
 
   db::mutate_apply<Initialization::TimeStepping<TestMetavariables<TimeStepper>,
-                                                TimeStepper>>(
+                                                TimeStepper, false, false>>(
       make_not_null(&box));
 
   CHECK(db::get<::Tags::Next<::Tags::TimeStepId>>(box) ==
@@ -163,17 +166,20 @@ void test_lts() {
       db::AddSimpleTags<
           Parallel::Tags::GlobalCache<TestMetavariables<LtsTimeStepper>>,
           ::Tags::Time, Initialization::Tags::InitialTimeDelta,
-          Initialization::Tags::InitialSlabSize<true>,
+          Initialization::Tags::InitialSlabSize, ::Tags::LtsMode,
           ::Tags::Next<::Tags::TimeStepId>, ::Tags::TimeStep,
           ::Tags::ChangeSlabSize::SlabSizeGoal>,
-      tmpl::list<Parallel::Tags::FromGlobalCache<
-          ::Tags::ConcreteTimeStepper<LtsTimeStepper>,
-          TestMetavariables<LtsTimeStepper>>>>(
-      &global_cache, initial_time, initial_dt, initial_slab_size, TimeStepId{},
-      TimeDelta{}, std::numeric_limits<double>::signaling_NaN());
+      tmpl::push_front<time_stepper_ref_tags<LtsTimeStepper>,
+                       Parallel::Tags::FromGlobalCache<
+                           ::Tags::ConcreteTimeStepper<LtsTimeStepper>,
+                           TestMetavariables<LtsTimeStepper>>>>(
+      &global_cache, initial_time, initial_dt, initial_slab_size,
+      LtsMode::Conservative, TimeStepId{}, TimeDelta{},
+      std::numeric_limits<double>::signaling_NaN());
 
   db::mutate_apply<Initialization::TimeStepping<
-      TestMetavariables<LtsTimeStepper>, LtsTimeStepper>>(make_not_null(&box));
+      TestMetavariables<LtsTimeStepper>, LtsTimeStepper, false, true>>(
+      make_not_null(&box));
 
   CHECK(db::get<::Tags::Next<::Tags::TimeStepId>>(box) ==
         expected_next_time_step_id);
@@ -216,7 +222,8 @@ void check(const db::DataBox<DbTagList>& box,
 
 void test_p_refine() {
   const ElementId<1> element_id{0};
-  const Element<1> element{element_id, DirectionMap<1, Neighbors<1>>{}};
+  const Element<1> element{element_id, DirectionMap<1, Neighbors<1>>{},
+                           domain::topologies::hypercube<1>};
   const Mesh<1> mesh{2, Spectral::Basis::Legendre,
                      Spectral::Quadrature::GaussLobatto};
   const Slab slab(0., 1.);
@@ -442,14 +449,13 @@ DtVariablesType make_dt_vars(
 template <size_t Dim>
 void test_initialization() {
   const TimeSteppers::AdamsBashforth ab2{2};
-  const Mesh<Dim> mesh{3, Spectral::Basis::Legendre,
-                       Spectral::Quadrature::GaussLobatto};
+  const VariablesType vars{12};
   DtVariablesType dt_vars{};
-  DtVariablesType expected_dt_vars{mesh.number_of_grid_points()};
+  const DtVariablesType expected_dt_vars{12};
   TimeSteppers::History<VariablesType> history{};
   TimeSteppers::History<VariablesType> expected_history{1};
-  Initialization::TimeStepperHistory<TestMetavariables<Dim>>::apply(
-      make_not_null(&dt_vars), make_not_null(&history), ab2, mesh);
+  Initialization::TimeStepperHistory<TestSystem<Dim>>::apply(
+      make_not_null(&dt_vars), make_not_null(&history), ab2, vars);
   CHECK(dt_vars.size() == expected_dt_vars.size());
   CHECK(history == expected_history);
 }
@@ -487,13 +493,11 @@ DirectionalIdMap<Dim, evolution::dg::MortarInfo<Dim>> make_mortar_info(
   DirectionalIdMap<Dim, evolution::dg::MortarInfo<Dim>> info{};
   for (const auto& [direction, neighbors] : element.neighbors()) {
     for (const auto& neighbor : neighbors) {
-      info.emplace(
-          DirectionalId{direction, neighbor},
-          evolution::dg::MortarInfo<Dim>{
-              {.time_stepping_policy =
-                   local_time_stepping
-                       ? evolution::dg::TimeSteppingPolicy::Conservative
-                       : evolution::dg::TimeSteppingPolicy::EqualRate}});
+      info.emplace(DirectionalId{direction, neighbor},
+                   evolution::dg::MortarInfo<Dim>{
+                       {.time_stepping_policy = local_time_stepping
+                                                    ? LtsMode::Conservative
+                                                    : LtsMode::Off}});
     }
   }
   ASSERT(not(local_time_stepping and info.empty()),
@@ -536,7 +540,8 @@ void check(const TimeSteppers::History<VariablesType>& original_history,
 template <size_t Dim>
 void test_p_refine() {
   const ElementId<Dim> element_id{0};
-  const Element<Dim> element{element_id, DirectionMap<Dim, Neighbors<Dim>>{}};
+  const Element<Dim> element{element_id, DirectionMap<Dim, Neighbors<Dim>>{},
+                             domain::topologies::hypercube<Dim>};
   const Mesh<Dim> old_mesh{4, Spectral::Basis::Legendre,
                            Spectral::Quadrature::GaussLobatto};
   std::array<size_t, Dim> new_extents{};
@@ -631,7 +636,8 @@ ElementData element_data(
         neighbor->first,
         Neighbors<3>({neighbor->second}, OrientationMap<3>::create_aligned()));
   }
-  Element<3> element(element_id, std::move(neighbors));
+  Element<3> element(element_id, std::move(neighbors),
+                     domain::topologies::hypercube<3>);
   auto mortar_info = make_mortar_info(element, false);
   std::uniform_real_distribution<double> dist(-1.0, 1.0);
   auto value0 = make_with_random_values<variables_tag::type>(
@@ -919,7 +925,8 @@ old_h_refinement_items(
                       Neighbors<Dim>({neighbor->second},
                                      OrientationMap<Dim>::create_aligned()));
   }
-  Element<Dim> element(element_id, std::move(neighbors));
+  Element<Dim> element(element_id, std::move(neighbors),
+                       domain::topologies::hypercube<Dim>);
   auto mortar_info = make_mortar_info(element, neighbor.has_value());
   return {std::move(element),
           std::move(mortar_info),
@@ -941,7 +948,8 @@ TimeDelta test_h_refine_lts_split(
   child_neighbors.emplace(Direction<3>::upper_eta(),
                           Neighbors<3>(parent_id.id_of_child(1, Side::Upper),
                                        OrientationMap<3>::create_aligned()));
-  const Element<3> child_element{child_id, std::move(child_neighbors)};
+  const Element<3> child_element{child_id, std::move(child_neighbors),
+                                 domain::topologies::hypercube<3>};
   const Mesh<3> mesh(5, Spectral::Basis::Legendre,
                      Spectral::Quadrature::GaussLobatto);
   const TimeStepId time_step_id(true, 5, old_time_step.slab().start());
@@ -987,7 +995,8 @@ TimeDelta test_h_refine_lts_join(
     const TimeDelta& old_time_step1,
     const std::optional<double>& first_order_error1) {
   const ElementId<3> parent_id(3, {});
-  const Element<3> parent_element(parent_id, {});
+  const Element<3> parent_element(parent_id, {},
+                                  domain::topologies::hypercube<3>);
   const ElementId<3> child0_id = parent_id.id_of_child(1, Side::Lower);
   const ElementId<3> child1_id = parent_id.id_of_child(1, Side::Upper);
   const Mesh<3> mesh(5, Spectral::Basis::Legendre,

@@ -28,10 +28,7 @@ class er;
 
 namespace StepChoosers {
 /// Sets a goal specified per-block.
-///
-/// \note This debugging StepChooser is not included in the
-/// `standard_step_choosers` list, but can be added to the
-/// `factory_creation` struct in the metavariables.
+/// \note This StepChooser is for debugging.
 template <size_t Dim>
 class ByBlock : public StepChooser<StepChooserUse::Slab>,
                 public StepChooser<StepChooserUse::LtsStep> {
@@ -61,6 +58,7 @@ class ByBlock : public StepChooser<StepChooserUse::Slab>,
 
   bool uses_local_data() const override;
   bool can_be_delayed() const override;
+  bool must_set_step_size() const override;
 
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p) override;

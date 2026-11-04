@@ -38,7 +38,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: Auto
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Verbose
@@ -55,12 +57,16 @@ PhaseChangeAndTriggers:
 Evolution:
   InitialTime: &initial_time 0.0
   # Test backwards evolution in an integration test
-  InitialTimeStep: -0.001
+  InitialTimeStep: &initial_time_step -0.001
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper:
     AdamsBashforth:
       Order: 3
-
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 DomainCreator:
   Rectangle:
@@ -78,14 +84,15 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
-
-# Filtering is being tested by the 2D executable (see EvolveScalarWave.hpp)
-Filtering:
-  ExpFilter0:
-    Alpha: 36
-    HalfPower: 128
-    Enable: true
-    BlocksToFilter: All
+    Filtering:
+      - Hypercube:
+          HalfPower: 128
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
 
 EventsAndTriggersAtCheckpoints:
 
@@ -108,6 +115,8 @@ EventsAndTriggersAtSlabs:
   #           - Name: Error(Pi)
   #             NormType: L2Norm
   #             Components: Sum
+  #         BlocksToObserve: All
+  #         ReductionScope: WholeDomain
   #     - ObserveFields:
   #         SubfileName: FieldsFinal
   #         VariablesToObserve: [Psi]
@@ -116,6 +125,8 @@ EventsAndTriggersAtSlabs:
   #         FloatingPointTypes: [Double]
   #         BlocksToObserve: All
   #     - Completion
+
+EventsAndTriggersAtSteps:
 
 EventsAndDenseTriggers:
   # Test LTS dense output at the initial time
@@ -136,6 +147,8 @@ EventsAndDenseTriggers:
             - Name: Error(Pi)
               NormType: L2Norm
               Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
 
 Observers:
   VolumeFileName: "ScalarWavePlaneWave2DVolume"

@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Amr/Flag.hpp"
 #include "Domain/Amr/Helpers.hpp"
 #include "Domain/Amr/Info.hpp"
@@ -22,6 +23,7 @@
 #include "Domain/Structure/Neighbors.hpp"
 #include "Domain/Structure/OrientationMap.hpp"
 #include "Domain/Structure/SegmentId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Helpers/Domain/Amr/RegistrationHelpers.hpp"
@@ -33,7 +35,6 @@
 #include "Utilities/Literals.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 const ElementId<2> parent_id{0, std::array{SegmentId{0, 0}, SegmentId{0, 0}}};
@@ -102,77 +103,85 @@ auto neighbor_3_info() {
 
 Element<2> child_1() {
   static Element<2> result{
-      child_1_id, DirectionMap<2, Neighbors<2>>{
-                      {Direction<2>::lower_xi(),
-                       Neighbors<2>{std::unordered_set{neighbor_1_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_xi(),
-                       Neighbors<2>{std::unordered_set{child_2_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::lower_eta(),
-                       Neighbors<2>{std::unordered_set{child_3_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_eta(),
-                       Neighbors<2>{std::unordered_set{child_3_id},
-                                    OrientationMap<2>::create_aligned()}}}};
+      child_1_id,
+      DirectionMap<2, Neighbors<2>>{
+          {Direction<2>::lower_xi(),
+           Neighbors<2>{std::unordered_set{neighbor_1_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_xi(),
+           Neighbors<2>{std::unordered_set{child_2_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::lower_eta(),
+           Neighbors<2>{std::unordered_set{child_3_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_eta(),
+           Neighbors<2>{std::unordered_set{child_3_id},
+                        OrientationMap<2>::create_aligned()}}},
+      domain::topologies::hypercube<2>};
   return result;
 }
 
 Element<2> child_2() {
   static Element<2> result{
-      child_2_id, DirectionMap<2, Neighbors<2>>{
-                      {Direction<2>::lower_xi(),
-                       Neighbors<2>{std::unordered_set{child_1_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_xi(),
-                       Neighbors<2>{std::unordered_set{neighbor_2_id},
-                                    OrientationMap<2>{
-                                        std::array{Direction<2>::lower_eta(),
-                                                   Direction<2>::upper_xi()}}}},
-                      {Direction<2>::lower_eta(),
-                       Neighbors<2>{std::unordered_set{child_4_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_eta(),
-                       Neighbors<2>{std::unordered_set{child_4_id},
-                                    OrientationMap<2>::create_aligned()}}}};
+      child_2_id,
+      DirectionMap<2, Neighbors<2>>{
+          {Direction<2>::lower_xi(),
+           Neighbors<2>{std::unordered_set{child_1_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_xi(),
+           Neighbors<2>{
+               std::unordered_set{neighbor_2_id},
+               OrientationMap<2>{std::array{Direction<2>::lower_eta(),
+                                            Direction<2>::upper_xi()}}}},
+          {Direction<2>::lower_eta(),
+           Neighbors<2>{std::unordered_set{child_4_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_eta(),
+           Neighbors<2>{std::unordered_set{child_4_id},
+                        OrientationMap<2>::create_aligned()}}},
+      domain::topologies::hypercube<2>};
   return result;
 }
 
 Element<2> child_3() {
   static Element<2> result{
-      child_3_id, DirectionMap<2, Neighbors<2>>{
-                      {Direction<2>::lower_xi(),
-                       Neighbors<2>{std::unordered_set{neighbor_1_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_xi(),
-                       Neighbors<2>{std::unordered_set{child_4_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::lower_eta(),
-                       Neighbors<2>{std::unordered_set{child_1_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_eta(),
-                       Neighbors<2>{std::unordered_set{child_1_id},
-                                    OrientationMap<2>::create_aligned()}}}};
+      child_3_id,
+      DirectionMap<2, Neighbors<2>>{
+          {Direction<2>::lower_xi(),
+           Neighbors<2>{std::unordered_set{neighbor_1_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_xi(),
+           Neighbors<2>{std::unordered_set{child_4_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::lower_eta(),
+           Neighbors<2>{std::unordered_set{child_1_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_eta(),
+           Neighbors<2>{std::unordered_set{child_1_id},
+                        OrientationMap<2>::create_aligned()}}},
+      domain::topologies::hypercube<2>};
   return result;
 }
 
 Element<2> child_4() {
   static Element<2> result{
-      child_4_id, DirectionMap<2, Neighbors<2>>{
-                      {Direction<2>::lower_xi(),
-                       Neighbors<2>{std::unordered_set{child_3_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_xi(),
-                       Neighbors<2>{std::unordered_set{neighbor_3_id},
-                                    OrientationMap<2>{
-                                        std::array{Direction<2>::lower_eta(),
-                                                   Direction<2>::upper_xi()}}}},
-                      {Direction<2>::lower_eta(),
-                       Neighbors<2>{std::unordered_set{child_2_id},
-                                    OrientationMap<2>::create_aligned()}},
-                      {Direction<2>::upper_eta(),
-                       Neighbors<2>{std::unordered_set{child_2_id},
-                                    OrientationMap<2>::create_aligned()}}}};
+      child_4_id,
+      DirectionMap<2, Neighbors<2>>{
+          {Direction<2>::lower_xi(),
+           Neighbors<2>{std::unordered_set{child_3_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_xi(),
+           Neighbors<2>{
+               std::unordered_set{neighbor_3_id},
+               OrientationMap<2>{std::array{Direction<2>::lower_eta(),
+                                            Direction<2>::upper_xi()}}}},
+          {Direction<2>::lower_eta(),
+           Neighbors<2>{std::unordered_set{child_2_id},
+                        OrientationMap<2>::create_aligned()}},
+          {Direction<2>::upper_eta(),
+           Neighbors<2>{std::unordered_set{child_2_id},
+                        OrientationMap<2>::create_aligned()}}},
+      domain::topologies::hypercube<2>};
   return result;
 }
 

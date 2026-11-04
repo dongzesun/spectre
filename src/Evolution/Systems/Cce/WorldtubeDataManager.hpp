@@ -8,13 +8,16 @@
 #include <memory>
 #include <utility>
 
+#include "DataStructures/ComplexDataVector.hpp"
 #include "DataStructures/ComplexModalVector.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/DataVector.hpp"
 #include "Evolution/Systems/Cce/BoundaryData.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
 #include "Evolution/Systems/Cce/WorldtubeBufferUpdater.hpp"
 #include "NumericalAlgorithms/Interpolation/SpanInterpolator.hpp"
 #include "Parallel/NodeLock.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
@@ -48,6 +51,14 @@ void populate_hypersurface_boundary_data(
     const std::unique_ptr<intrp::SpanInterpolator>& interpolator,
     const std::unique_ptr<WorldtubeBufferUpdater<InputTags>>& buffer_updater,
     size_t l_max, size_t buffer_depth);
+
+// Differentiates `dr_j_over_time`, which holds `Dr<BondiJ>` at each of `times`
+// as consecutive blocks of `du_dr_j->size()` angular points, at `time`.
+void differentiate_dr_j_in_time(gsl::not_null<ComplexDataVector*> du_dr_j,
+                                const DataVector& times,
+                                const ComplexDataVector& dr_j_over_time,
+                                const intrp::SpanInterpolator& interpolator,
+                                double time);
 }  // namespace detail
 
 /// \cond
@@ -97,6 +108,27 @@ class WorldtubeDataManager : public PUP::able {
   virtual size_t get_l_max() const = 0;
 
   virtual std::pair<size_t, size_t> get_time_span() const = 0;
+
+  /// \brief Use `interpolator` in place of the one supplied at construction
+  /// when building the boundary value of `Du<Dr<BondiJ>>`.
+  ///
+  /// \details That boundary value is consumed only by the initial-data
+  /// generator, which may want a different time-interpolation order from the
+  /// one the evolution runs with. A manager that does not produce
+  /// `Du<Dr<BondiJ>>` at all cannot honor the request, so rather than drop it
+  /// silently the default implementation aborts; `nullptr` (nothing was asked
+  /// for) is always accepted.
+  virtual void set_du_dr_j_interpolator(
+      std::unique_ptr<intrp::SpanInterpolator> interpolator) {
+    if (interpolator != nullptr) {
+      ERROR(
+          "A `DuDrJInterpolator` was requested, but this worldtube data "
+          "manager does not produce the `Du<Dr<BondiJ>>` boundary value that "
+          "the option controls, so the request would have no effect. Only the "
+          "Bondi-type worldtube data manager supports it; remove the option or "
+          "supply Bondi-Sachs worldtube data.");
+    }
+  }
 };
 
 /*!
@@ -259,10 +291,34 @@ class BondiWorldtubeDataManager
   /// diagnostics
   std::pair<size_t, size_t> get_time_span() const override;
 
+  /// \brief Use `interpolator` in place of `interpolator_` for the time
+  /// derivative that produces the `Du<Dr<BondiJ>>` boundary value.
+  ///
+  /// \details Passing `nullptr` (the default state) leaves that derivative on
+  /// `interpolator_`. This derivative is taken inside the window the evolution
+  /// already caches, which `interpolator_` sizes, so `interpolator` must not
+  /// need a wider stencil than `interpolator_` does; it is meant for a *lower*
+  /// order than the evolution runs with. A wider one is rejected here rather
+  /// than left to fail deep inside the interpolator.
+  void set_du_dr_j_interpolator(
+      std::unique_ptr<intrp::SpanInterpolator> interpolator) override;
+
   /// Serialization for Charm++.
   void pup(PUP::er& p) override;  // NOLINT
 
  private:
+  // Compute the boundary value of `Du<Dr<BondiJ>>` at the requested time by
+  // numerically time-differentiating the buffered `Dr<BondiJ>` with
+  // `interpolator_`, holding the angular coordinate fixed (i.e. following the
+  // worldtube). This is the time derivative at constant numerical coordinate
+  // y = -1, i.e. d_ubreve d_r J|_Gamma = d/du (d_r J|_Gamma), and is *not* a
+  // derivative at constant Bondi r.
+  void populate_boundary_du_dr_j(
+      gsl::not_null<Variables<
+          Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>>*>
+          boundary_data_variables,
+      double time) const;
+
   std::unique_ptr<
       WorldtubeBufferUpdater<Tags::worldtube_boundary_tags_for_writing<
           Spectral::Swsh::Tags::SwshTransform>>>
@@ -289,6 +345,10 @@ class BondiWorldtubeDataManager
   size_t buffer_depth_ = 0;
 
   std::unique_ptr<intrp::SpanInterpolator> interpolator_;
+
+  // Used instead of `interpolator_` for the `Du<Dr<BondiJ>>` time derivative
+  // when the initial-data generator asks for its own; null otherwise.
+  std::unique_ptr<intrp::SpanInterpolator> du_dr_j_interpolator_;
 };
 
 class KleinGordonWorldtubeDataManager

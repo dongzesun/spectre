@@ -10,6 +10,7 @@
 #include <variant>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -37,7 +38,6 @@
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/SetNumberOfGridPoints.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace CurvedScalarWave {
 
@@ -77,8 +77,7 @@ class NumericInitialData : public evolution::initial_data::InitialData {
         "Set of initial data variables for the CurvedScalarWave system.";
   };
 
-  using options =
-      tmpl::push_back<importers::ImporterOptions::tags_list, Variables>;
+  using options = tmpl::list<importers::OptionTags::VolumeData, Variables>;
 
   static constexpr Options::String help =
       "Numeric initial data loaded from volume data files";
@@ -101,11 +100,8 @@ class NumericInitialData : public evolution::initial_data::InitialData {
     return std::make_unique<NumericInitialData>(*this);
   }
 
-  NumericInitialData(
-      std::string file_glob, std::string subfile_name,
-      std::variant<double, importers::ObservationSelector> observation_value,
-      std::optional<double> observation_value_epsilon,
-      bool enable_interpolation, ScalarVars selected_variables);
+  NumericInitialData(importers::ImporterOptions importer_options,
+                     ScalarVars selected_variables);
 
   const importers::ImporterOptions& importer_options() const;
 

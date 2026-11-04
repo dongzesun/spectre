@@ -2,6 +2,7 @@
 # See LICENSE.txt for details.
 
 add_subdirectory(GaugeSourceFunctions)
+add_subdirectory(Python)
 
 set(LIBRARY "Test_GeneralizedHarmonic")
 
@@ -16,15 +17,19 @@ set(LIBRARY_SOURCES
   BoundaryCorrections/Test_AveragedUpwindPenalty.cpp
   BoundaryCorrections/Test_UpwindPenalty.cpp
   Test_ApplyTensorYlmFilter.cpp
+  Test_BbhCheckpointAndExitIfCompletePhaseChange.cpp
+  Test_BbhCompletionCriteria.cpp
+  Test_BbhCompletionSingleton.cpp
   Test_Characteristics.cpp
   Test_Constraints.cpp
   Test_DuDt.cpp
   Test_DuDtTempTags.cpp
+  Test_FilledSpherePowerMonitor.cpp
   Test_Fluxes.cpp
-  Test_BbhCompletionCriteria.cpp
-  Test_BbhCompletionSingleton.cpp
-  Test_BbhCheckpointAndExitIfCompletePhaseChange.cpp
+  Test_SphericalShellPowerMonitor.cpp
+  Test_System.cpp
   Test_Tags.cpp
+  Test_TensorYlmTransforms.cpp
   )
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
@@ -38,6 +43,7 @@ target_link_libraries(
   DataStructuresHelpers
   DiscontinuousGalerkin
   Domain
+  DomainCreators
   DomainStructure
   FunctionsOfTime
   GeneralRelativity
@@ -45,9 +51,11 @@ target_link_libraries(
   GeneralRelativitySolutions
   GeneralizedHarmonic
   Importers
+  InitialDataUtilities
   LinearOperators
   MathFunctions
   Options
   Spectral
+  SphericalHarmonics
   Utilities
 )

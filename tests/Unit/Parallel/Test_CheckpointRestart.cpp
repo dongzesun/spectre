@@ -12,6 +12,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Helpers/Parallel/RoundRobinArrayElements.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/Algorithms/AlgorithmArray.hpp"
@@ -31,7 +32,6 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace PUP {
 class er;
@@ -283,11 +283,15 @@ struct TestMetavariables {
 
   static constexpr Options::String help = "";
 
-  static constexpr std::array<Parallel::Phase, 5> default_phase_order{
-      {Parallel::Phase::Initialization, Parallel::Phase::Execute,
-       Parallel::Phase::WriteCheckpoint, Parallel::Phase::Testing,
-       Parallel::Phase::Exit}};
-
+  static constexpr std::array default_phase_order{
+      Parallel::Phase::Initialization, Parallel::Phase::Execute,
+      Parallel::Phase::WriteCheckpoint,
+      // Test doesn't do anything in Restart phase, but Main puts us
+      // there after a restart.  Normally phase arbitration would
+      // restore the correct phase from there, but this test doesn't
+      // use that.
+      Parallel::Phase::Restart, Parallel::Phase::Testing,
+      Parallel::Phase::Exit};
 
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& /*p*/) {}

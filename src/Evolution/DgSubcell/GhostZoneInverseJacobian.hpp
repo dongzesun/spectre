@@ -10,6 +10,7 @@
 #include "Domain/Structure/DirectionMap.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/GhostZoneLogicalCoordinates.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Tags/GhostZoneInverseJacobian.hpp"
 #include "Utilities/Gsl.hpp"
 
@@ -68,11 +69,22 @@ struct GhostZoneInverseJacobian {
       const Mesh<Dim>& subcell_mesh,
       const ElementMap<Dim, Frame::Grid>& element_map,
       const ReconstructorType& reconstructor) {
+    // Skip for elements whose topology does not support subcell.
+    // For non-hypercube elements, fd::mesh() returns the DG mesh unchanged,
+    // so the subcell mesh won't have FiniteDifference basis.
+    if (subcell_mesh.basis(0) != Spectral::Basis::FiniteDifference) {
+      return;
+    }
+
     using neighbor_tags = tmpl::list<
         evolution::dg::subcell::Tags::Coordinates<Dim, Frame::Grid>,
         evolution::dg::subcell::fd::Tags::InverseJacobianLogicalToGrid<Dim>>;
 
+    const size_t comp_dim = fd::get_computational_dim(subcell_mesh);
     for (const auto& direction : Direction<Dim>::all_directions()) {
+      if (direction.dimension() >= comp_dim) {
+        continue;
+      }
       const auto logical_coords = fd::ghost_zone_logical_coordinates(
           subcell_mesh, reconstructor.ghost_zone_size(), direction);
       const auto inv_jacobian = element_map.inv_jacobian(logical_coords);

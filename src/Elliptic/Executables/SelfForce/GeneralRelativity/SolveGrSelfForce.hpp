@@ -15,7 +15,7 @@
 #include "Elliptic/Executables/Solver.hpp"
 #include "Elliptic/Systems/SelfForce/GeneralRelativity/Actions/InitializeEffectiveSource.hpp"
 #include "Elliptic/Systems/SelfForce/GeneralRelativity/AnalyticData/CircularOrbit.hpp"
-#include "Elliptic/Systems/SelfForce/GeneralRelativity/BoundaryConditions/Angular.hpp"
+#include "Elliptic/Systems/SelfForce/GeneralRelativity/BoundaryConditions/None.hpp"
 #include "Elliptic/Systems/SelfForce/GeneralRelativity/BoundaryConditions/Sommerfeld.hpp"
 #include "Elliptic/Systems/SelfForce/GeneralRelativity/FirstOrderSystem.hpp"
 #include "Elliptic/Systems/SelfForce/GeneralRelativity/Tags.hpp"
@@ -68,14 +68,17 @@ struct Metavariables {
       tmpl::list<GrSelfForce::Tags::SingularField,
                  GrSelfForce::Tags::BoyerLindquistRadius>,
       typename solver::observe_fields,
-      tmpl::list<domain::Tags::Coordinates<volume_dim, Frame::Inertial>>>;
+      tmpl::list<domain::Tags::Coordinates<volume_dim, Frame::Inertial>,
+                 domain::Tags::RadiallyCompressedCoordinatesCompute<
+                     2, Frame::Inertial, tmpl::size_t<0>>>>;
   using observer_compute_tags =
       tmpl::list<::Events::Tags::ObserverMeshCompute<volume_dim>,
                  ::Events::Tags::ObserverDetInvJacobianCompute<
                      Frame::ElementLogical, Frame::Inertial>>;
 
   // Collect all items to store in the cache.
-  using const_global_cache_tags = tmpl::list<>;
+  using const_global_cache_tags =
+      tmpl::list<domain::Tags::RadiallyCompressedCoordinatesOptions>;
 
   struct factory_creation
       : tt::ConformsTo<Options::protocols::FactoryCreation> {
@@ -88,7 +91,7 @@ struct Metavariables {
                    tmpl::list<GrSelfForce::AnalyticData::CircularOrbit>>,
         tmpl::pair<elliptic::analytic_data::AnalyticSolution, tmpl::list<>>,
         tmpl::pair<elliptic::BoundaryConditions::BoundaryCondition<volume_dim>,
-                   tmpl::list<GrSelfForce::BoundaryConditions::Angular,
+                   tmpl::list<GrSelfForce::BoundaryConditions::None,
                               GrSelfForce::BoundaryConditions::Sommerfeld>>,
         tmpl::pair<::amr::Criterion,
                    ::amr::Criteria::standard_criteria<

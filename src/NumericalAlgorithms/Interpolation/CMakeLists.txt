@@ -14,13 +14,13 @@ spectre_target_sources(
   CubicSpanInterpolator.cpp
   CubicSpline.cpp
   IrregularInterpolant.cpp
-  LinearLeastSquares.cpp
   LinearRegression.cpp
   LinearSpanInterpolator.cpp
   PolynomialInterpolation.cpp
   PredictedZeroCrossing.cpp
   RegularGridInterpolant.cpp
   SpanInterpolator.cpp
+  UniformCardinalBSpline.cpp
   ZeroCrossingPredictor.cpp
   )
 
@@ -33,9 +33,9 @@ spectre_target_headers(
   CardinalInterpolator.hpp
   CubicSpanInterpolator.hpp
   CubicSpline.hpp
+  InterpolateOnSphericalShell.hpp
   IrregularInterpolant.hpp
   LagrangePolynomial.hpp
-  LinearLeastSquares.hpp
   LinearRegression.hpp
   MultiLinearSpanInterpolation.hpp
   LinearSpanInterpolator.hpp
@@ -43,6 +43,7 @@ spectre_target_headers(
   PredictedZeroCrossing.hpp
   RegularGridInterpolant.hpp
   SpanInterpolator.hpp
+  UniformCardinalBSpline.hpp
   ZeroCrossingPredictor.hpp
   )
 
@@ -50,14 +51,15 @@ target_link_libraries(
   ${LIBRARY}
   PUBLIC
   BLAS::BLAS
+  Boost::boost
   DataStructures
   ErrorHandling
   Options
   Serialization
   Spectral
+  SphericalHarmonics
   Utilities
   PRIVATE
-  Boost::boost
   GSL::gsl
   )
 

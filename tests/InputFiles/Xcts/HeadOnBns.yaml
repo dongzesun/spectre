@@ -48,13 +48,15 @@ DomainCreator:
       OuterRadius: &star_radius 9.709353324763269
       XCoord: *x_right
       Interior: Auto
-      UseLogarithmicMap: False
+      ShellLogMapStrength: None
+      CubeLogMapStrength: None
     ObjectB:
       InnerRadius: 4.
       OuterRadius: *star_radius
       XCoord: *x_left
       Interior: Auto
-      UseLogarithmicMap: False
+      ShellLogMapStrength: None
+      CubeLogMapStrength: None
     CenterOfMassOffset: [*y_offset, *z_offset]
     Envelope:
       Radius: &outer_shell_inner_radius 120.
@@ -64,9 +66,11 @@ DomainCreator:
       RadialPartitioning: []
       RadialDistribution: &outer_shell_distribution Inverse
       OpeningAngle: 90.0
+      UseSphericalHarmonics: false
       BoundaryCondition: Flatness
     UseEquiangularMap: True
     CubeScale: 1.0
+    UseWorldtube: false
     # This h-refinement is set up so spherical wedges have equal angular size.
     # Once the domain supports equatorial compression (or similar) this
     # h-refinement will simplify considerably.
@@ -203,6 +207,8 @@ EventsAndTriggersAtIterations:
             - Name: MomentumConstraint
               NormType: L2Norm
               Components: Individual
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
       - ObserveFields:
           SubfileName: VolumeData
           VariablesToObserve:
@@ -236,7 +242,9 @@ Amr:
     EnforceTwoToOneBalanceInNormalDirection: true
     Isotropy: Anisotropic
     Limits:
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       RefinementLevel: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True

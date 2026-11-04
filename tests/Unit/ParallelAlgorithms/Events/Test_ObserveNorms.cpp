@@ -3,8 +3,11 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -23,8 +26,14 @@
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.tpp"
 #include "Domain/CoordinateMaps/Identity.hpp"
+#include "Domain/CoordinateMaps/PolarToCartesian.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.tpp"
+#include "Domain/CoordinateMaps/SphericalToCartesianPfaffian.hpp"
+#include "Domain/Domain.hpp"
+#include "Domain/Structure/Element.hpp"
+#include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Framework/TestCreation.hpp"
@@ -33,6 +42,7 @@
 #include "IO/Observer/ObservationId.hpp"
 #include "IO/Observer/ObserverComponent.hpp"
 #include "IO/Observer/Tags.hpp"
+#include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
@@ -42,7 +52,9 @@
 #include "Parallel/Reduction.hpp"
 #include "ParallelAlgorithms/Events/ObserveNorms.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/MakeArray.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
@@ -105,6 +117,8 @@ struct MockContributeReductionData {
     double volume;
     std::vector<double> max_values;
     std::vector<double> min_values;
+    std::vector<double> l1_norm_values;
+    std::vector<double> l1_integral_norm_values;
     std::vector<double> l2_norm_values;
     std::vector<double> l2_integral_norm_values;
     std::vector<double> volume_integral_values;
@@ -131,9 +145,11 @@ struct MockContributeReductionData {
     results.volume = std::get<2>(reduction_data.data());
     results.max_values = std::get<3>(reduction_data.data());
     results.min_values = std::get<4>(reduction_data.data());
-    results.l2_norm_values = std::get<5>(reduction_data.data());
-    results.l2_integral_norm_values = std::get<6>(reduction_data.data());
-    results.volume_integral_values = std::get<7>(reduction_data.data());
+    results.l1_norm_values = std::get<5>(reduction_data.data());
+    results.l1_integral_norm_values = std::get<6>(reduction_data.data());
+    results.l2_norm_values = std::get<7>(reduction_data.data());
+    results.l2_integral_norm_values = std::get<8>(reduction_data.data());
+    results.volume_integral_values = std::get<9>(reduction_data.data());
   }
 };
 
@@ -183,6 +199,29 @@ struct Metavariables {
   };
 };
 
+// Four disjoint unit cubes named Shell0, Shell1, Shell2, and Cube, with the
+// three shells in the group Shells.
+Domain<3> make_test_domain() {
+  using Affine = domain::CoordinateMaps::Affine;
+  using Affine3D =
+      domain::CoordinateMaps::ProductOf3Maps<Affine, Affine, Affine>;
+  std::vector<std::unique_ptr<
+      domain::CoordinateMapBase<Frame::BlockLogical, Frame::Inertial, 3>>>
+      maps{};
+  for (size_t block_id = 0; block_id < 4; ++block_id) {
+    const double lower_x = 2.0 * static_cast<double>(block_id);
+    maps.push_back(
+        domain::make_coordinate_map_base<Frame::BlockLogical, Frame::Inertial>(
+            Affine3D{Affine{-1.0, 1.0, lower_x, lower_x + 1.0},
+                     Affine{-1.0, 1.0, 0.0, 1.0},
+                     Affine{-1.0, 1.0, 0.0, 1.0}}));
+  }
+  return Domain<3>{std::move(maps),
+                   {},
+                   {"Shell0", "Shell1", "Shell2", "Cube"},
+                   {{"Shells", {"Shell0", "Shell1", "Shell2"}}}};
+}
+
 template <typename ArraySectionIdTag, typename ObserveEvent>
 void test(const std::unique_ptr<ObserveEvent> observe,
           const Spectral::Basis basis, const Spectral::Quadrature quadrature,
@@ -211,14 +250,16 @@ void test(const std::unique_ptr<ObserveEvent> observe,
                                                       array_index);
   ActionTesting::emplace_group_component<observer_component>(&runner);
 
-  auto box = db::create<
-      db::AddSimpleTags<Parallel::Tags::MetavariablesImpl<metavariables>,
-                        ::Events::Tags::ObserverMesh<3>,
-                        ::Events::Tags::ObserverDetInvJacobian<
-                            Frame::ElementLogical, Frame::Inertial>,
-                        Tags::Variables<typename decltype(vars)::tags_list>,
-                        observers::Tags::ObservationKey<ArraySectionIdTag>>>(
-      metavariables{}, mesh, det_inv_jacobian, vars, section);
+  auto box = db::create<db::AddSimpleTags<
+      Parallel::Tags::MetavariablesImpl<metavariables>, domain::Tags::Domain<3>,
+      domain::Tags::Element<3>, ::Events::Tags::ObserverMesh<3>,
+      ::Events::Tags::ObserverDetInvJacobian<Frame::ElementLogical,
+                                             Frame::Inertial>,
+      Tags::Variables<typename decltype(vars)::tags_list>,
+      observers::Tags::ObservationKey<ArraySectionIdTag>>>(
+      metavariables{}, make_test_domain(),
+      Element<3>{array_index, {}, domain::topologies::hypercube<3>}, mesh,
+      det_inv_jacobian, vars, section);
 
   const auto ids_to_register =
       observers::get_registration_observation_type_and_key(*observe, box);
@@ -249,8 +290,10 @@ void test(const std::unique_ptr<ObserveEvent> observe,
                {"TimeName", observation_time});
 
   // Process the data
-  runner.template invoke_queued_simple_action<observer_component>(0);
-  CHECK(runner.template is_simple_action_queue_empty<observer_component>(0));
+  ActionTesting::invoke_queued_simple_action<observer_component>(
+      make_not_null(&runner), 0);
+  CHECK(ActionTesting::is_simple_action_queue_empty<observer_component>(
+      runner, 0));
 
   const auto& results = MockContributeReductionData::results;
   CHECK(results.observation_id.value() == observation_time);
@@ -278,21 +321,43 @@ void test(const std::unique_ptr<ObserveEvent> observe,
   CHECK(results.reduction_names[10] == "Min(Var1)");
   CHECK(results.min_values == std::vector<double>{28.0, 55.0, 82.0, 28.0});
 
+  // Check L1 norms
+  CHECK(results.reduction_names[11] == "L1Norm(Var1)");
+  CHECK(results.reduction_names[12] == "L1Norm(Var1_x)");
+  CHECK(results.reduction_names[13] == "L1Norm(Var1_y)");
+  CHECK(results.reduction_names[14] == "L1Norm(Var1_z)");
+  CHECK(results.l1_norm_values[0] == approx(204.0));
+  CHECK(results.l1_norm_values[1] == approx(41.0));
+  CHECK(results.l1_norm_values[2] == approx(68.0));
+  CHECK(results.l1_norm_values[3] == approx(95.0));
+
+  // Check L1 integral norms
+  CHECK(results.reduction_names[15] == "L1IntegralNorm(Var1)");
+  CHECK(results.reduction_names[16] == "L1IntegralNorm(Var1_x)");
+  CHECK(results.reduction_names[17] == "L1IntegralNorm(Var1_y)");
+  CHECK(results.reduction_names[18] == "L1IntegralNorm(Var1_z)");
+  // All Var1 values are positive, so L1IntegralNorm equals the volume integral
+  // divided by the volume (which is 1), giving the same values as L1Norm.
+  for (size_t i = 0; i < 4; i++) {
+    CHECK(results.l1_integral_norm_values[i] ==
+          approx(results.l1_norm_values[i]));
+  }
+
   // Check L2 norms
-  CHECK(results.reduction_names[11] == "L2Norm(Var1)");
-  CHECK(results.reduction_names[12] == "L2Norm(Var1_x)");
-  CHECK(results.reduction_names[13] == "L2Norm(Var1_y)");
-  CHECK(results.reduction_names[14] == "L2Norm(Var1_z)");
+  CHECK(results.reduction_names[19] == "L2Norm(Var1)");
+  CHECK(results.reduction_names[20] == "L2Norm(Var1_x)");
+  CHECK(results.reduction_names[21] == "L2Norm(Var1_y)");
+  CHECK(results.reduction_names[22] == "L2Norm(Var1_z)");
   CHECK(results.l2_norm_values[0] == approx(124.5471798155221137));
   CHECK(results.l2_norm_values[1] == approx(41.73328008516305232));
   CHECK(results.l2_norm_values[2] == approx(68.44462481938714404));
   CHECK(results.l2_norm_values[3] == approx(95.3187634554008838));
 
   // Check L2 integral norms
-  CHECK(results.reduction_names[15] == "L2IntegralNorm(Var1)");
-  CHECK(results.reduction_names[16] == "L2IntegralNorm(Var1_x)");
-  CHECK(results.reduction_names[17] == "L2IntegralNorm(Var1_y)");
-  CHECK(results.reduction_names[18] == "L2IntegralNorm(Var1_z)");
+  CHECK(results.reduction_names[23] == "L2IntegralNorm(Var1)");
+  CHECK(results.reduction_names[24] == "L2IntegralNorm(Var1_x)");
+  CHECK(results.reduction_names[25] == "L2IntegralNorm(Var1_y)");
+  CHECK(results.reduction_names[26] == "L2IntegralNorm(Var1_z)");
   if (basis != Spectral::Basis::FiniteDifference) {
     CHECK(results.l2_integral_norm_values[0] == approx(124.18131904598212145));
     CHECK(results.l2_integral_norm_values[1] == approx(41.36826480931165406));
@@ -306,14 +371,175 @@ void test(const std::unique_ptr<ObserveEvent> observe,
   }
 
   // Check volume integral norms
-  CHECK(results.reduction_names[19] == "VolumeIntegral(Var1)");
-  CHECK(results.reduction_names[20] == "VolumeIntegral(Var1_x)");
-  CHECK(results.reduction_names[21] == "VolumeIntegral(Var1_y)");
-  CHECK(results.reduction_names[22] == "VolumeIntegral(Var1_z)");
+  CHECK(results.reduction_names[27] == "VolumeIntegral(Var1)");
+  CHECK(results.reduction_names[28] == "VolumeIntegral(Var1_x)");
+  CHECK(results.reduction_names[29] == "VolumeIntegral(Var1_y)");
+  CHECK(results.reduction_names[30] == "VolumeIntegral(Var1_z)");
   CHECK(results.volume_integral_values[0] == approx(204.0));
   CHECK(results.volume_integral_values[1] == approx(41.0));
   CHECK(results.volume_integral_values[2] == approx(68.0));
   CHECK(results.volume_integral_values[3] == approx(95.0));
+}
+
+template <Spectral::Basis basis, typename ArraySectionIdTag,
+          typename ObserveEvent>
+void test_b2_b3(const std::unique_ptr<ObserveEvent> observe,
+                const std::optional<std::string>& section) {
+  // Compare against analytic integrals over a filled cylinder (ZernikeB2) or a
+  // ball (ZernikeB3) that is offset from the origin. The shapes don't cross
+  // any coordinate plane, so each x^i has one sign on them and the integral of
+  // |x^i| is the absolute value of the integral of x^i.
+  CAPTURE(pretty_type::name<ArraySectionIdTag>());
+  CAPTURE(section);
+  CAPTURE(basis);
+  using metavariables = Metavariables<3, ArraySectionIdTag>;
+  using element_component = ElementComponent<metavariables>;
+  using observer_component = MockObserverComponent<metavariables>;
+  using Affine = domain::CoordinateMaps::Affine;
+  using Shift = domain::CoordinateMaps::ProductOf3Maps<Affine, Affine, Affine>;
+  const typename element_component::array_index array_index(0);
+  const auto shift = [](const std::array<double, 3>& center) {
+    return Shift{Affine{-1.0, 1.0, -1.0 + center[0], 1.0 + center[0]},
+                 Affine{-1.0, 1.0, -1.0 + center[1], 1.0 + center[1]},
+                 Affine{-1.0, 1.0, -1.0 + center[2], 1.0 + center[2]}};
+  };
+  Mesh<3> mesh;
+  tnsr::I<DataVector, 3, Frame::Inertial> inertial_coords;
+  Scalar<DataVector> det_inv_jacobian;
+  std::array<double, 3> center{};
+  double expected_volume{};
+  // Integral of (x^i - center^i)^2 over the shape
+  std::array<double, 3> second_moments{};
+  if constexpr (basis == Spectral::Basis::ZernikeB2) {
+    const double radius = 2.5;
+    const double height = 1.0;
+    center = {3.5, -3.0, 1.0};
+    mesh = Mesh<3>{{{6, 9, 4}},
+                   {{Spectral::Basis::ZernikeB2, Spectral::Basis::ZernikeB2,
+                     Spectral::Basis::Legendre}},
+                   {{Spectral::Quadrature::GaussRadauUpper,
+                     Spectral::Quadrature::Equiangular,
+                     Spectral::Quadrature::GaussLobatto}}};
+    const auto map =
+        domain::make_coordinate_map<Frame::ElementLogical, Frame::Inertial>(
+            domain::CoordinateMaps::ProductOf3Maps<
+                Affine, domain::CoordinateMaps::Identity<1>, Affine>{
+                Affine{-1.0, 1.0, 0.0, radius},
+                domain::CoordinateMaps::Identity<1>{},
+                Affine{-1.0, 1.0, -0.5 * height, 0.5 * height}},
+            domain::CoordinateMaps::ProductOf2Maps<
+                domain::CoordinateMaps::PolarToCartesian,
+                domain::CoordinateMaps::Identity<1>>(
+                domain::CoordinateMaps::PolarToCartesian{},
+                domain::CoordinateMaps::Identity<1>{}),
+            shift(center));
+    inertial_coords = map(logical_coordinates(mesh));
+    det_inv_jacobian = determinant(map.inv_jacobian(logical_coordinates(mesh)));
+    expected_volume = std::numbers::pi * square(radius) * height;
+    second_moments = {0.25 * std::numbers::pi * pow(radius, 4) * height,
+                      0.25 * std::numbers::pi * pow(radius, 4) * height,
+                      std::numbers::pi * square(radius) * cube(height) / 12.0};
+  } else {
+    const double radius = 2.6;
+    center = {4.0, -3.5, 3.0};
+    mesh = Mesh<3>{
+        {{6, 7, 13}},
+        {{Spectral::Basis::ZernikeB3, Spectral::Basis::ZernikeB3,
+          Spectral::Basis::ZernikeB3}},
+        {{Spectral::Quadrature::GaussRadauUpper, Spectral::Quadrature::Gauss,
+          Spectral::Quadrature::Equiangular}}};
+    const auto map =
+        domain::make_coordinate_map<Frame::ElementLogical, Frame::Inertial>(
+            domain::CoordinateMaps::ProductOf2Maps<
+                Affine, domain::CoordinateMaps::Identity<2>>{
+                Affine{-1.0, 1.0, 0.0, radius},
+                domain::CoordinateMaps::Identity<2>{}},
+            domain::CoordinateMaps::SphericalToCartesianPfaffian{},
+            shift(center));
+    inertial_coords = map(logical_coordinates(mesh));
+    det_inv_jacobian = determinant(map.inv_jacobian(logical_coordinates(mesh)));
+    expected_volume = 4.0 / 3.0 * std::numbers::pi * cube(radius);
+    second_moments =
+        make_array<3>(4.0 / 15.0 * std::numbers::pi * pow(radius, 5));
+  }
+  const size_t num_points = mesh.number_of_grid_points();
+
+  const double observation_time = 1.2;
+  Variables<tmpl::list<Var0, Var1>> vars(num_points);
+
+  get(get<Var0>(vars)) = get<0>(inertial_coords);
+  get<0>(get<Var1>(vars)) = get<0>(inertial_coords);
+  get<1>(get<Var1>(vars)) = get<1>(inertial_coords);
+  get<2>(get<Var1>(vars)) = get<2>(inertial_coords);
+
+  ActionTesting::MockRuntimeSystem<metavariables> runner{{}};
+  ActionTesting::emplace_component<element_component>(make_not_null(&runner),
+                                                      array_index);
+  ActionTesting::emplace_group_component<observer_component>(&runner);
+
+  auto box = db::create<db::AddSimpleTags<
+      Parallel::Tags::MetavariablesImpl<metavariables>, domain::Tags::Domain<3>,
+      domain::Tags::Element<3>, ::Events::Tags::ObserverMesh<3>,
+      ::Events::Tags::ObserverDetInvJacobian<Frame::ElementLogical,
+                                             Frame::Inertial>,
+      ::Events::Tags::ObserverCoordinates<3, Frame::Inertial>,
+      Tags::Variables<typename decltype(vars)::tags_list>,
+      observers::Tags::ObservationKey<ArraySectionIdTag>>>(
+      metavariables{}, make_test_domain(),
+      Element<3>{array_index, {}, domain::topologies::hypercube<3>}, mesh,
+      det_inv_jacobian, inertial_coords, vars, section);
+
+  auto obs_box = make_observation_box<
+      tmpl::filter<typename ObserveNormsEvent<
+                       ArraySectionIdTag>::compute_tags_for_observation_box,
+                   db::is_compute_tag<tmpl::_1>>>(make_not_null(&box));
+  observe->run(make_not_null(&obs_box),
+               ActionTesting::cache<element_component>(runner, array_index),
+               array_index, std::add_pointer_t<element_component>{},
+               {"TimeName", observation_time});
+
+  // Process the data
+  ActionTesting::invoke_queued_simple_action<observer_component>(
+      make_not_null(&runner), 0);
+  CHECK(ActionTesting::is_simple_action_queue_empty<observer_component>(runner,
+                                                                        0));
+
+  const auto& results = MockContributeReductionData::results;
+
+  // Analytic integrals of x^i, (x^i)^2, and |x^i| over the shape
+  std::array<double, 3> integral_of_x{};
+  std::array<double, 3> integral_of_x_squared{};
+  std::array<double, 3> integral_of_abs_x{};
+  for (size_t i = 0; i < 3; ++i) {
+    gsl::at(integral_of_x, i) = expected_volume * gsl::at(center, i);
+    gsl::at(integral_of_x_squared, i) =
+        expected_volume * square(gsl::at(center, i)) +
+        gsl::at(second_moments, i);
+    gsl::at(integral_of_abs_x, i) = std::abs(gsl::at(integral_of_x, i));
+  }
+  const auto sum = [](const std::array<double, 3>& a) {
+    return a[0] + a[1] + a[2];
+  };
+
+  CHECK(results.volume == approx(expected_volume));
+
+  // Check L1 integral norms
+  CHECK(results.l1_integral_norm_values[0] ==
+        approx(sum(integral_of_abs_x) / expected_volume));
+  // Check L2 integral norms
+  CHECK(results.l2_integral_norm_values[0] ==
+        approx(sqrt(sum(integral_of_x_squared) / expected_volume)));
+  // Check volume integral values (no abs, no normalization)
+  CHECK(results.volume_integral_values[0] == approx(sum(integral_of_x)));
+  for (size_t i = 0; i < 3; ++i) {
+    CAPTURE(i);
+    CHECK(results.l1_integral_norm_values[i + 1] ==
+          approx(gsl::at(integral_of_abs_x, i) / expected_volume));
+    CHECK(results.l2_integral_norm_values[i + 1] ==
+          approx(sqrt(gsl::at(integral_of_x_squared, i) / expected_volume)));
+    CHECK(results.volume_integral_values[i + 1] ==
+          approx(gsl::at(integral_of_x, i)));
+  }
 }
 
 template <bool Spherical, typename ArraySectionIdTag, typename ObserveEvent>
@@ -383,15 +609,17 @@ void test_cartoon(const std::unique_ptr<ObserveEvent> observe,
                                                       array_index);
   ActionTesting::emplace_group_component<observer_component>(&runner);
 
-  auto box = db::create<
-      db::AddSimpleTags<Parallel::Tags::MetavariablesImpl<metavariables>,
-                        ::Events::Tags::ObserverMesh<3>,
-                        ::Events::Tags::ObserverDetInvJacobian<
-                            Frame::ElementLogical, Frame::Inertial>,
-                        domain::Tags::Coordinates<3, Frame::Inertial>,
-                        Tags::Variables<typename decltype(vars)::tags_list>,
-                        observers::Tags::ObservationKey<ArraySectionIdTag>>>(
-      metavariables{}, mesh, det_inv_jacobian, inertial_coords, vars, section);
+  auto box = db::create<db::AddSimpleTags<
+      Parallel::Tags::MetavariablesImpl<metavariables>, domain::Tags::Domain<3>,
+      domain::Tags::Element<3>, ::Events::Tags::ObserverMesh<3>,
+      ::Events::Tags::ObserverDetInvJacobian<Frame::ElementLogical,
+                                             Frame::Inertial>,
+      ::Events::Tags::ObserverCoordinates<3, Frame::Inertial>,
+      Tags::Variables<typename decltype(vars)::tags_list>,
+      observers::Tags::ObservationKey<ArraySectionIdTag>>>(
+      metavariables{}, make_test_domain(),
+      Element<3>{array_index, {}, domain::topologies::hypercube<3>}, mesh,
+      det_inv_jacobian, inertial_coords, vars, section);
 
   auto obs_box = make_observation_box<
       tmpl::filter<typename ObserveNormsEvent<
@@ -403,8 +631,10 @@ void test_cartoon(const std::unique_ptr<ObserveEvent> observe,
                {"TimeName", observation_time});
 
   // Process the data
-  runner.template invoke_queued_simple_action<observer_component>(0);
-  CHECK(runner.template is_simple_action_queue_empty<observer_component>(0));
+  ActionTesting::invoke_queued_simple_action<observer_component>(
+      make_not_null(&runner), 0);
+  CHECK(ActionTesting::is_simple_action_queue_empty<observer_component>(
+      runner, 0));
 
   const auto& results = MockContributeReductionData::results;
 
@@ -415,48 +645,77 @@ void test_cartoon(const std::unique_ptr<ObserveEvent> observe,
   CHECK(results.reduction_names[2] == "Volume");
   CHECK(results.volume == approx(expected_volume));
 
-  // Check L2 integral norms
-  CHECK(results.reduction_names[3] == "L2IntegralNorm(Var1)");
-  CHECK(results.reduction_names[4] == "L2IntegralNorm(Var1_x)");
-  CHECK(results.reduction_names[5] == "L2IntegralNorm(Var1_y)");
-  CHECK(results.reduction_names[6] == "L2IntegralNorm(Var1_z)");
-
   const auto integrate = [&mesh, &det_inv_jacobian](
                              const DataVector& a,
                              const DataVector& coord_jacobian) -> double {
     const DataVector integrand = a * coord_jacobian / get<>(det_inv_jacobian);
     return definite_integral(integrand, mesh);
   };
-  const auto normalize = [&expected_volume](const double a) -> double {
+  const auto normalize_l1 = [&expected_volume](const double a) -> double {
+    return a / expected_volume;
+  };
+  const auto normalize_l2 = [&expected_volume](const double a) -> double {
     return sqrt(a / expected_volume);
   };
 
+  // Check L1 integral norms
+  // Var1 = inertial_coords; all non-z components are >= 0 in the test domain,
+  // so abs(Var1_x) = Var1_x, abs(Var1_y) = Var1_y, abs(Var1_z) = 0.
+  CHECK(results.reduction_names[3] == "L1IntegralNorm(Var1)");
+  CHECK(results.reduction_names[4] == "L1IntegralNorm(Var1_x)");
+  CHECK(results.reduction_names[5] == "L1IntegralNorm(Var1_y)");
+  CHECK(results.reduction_names[6] == "L1IntegralNorm(Var1_z)");
   if constexpr (Spherical) {
-    const double result = normalize(integrate(square(get<0>(get<Var1>(vars))),
-                                              square(get<0>(inertial_coords))));
+    const double l1_result = normalize_l1(
+        integrate(get<0>(get<Var1>(vars)), square(get<0>(inertial_coords))));
+    CHECK(results.l1_integral_norm_values[0] == approx(l1_result));
+    CHECK(results.l1_integral_norm_values[1] == approx(l1_result));
+    CHECK(results.l1_integral_norm_values[2] == approx(0.0));
+  } else {
+    CHECK(results.l1_integral_norm_values[0] ==
+          approx(normalize_l1(
+              integrate(get<0>(get<Var1>(vars)), get<0>(inertial_coords)) +
+              integrate(get<1>(get<Var1>(vars)), get<0>(inertial_coords)))));
+    CHECK(results.l1_integral_norm_values[1] ==
+          approx(normalize_l1(
+              integrate(get<0>(get<Var1>(vars)), get<0>(inertial_coords)))));
+    CHECK(results.l1_integral_norm_values[2] ==
+          approx(normalize_l1(
+              integrate(get<1>(get<Var1>(vars)), get<0>(inertial_coords)))));
+  }
+  CHECK(results.l1_integral_norm_values[3] == approx(0.0));
+
+  // Check L2 integral norms
+  CHECK(results.reduction_names[7] == "L2IntegralNorm(Var1)");
+  CHECK(results.reduction_names[8] == "L2IntegralNorm(Var1_x)");
+  CHECK(results.reduction_names[9] == "L2IntegralNorm(Var1_y)");
+  CHECK(results.reduction_names[10] == "L2IntegralNorm(Var1_z)");
+  if constexpr (Spherical) {
+    const double result = normalize_l2(integrate(
+        square(get<0>(get<Var1>(vars))), square(get<0>(inertial_coords))));
     CHECK(results.l2_integral_norm_values[0] == approx(result));
     CHECK(results.l2_integral_norm_values[1] == approx(result));
     CHECK(results.l2_integral_norm_values[2] == approx(0.0));
   } else {
     CHECK(results.l2_integral_norm_values[0] ==
-          approx(normalize(integrate(square(get<0>(get<Var1>(vars))),
-                                     get<0>(inertial_coords)) +
-                           integrate(square(get<1>(get<Var1>(vars))),
-                                     get<0>(inertial_coords)))));
+          approx(normalize_l2(integrate(square(get<0>(get<Var1>(vars))),
+                                        get<0>(inertial_coords)) +
+                              integrate(square(get<1>(get<Var1>(vars))),
+                                        get<0>(inertial_coords)))));
     CHECK(results.l2_integral_norm_values[1] ==
-          approx(normalize(integrate(square(get<0>(get<Var1>(vars))),
-                                     get<0>(inertial_coords)))));
+          approx(normalize_l2(integrate(square(get<0>(get<Var1>(vars))),
+                                        get<0>(inertial_coords)))));
     CHECK(results.l2_integral_norm_values[2] ==
-          approx(normalize(integrate(square(get<1>(get<Var1>(vars))),
-                                     get<0>(inertial_coords)))));
+          approx(normalize_l2(integrate(square(get<1>(get<Var1>(vars))),
+                                        get<0>(inertial_coords)))));
   }
   CHECK(results.l2_integral_norm_values[3] == approx(0.0));
 
   // Check volume integral norms
-  CHECK(results.reduction_names[7] == "VolumeIntegral(Var1)");
-  CHECK(results.reduction_names[8] == "VolumeIntegral(Var1_x)");
-  CHECK(results.reduction_names[9] == "VolumeIntegral(Var1_y)");
-  CHECK(results.reduction_names[10] == "VolumeIntegral(Var1_z)");
+  CHECK(results.reduction_names[11] == "VolumeIntegral(Var1)");
+  CHECK(results.reduction_names[12] == "VolumeIntegral(Var1_x)");
+  CHECK(results.reduction_names[13] == "VolumeIntegral(Var1_y)");
+  CHECK(results.reduction_names[14] == "VolumeIntegral(Var1_z)");
   if constexpr (Spherical) {
     const double result =
         integrate(get<0>(get<Var1>(vars)), square(get<0>(inertial_coords)));
@@ -474,6 +733,181 @@ void test_cartoon(const std::unique_ptr<ObserveEvent> observe,
   }
   CHECK(results.volume_integral_values[3] == approx(0.0));
 }
+
+template <typename ArraySectionIdTag>
+std::unique_ptr<Event> create_block_event(const std::string& blocks_to_observe,
+                                          const std::string& reduction_scope) {
+  return serialize_and_deserialize(
+      TestHelpers::test_creation<std::unique_ptr<Event>,
+                                 Metavariables<3, ArraySectionIdTag>>(
+          "ObserveNorms:\n"
+          "  SubfileName: reduction0\n"
+          "  TensorsToObserve:\n"
+          "  - Name: Var0\n"
+          "    NormType: Max\n"
+          "    Components: Individual\n"
+          "  BlocksToObserve: " +
+          blocks_to_observe +
+          "\n"
+          "  ReductionScope: " +
+          reduction_scope + "\n"));
+}
+
+// Runs the event on one element in each block of the test domain and checks
+// the subfile it registers for and contributes to. An entry of
+// `expected_subfiles` is `std::nullopt` if the block should not be observed.
+template <typename ArraySectionIdTag>
+void test_blocks_to_observe(
+    const std::string& blocks_to_observe, const std::string& reduction_scope,
+    const std::optional<std::string>& section,
+    const std::array<std::optional<std::string>, 4>& expected_subfiles) {
+  CAPTURE(blocks_to_observe);
+  CAPTURE(reduction_scope);
+  CAPTURE(section);
+  using metavariables = Metavariables<3, ArraySectionIdTag>;
+  using element_component = ElementComponent<metavariables>;
+  using observer_component = MockObserverComponent<metavariables>;
+  const auto observe =
+      create_block_event<ArraySectionIdTag>(blocks_to_observe, reduction_scope);
+  const Mesh<3> mesh{3, Spectral::Basis::Legendre,
+                     Spectral::Quadrature::GaussLobatto};
+  const size_t num_points = mesh.number_of_grid_points();
+  // Each element is a unit cube, so the volume is 1
+  const Scalar<DataVector> det_inv_jacobian(num_points, cube(2.0));
+  Variables<tmpl::list<Var0, Var1>> vars(num_points);
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  std::iota(vars.data(), vars.data() + vars.size(), 1.0);
+
+  for (size_t block_id = 0; block_id < 4; ++block_id) {
+    CAPTURE(block_id);
+    const ElementId<3> element_id{block_id};
+    ActionTesting::MockRuntimeSystem<metavariables> runner{{}};
+    ActionTesting::emplace_component<element_component>(make_not_null(&runner),
+                                                        element_id);
+    ActionTesting::emplace_group_component<observer_component>(&runner);
+    auto box = db::create<
+        db::AddSimpleTags<Parallel::Tags::MetavariablesImpl<metavariables>,
+                          domain::Tags::Domain<3>, domain::Tags::Element<3>,
+                          ::Events::Tags::ObserverMesh<3>,
+                          ::Events::Tags::ObserverDetInvJacobian<
+                              Frame::ElementLogical, Frame::Inertial>,
+                          Tags::Variables<typename decltype(vars)::tags_list>,
+                          observers::Tags::ObservationKey<ArraySectionIdTag>>>(
+        metavariables{}, make_test_domain(),
+        Element<3>{element_id, {}, domain::topologies::hypercube<3>}, mesh,
+        det_inv_jacobian, vars, section);
+
+    const auto& expected_subfile = expected_subfiles.at(block_id);
+    const auto ids_to_register =
+        observers::get_registration_observation_type_and_key(*observe, box);
+    REQUIRE(ids_to_register.has_value() == expected_subfile.has_value());
+    if (expected_subfile.has_value()) {
+      CHECK(ids_to_register->first == observers::TypeOfObservation::Reduction);
+      CHECK(ids_to_register->second ==
+            observers::ObservationKey(*expected_subfile + ".dat"));
+    }
+
+    MockContributeReductionData::results = {};
+    auto obs_box = make_observation_box<
+        tmpl::filter<typename ObserveNormsEvent<
+                         ArraySectionIdTag>::compute_tags_for_observation_box,
+                     db::is_compute_tag<tmpl::_1>>>(make_not_null(&box));
+    observe->run(make_not_null(&obs_box),
+                 ActionTesting::cache<element_component>(runner, element_id),
+                 element_id, std::add_pointer_t<element_component>{},
+                 {"TimeName", 2.0});
+    if (not expected_subfile.has_value()) {
+      CHECK(ActionTesting::is_simple_action_queue_empty<observer_component>(
+          runner, 0));
+      continue;
+    }
+    ActionTesting::invoke_queued_simple_action<observer_component>(
+        make_not_null(&runner), 0);
+    const auto& results = MockContributeReductionData::results;
+    CHECK(results.observation_id.observation_key() ==
+          observers::ObservationKey(*expected_subfile + ".dat"));
+    CHECK(results.subfile_name == *expected_subfile);
+    CHECK(results.number_of_grid_points == num_points);
+    CHECK(results.volume == approx(1.0));
+    CHECK(results.reduction_names ==
+          std::vector<std::string>{"TimeName", "NumberOfPoints", "Volume",
+                                   "Max(Var0)"});
+    CHECK(results.max_values == std::vector<double>{27.0});
+  }
+}
+
+void test_reduction_scope() {
+  const std::string whole{"/reduction0"};
+  const auto per = [](const std::string& name) -> std::optional<std::string> {
+    return "/reduction0/" + name;
+  };
+  const std::optional<std::string> none{};
+  // Block 0-2 are Shell0-Shell2 (group Shells), block 3 is Cube
+  test_blocks_to_observe<void>("All", "WholeDomain", std::nullopt,
+                               {{whole, whole, whole, whole}});
+  test_blocks_to_observe<void>(
+      "All", "ByBlock", std::nullopt,
+      {{per("Shell0"), per("Shell1"), per("Shell2"), per("Cube")}});
+  test_blocks_to_observe<void>(
+      "All", "ByBlockOrGroup", std::nullopt,
+      {{per("Shell0"), per("Shell1"), per("Shell2"), per("Cube")}});
+  test_blocks_to_observe<void>("[Shells]", "WholeDomain", std::nullopt,
+                               {{whole, whole, whole, none}});
+  test_blocks_to_observe<void>("[Shell1, Cube]", "WholeDomain", std::nullopt,
+                               {{none, whole, none, whole}});
+  test_blocks_to_observe<void>(
+      "[Shells]", "ByBlock", std::nullopt,
+      {{per("Shell0"), per("Shell1"), per("Shell2"), none}});
+  // Overlapping entries are fine when reducing by individual block
+  test_blocks_to_observe<void>(
+      "[Shells, Shell0, Cube]", "ByBlock", std::nullopt,
+      {{per("Shell0"), per("Shell1"), per("Shell2"), per("Cube")}});
+  test_blocks_to_observe<void>(
+      "[Shells, Cube]", "ByBlockOrGroup", std::nullopt,
+      {{per("Shells"), per("Shells"), per("Shells"), per("Cube")}});
+  test_blocks_to_observe<void>("[Shell2]", "ByBlockOrGroup", std::nullopt,
+                               {{none, none, per("Shell2"), none}});
+  // Sections are applied before the block suffix
+  test_blocks_to_observe<TestSectionIdTag>(
+      "[Shells]", "ByBlock", "Section0",
+      {{"/reduction0Section0/Shell0", "/reduction0Section0/Shell1",
+        "/reduction0Section0/Shell2", none}});
+  test_blocks_to_observe<TestSectionIdTag>(
+      "[Shells]", "WholeDomain", "Section0",
+      {{"/reduction0Section0", "/reduction0Section0", "/reduction0Section0",
+        none}});
+  test_blocks_to_observe<TestSectionIdTag>("All", "ByBlock", std::nullopt,
+                                           {{none, none, none, none}});
+
+  // Errors are raised when the elements register
+  const auto check_registration_error = [](const std::string& blocks_to_observe,
+                                           const std::string& reduction_scope,
+                                           const size_t block_id,
+                                           const std::string& expected_error) {
+    using metavariables = Metavariables<3, void>;
+    const auto observe =
+        create_block_event<void>(blocks_to_observe, reduction_scope);
+    const auto box = db::create<
+        db::AddSimpleTags<Parallel::Tags::MetavariablesImpl<metavariables>,
+                          domain::Tags::Domain<3>, domain::Tags::Element<3>,
+                          observers::Tags::ObservationKey<void>>>(
+        metavariables{}, make_test_domain(),
+        Element<3>{
+            ElementId<3>{block_id}, {}, domain::topologies::hypercube<3>},
+        std::optional<std::string>{std::nullopt});
+    CHECK_THROWS_WITH(
+        observers::get_registration_observation_type_and_key(*observe, box),
+        Catch::Matchers::ContainsSubstring(expected_error));
+  };
+  check_registration_error(
+      "[Shells, Shell0]", "ByBlockOrGroup", 0,
+      "With ReductionScope 'ByBlockOrGroup' each block can be in at most one "
+      "entry of BlocksToObserve");
+  check_registration_error(
+      "[NoBlock]", "WholeDomain", 0,
+      "The block or group 'NoBlock' is not one of the block names or groups "
+      "of the domain.");
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
@@ -485,9 +919,13 @@ SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
                                   {"Var0", "Max", "Sum"},
                                   {"Var0TimesTwo", "Max", "Individual"},
                                   {"Var0TimesThree", "Max", "Individual"},
+                                  {"Var1", "L1Norm", "Sum"},
+                                  {"Var1", "L1IntegralNorm", "Sum"},
                                   {"Var1", "L2Norm", "Sum"},
                                   {"Var1", "L2IntegralNorm", "Sum"},
                                   {"Var1", "VolumeIntegral", "Sum"},
+                                  {"Var1", "L1Norm", "Individual"},
+                                  {"Var1", "L1IntegralNorm", "Individual"},
                                   {"Var1", "L2Norm", "Individual"},
                                   {"Var1", "L2IntegralNorm", "Individual"},
                                   {"Var1", "VolumeIntegral", "Individual"},
@@ -520,6 +958,12 @@ SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
       NormType: Max
       Components: Individual
     - Name: Var1
+      NormType: L1Norm
+      Components: Sum
+    - Name: Var1
+      NormType: L1IntegralNorm
+      Components: Sum
+    - Name: Var1
       NormType: L2Norm
       Components: Sum
     - Name: Var1
@@ -528,6 +972,12 @@ SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
     - Name: Var1
       NormType: VolumeIntegral
       Components: Sum
+    - Name: Var1
+      NormType: L1Norm
+      Components: Individual
+    - Name: Var1
+      NormType: L1IntegralNorm
+      Components: Individual
     - Name: Var1
       NormType: L2Norm
       Components: Individual
@@ -540,6 +990,8 @@ SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
     - Name: Var1
       NormType: Min
       Components: Sum
+    BlocksToObserve: All
+    ReductionScope: WholeDomain
         )");
   // [input_file_examples]
   auto serialized_event = serialize_and_deserialize(factory_event);
@@ -558,6 +1010,8 @@ SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
     - Name: Var0
       NormType: Max
       Components: Individual
+    BlocksToObserve: [Shells]
+    ReductionScope: ByBlock
         )");
   }
 
@@ -568,9 +1022,13 @@ SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
                   {"Var0", "Max", "Sum"},
                   {"Var0TimesTwo", "Max", "Individual"},
                   {"Var0TimesThree", "Max", "Individual"},
+                  {"Var1", "L1Norm", "Sum"},
+                  {"Var1", "L1IntegralNorm", "Sum"},
                   {"Var1", "L2Norm", "Sum"},
                   {"Var1", "L2IntegralNorm", "Sum"},
                   {"Var1", "VolumeIntegral", "Sum"},
+                  {"Var1", "L1Norm", "Individual"},
+                  {"Var1", "L1IntegralNorm", "Individual"},
                   {"Var1", "L2Norm", "Individual"},
                   {"Var1", "L2IntegralNorm", "Individual"},
                   {"Var1", "VolumeIntegral", "Individual"},
@@ -578,38 +1036,135 @@ SPECTRE_TEST_CASE("Unit.Evolution.ObserveNorms", "[Unit][Evolution]") {
              Spectral::Basis::FiniteDifference,
              Spectral::Quadrature::CellCentered, std::nullopt);
 
+  // Test that L1Norm and L1IntegralNorm correctly take absolute values by using
+  // a tensor with all-negative components. If abs() were dropped entirely, the
+  // computed values would be negative rather than positive.
+  {
+    INFO("Negative values test");
+    using metavariables = Metavariables<3, void>;
+    using element_component = ElementComponent<metavariables>;
+    using observer_component = MockObserverComponent<metavariables>;
+    const typename element_component::array_index array_index(0);
+    const Mesh<3> mesh{3, Spectral::Basis::Legendre,
+                       Spectral::Quadrature::GaussLobatto};
+    const size_t num_points = mesh.number_of_grid_points();
+    // det_inv_jacobian for a unit cube: volume = 1
+    const Scalar<DataVector> det_inv_jacobian(num_points, cube(2.0));
+    Variables<tmpl::list<Var0, Var1>> vars(num_points);
+    // Fill Var0 with all -1.0; abs should give 1.0 for every point
+    get(get<Var0>(vars)) = DataVector(num_points, -1.0);
+    get<0>(get<Var1>(vars)) = DataVector(num_points, 0.0);
+    get<1>(get<Var1>(vars)) = DataVector(num_points, 0.0);
+    get<2>(get<Var1>(vars)) = DataVector(num_points, 0.0);
+
+    ActionTesting::MockRuntimeSystem<metavariables> runner{{}};
+    ActionTesting::emplace_component<element_component>(make_not_null(&runner),
+                                                        array_index);
+    ActionTesting::emplace_group_component<observer_component>(&runner);
+
+    auto box = db::create<
+        db::AddSimpleTags<Parallel::Tags::MetavariablesImpl<metavariables>,
+                          domain::Tags::Domain<3>, domain::Tags::Element<3>,
+                          ::Events::Tags::ObserverMesh<3>,
+                          ::Events::Tags::ObserverDetInvJacobian<
+                              Frame::ElementLogical, Frame::Inertial>,
+                          Tags::Variables<typename decltype(vars)::tags_list>,
+                          observers::Tags::ObservationKey<void>>>(
+        metavariables{}, make_test_domain(),
+        Element<3>{array_index, {}, domain::topologies::hypercube<3>}, mesh,
+        det_inv_jacobian, vars, std::optional<std::string>{std::nullopt});
+
+    const auto observe = std::make_unique<ObserveNormsEvent<void>>(
+        ObserveNormsEvent<void>{"reduction0",
+                                {{"Var0", "L1Norm", "Individual"},
+                                 {"Var0", "L1IntegralNorm", "Individual"},
+                                 {"Var0", "Max", "Sum"}}});
+
+    auto obs_box = make_observation_box<tmpl::filter<
+        typename ObserveNormsEvent<void>::compute_tags_for_observation_box,
+        db::is_compute_tag<tmpl::_1>>>(make_not_null(&box));
+    observe->run(make_not_null(&obs_box),
+                 ActionTesting::cache<element_component>(runner, array_index),
+                 array_index, std::add_pointer_t<element_component>{},
+                 {"TimeName", 2.0});
+
+    ActionTesting::invoke_queued_simple_action<observer_component>(
+        make_not_null(&runner), 0);
+
+    const auto& results = MockContributeReductionData::results;
+    // L1Norm = (1/N) * sum(|u_i|) = 1.0 (sum over finalize reduction divides
+    // by num_points). L1IntegralNorm = integral(|u|)/V = 1.0 (since all |-1|=1
+    // and V=1). Both should be 1.0, not -1.0, proving abs() is applied.
+    CHECK(results.l1_norm_values[0] == approx(1.0));
+    CHECK(results.l1_integral_norm_values[0] == approx(1.0));
+    // The max over components of a negative tensor must be negative
+    CHECK(results.max_values == std::vector<double>{-1.0});
+  }
+
   // varrying `Spherical` to test both spherical and axial symmetry, as well
   // as changing whether we include x=0
   test_cartoon<true, void>(
       std::make_unique<ObserveNormsEvent<void>>(
           ObserveNormsEvent<void>{"reduction0",
-                                  {{"Var1", "VolumeIntegral", "Sum"},
-                                   {"Var1", "VolumeIntegral", "Individual"},
+                                  {{"Var1", "L1IntegralNorm", "Sum"},
+                                   {"Var1", "L1IntegralNorm", "Individual"},
                                    {"Var1", "L2IntegralNorm", "Sum"},
-                                   {"Var1", "L2IntegralNorm", "Individual"}}}),
+                                   {"Var1", "L2IntegralNorm", "Individual"},
+                                   {"Var1", "VolumeIntegral", "Sum"},
+                                   {"Var1", "VolumeIntegral", "Individual"}}}),
       std::nullopt, 0.0);
   test_cartoon<true, void>(
       std::make_unique<ObserveNormsEvent<void>>(
           ObserveNormsEvent<void>{"reduction0",
-                                  {{"Var1", "VolumeIntegral", "Sum"},
-                                   {"Var1", "VolumeIntegral", "Individual"},
+                                  {{"Var1", "L1IntegralNorm", "Sum"},
+                                   {"Var1", "L1IntegralNorm", "Individual"},
                                    {"Var1", "L2IntegralNorm", "Sum"},
-                                   {"Var1", "L2IntegralNorm", "Individual"}}}),
+                                   {"Var1", "L2IntegralNorm", "Individual"},
+                                   {"Var1", "VolumeIntegral", "Sum"},
+                                   {"Var1", "VolumeIntegral", "Individual"}}}),
       std::nullopt, 0.5);
   test_cartoon<false, void>(
       std::make_unique<ObserveNormsEvent<void>>(
           ObserveNormsEvent<void>{"reduction0",
-                                  {{"Var1", "VolumeIntegral", "Sum"},
-                                   {"Var1", "VolumeIntegral", "Individual"},
+                                  {{"Var1", "L1IntegralNorm", "Sum"},
+                                   {"Var1", "L1IntegralNorm", "Individual"},
                                    {"Var1", "L2IntegralNorm", "Sum"},
-                                   {"Var1", "L2IntegralNorm", "Individual"}}}),
+                                   {"Var1", "L2IntegralNorm", "Individual"},
+                                   {"Var1", "VolumeIntegral", "Sum"},
+                                   {"Var1", "VolumeIntegral", "Individual"}}}),
       std::nullopt, 0.0);
   test_cartoon<false, void>(
       std::make_unique<ObserveNormsEvent<void>>(
           ObserveNormsEvent<void>{"reduction0",
-                                  {{"Var1", "VolumeIntegral", "Sum"},
-                                   {"Var1", "VolumeIntegral", "Individual"},
+                                  {{"Var1", "L1IntegralNorm", "Sum"},
+                                   {"Var1", "L1IntegralNorm", "Individual"},
                                    {"Var1", "L2IntegralNorm", "Sum"},
-                                   {"Var1", "L2IntegralNorm", "Individual"}}}),
+                                   {"Var1", "L2IntegralNorm", "Individual"},
+                                   {"Var1", "VolumeIntegral", "Sum"},
+                                   {"Var1", "VolumeIntegral", "Individual"}}}),
       std::nullopt, 1.5);
+
+  test_b2_b3<Spectral::Basis::ZernikeB2, void>(
+      std::make_unique<ObserveNormsEvent<void>>(
+          ObserveNormsEvent<void>{"reduction0",
+                                  {{"Var1", "L1IntegralNorm", "Sum"},
+                                   {"Var1", "L1IntegralNorm", "Individual"},
+                                   {"Var1", "L2IntegralNorm", "Sum"},
+                                   {"Var1", "L2IntegralNorm", "Individual"},
+                                   {"Var1", "VolumeIntegral", "Sum"},
+                                   {"Var1", "VolumeIntegral", "Individual"}}}),
+      std::nullopt);
+  test_b2_b3<Spectral::Basis::ZernikeB3, void>(
+      std::make_unique<ObserveNormsEvent<void>>(
+          ObserveNormsEvent<void>{"reduction0",
+                                  {{"Var1", "L1IntegralNorm", "Sum"},
+                                   {"Var1", "L1IntegralNorm", "Individual"},
+                                   {"Var1", "L2IntegralNorm", "Sum"},
+                                   {"Var1", "L2IntegralNorm", "Individual"},
+                                   {"Var1", "VolumeIntegral", "Sum"},
+                                   {"Var1", "VolumeIntegral", "Individual"}}}),
+      std::nullopt);
+
+  register_factory_classes_with_charm<Metavariables<3, TestSectionIdTag>>();
+  test_reduction_scope();
 }

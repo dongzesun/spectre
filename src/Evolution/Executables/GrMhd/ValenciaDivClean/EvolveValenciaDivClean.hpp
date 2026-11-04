@@ -26,13 +26,14 @@
 #include "Evolution/DgSubcell/CellCenteredFlux.hpp"
 #include "Evolution/DgSubcell/ComputeBoundaryTerms.hpp"
 #include "Evolution/DgSubcell/CorrectPackagedData.hpp"
-#include "Evolution/DgSubcell/DisableLts.hpp"
 #include "Evolution/DgSubcell/GetTciDecision.hpp"
+#include "Evolution/DgSubcell/GhostZoneInverseJacobian.hpp"
 #include "Evolution/DgSubcell/NeighborReconstructedFaceSolution.hpp"
 #include "Evolution/DgSubcell/NeighborTciDecision.hpp"
 #include "Evolution/DgSubcell/PerssonTci.hpp"
 #include "Evolution/DgSubcell/PrepareNeighborData.hpp"
 #include "Evolution/DgSubcell/SetInterpolators.hpp"
+#include "Evolution/DgSubcell/SubcellAndNonconformingEqualRateRegions.hpp"
 #include "Evolution/DgSubcell/Tags/MethodOrder.hpp"
 #include "Evolution/DgSubcell/Tags/ObserverCoordinates.hpp"
 #include "Evolution/DgSubcell/Tags/ObserverMesh.hpp"
@@ -43,16 +44,16 @@
 #include "Evolution/DiscontinuousGalerkin/BackgroundGrVars.hpp"
 #include "Evolution/DiscontinuousGalerkin/CleanMortarHistory.hpp"
 #include "Evolution/DiscontinuousGalerkin/DgElementArray.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/ChangeFixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/FixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/NonconformingEqualRateRegions.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/Mortars.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/QuadratureTag.hpp"
-#include "Evolution/DiscontinuousGalerkin/Limiters/Krivodonova.hpp"
-#include "Evolution/DiscontinuousGalerkin/Limiters/Minmod.hpp"
-#include "Evolution/DiscontinuousGalerkin/Limiters/Tags.hpp"
-#include "Evolution/DiscontinuousGalerkin/Limiters/Weno.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SetupEqualRateRegions.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SpectralFilters.hpp"
 #include "Evolution/Initialization/ConservativeSystem.hpp"
 #include "Evolution/Initialization/DgDomain.hpp"
 #include "Evolution/Initialization/Evolution.hpp"
-#include "Evolution/Initialization/Limiter.hpp"
 #include "Evolution/Initialization/SetVariables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/AllSolutions.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryConditions/Factory.hpp"
@@ -90,8 +91,8 @@
 #include "IO/Observer/ObserverComponent.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags.hpp"
-#include "NumericalAlgorithms/FiniteDifference/Minmod.hpp"
 #include "NumericalAlgorithms/LinearOperators/Divergence.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Factory.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
 #include "Parallel/Algorithms/AlgorithmSingleton.hpp"
@@ -106,9 +107,10 @@
 #include "ParallelAlgorithms/Actions/AddComputeTags.hpp"
 #include "ParallelAlgorithms/Actions/AddSimpleTags.hpp"
 #include "ParallelAlgorithms/Actions/InitializeItems.hpp"
-#include "ParallelAlgorithms/Actions/LimiterActions.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
+#include "ParallelAlgorithms/Actions/SpectralFilter.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
+#include "ParallelAlgorithms/Events/ChangeFixedLtsRatio.hpp"
 #include "ParallelAlgorithms/Events/Completion.hpp"
 #include "ParallelAlgorithms/Events/Factory.hpp"
 #include "ParallelAlgorithms/Events/ObserveNorms.hpp"
@@ -123,7 +125,6 @@
 #include "ParallelAlgorithms/Interpolation/Actions/ElementInitInterpPoints.hpp"
 #include "ParallelAlgorithms/Interpolation/Actions/InitializeInterpolationTarget.hpp"
 #include "ParallelAlgorithms/Interpolation/Callbacks/ObserveTimeSeriesOnSurface.hpp"
-#include "ParallelAlgorithms/Interpolation/Events/Interpolate.hpp"
 #include "ParallelAlgorithms/Interpolation/Events/InterpolateWithoutInterpComponent.hpp"
 #include "ParallelAlgorithms/Interpolation/InterpolationTarget.hpp"
 #include "ParallelAlgorithms/Interpolation/Protocols/InterpolationTargetTag.hpp"
@@ -159,6 +160,7 @@
 #include "PointwiseFunctions/Hydro/InversePlasmaBeta.hpp"
 #include "PointwiseFunctions/Hydro/MassFlux.hpp"
 #include "PointwiseFunctions/Hydro/QuadrupoleFormula.hpp"
+#include "PointwiseFunctions/Hydro/SpecificEntropy.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "PointwiseFunctions/Hydro/TransportVelocity.hpp"
 #include "Time/Actions/SelfStartActions.hpp"
@@ -169,13 +171,11 @@
 #include "Time/CleanHistory.hpp"
 #include "Time/RecordTimeStepperData.hpp"
 #include "Time/StepChoosers/Factory.hpp"
-#include "Time/StepChoosers/FixedLtsRatio.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStepId.hpp"
 #include "Time/TimeSequence.hpp"
 #include "Time/TimeSteppers/Factory.hpp"
-#include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Time/Triggers/TimeTriggers.hpp"
 #include "Time/UpdateU.hpp"
@@ -203,7 +203,7 @@ template <typename... InterpolationTargetTags,
           bool UseParametrizedDeleptonization>
 struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                          UseParametrizedDeleptonization> {
-  // The use_dg_subcell flag controls whether to use "standard" limiting (false)
+  // The use_dg_subcell flag controls whether to use unlimited DG (false)
   // or a DG-FD hybrid scheme (true).
   static constexpr bool use_parametrized_deleptonization =
       UseParametrizedDeleptonization;
@@ -224,22 +224,12 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
   using initial_data_tag = evolution::initial_data::Tags::InitialData;
   using system = grmhd::ValenciaDivClean::System;
   using temporal_id = Tags::TimeStepId;
-  using TimeStepperBase = TimeStepper;
 
-  static constexpr bool local_time_stepping =
-      TimeStepperBase::local_time_stepping;
   static constexpr bool use_dg_element_collection = false;
 
   using analytic_variables_tags =
       typename system::primitive_variables_tag::tags_list;
   using equation_of_state_tag = hydro::Tags::GrmhdEquationOfState;
-  // Do not limit the divergence-cleaning field Phi
-  using limiter = Tags::Limiter<
-      Limiters::Minmod<3, tmpl::list<grmhd::ValenciaDivClean::Tags::TildeD,
-                                     grmhd::ValenciaDivClean::Tags::TildeYe,
-                                     grmhd::ValenciaDivClean::Tags::TildeTau,
-                                     grmhd::ValenciaDivClean::Tags::TildeS<>,
-                                     grmhd::ValenciaDivClean::Tags::TildeB<>>>>;
 
   using interpolator_source_vars =
       tmpl::remove_duplicates<tmpl::flatten<tmpl::list<
@@ -308,7 +298,8 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
           ::Events::Tags::ObserverCoordinates<volume_dim, Frame::Inertial>,
           hydro::Tags::TransportVelocity<DataVector, volume_dim,
                                          Frame::Inertial>>,
-      hydro::Tags::InversePlasmaBetaCompute<DataVector>>;
+      hydro::Tags::InversePlasmaBetaCompute<DataVector>,
+      hydro::Tags::SpecificEntropyCompute<DataVector>>;
   using non_tensor_compute_tags = tmpl::list<
       tmpl::conditional_t<
           use_dg_subcell,
@@ -341,7 +332,8 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                                                non_tensor_compute_tags>,
                 Events::time_events<system>,
                 intrp::Events::InterpolateWithoutInterpComponent<
-                    3, InterpolationTargetTags, interpolator_source_vars>...>>>,
+                    3, InterpolationTargetTags, interpolator_source_vars>...,
+                dg::Events::ChangeFixedLtsRatio<volume_dim>>>>,
         tmpl::pair<evolution::BoundaryCorrection,
                    grmhd::ValenciaDivClean::BoundaryCorrections::
                        standard_boundary_corrections>,
@@ -354,24 +346,24 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
             grmhd::AnalyticData::InitialMagneticFields::InitialMagneticField,
             grmhd::AnalyticData::InitialMagneticFields::
                 initial_magnetic_fields>,
-        tmpl::pair<LtsTimeStepper, TimeSteppers::lts_time_steppers>,
         tmpl::pair<PhaseChange, PhaseControl::factory_creatable_classes>,
         tmpl::pair<StepChooser<StepChooserUse::LtsStep>,
                    StepChoosers::standard_step_choosers<system>>,
         tmpl::pair<StepChooser<StepChooserUse::Slab>,
-                   tmpl::append<StepChoosers::standard_slab_choosers<
-                                    system, local_time_stepping>,
-                                tmpl::conditional_t<
-                                    use_dg_subcell and local_time_stepping,
-                                    tmpl::list<StepChoosers::FixedLtsRatio>,
-                                    tmpl::list<>>>>,
+                   tmpl::push_back<
+                       StepChoosers::standard_slab_choosers<system>,
+                       evolution::dg::StepChoosers::FixedLtsRatio<volume_dim>>>,
         tmpl::pair<TimeSequence<double>,
                    TimeSequences::all_time_sequences<double>>,
         tmpl::pair<TimeSequence<std::uint64_t>,
                    TimeSequences::all_time_sequences<std::uint64_t>>,
         tmpl::pair<TimeStepper, TimeSteppers::time_steppers>,
         tmpl::pair<Trigger, tmpl::append<Triggers::logical_triggers,
-                                         Triggers::time_triggers>>>;
+                                         Triggers::time_triggers>>,
+        tmpl::pair<Filters::Filter<volume_dim,
+                                   typename system::variables_tag::tags_list>,
+                   Filters::all_filters<
+                       volume_dim, typename system::variables_tag::tags_list>>>;
   };
 
   using observed_reduction_data_tags = observers::collect_reduction_data_tags<
@@ -408,8 +400,9 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
         grmhd::ValenciaDivClean::subcell::PrimitiveGhostVariables;
   };
 
-  using events_and_dense_triggers_dg_postprocessors =
-      tmpl::list<AlwaysReadyPostprocessor<system::primitive_from_conservative<
+  using events_and_dense_triggers_dg_postprocessors = tmpl::list<
+      evolution::dg::ApplyLtsDenseBoundaryCorrections<EvolutionMetavars>,
+      AlwaysReadyPostprocessor<system::primitive_from_conservative<
           ordered_list_of_primitive_recovery_schemes>>>;
 
   using events_and_dense_triggers_subcell_postprocessors =
@@ -421,27 +414,16 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       Actions::MutateApply<
           evolution::dg::BackgroundGrVars<system, EvolutionMetavars>>,
       evolution::dg::Actions::ComputeTimeDerivative<
-          volume_dim, system, AllStepChoosers, local_time_stepping,
-          use_dg_element_collection>,
+          volume_dim, system, AllStepChoosers, use_dg_element_collection>,
       evolution::dg::Actions::ApplyBoundaryCorrectionsToTimeDerivative<
           volume_dim, use_dg_element_collection>,
       Actions::MutateApply<RecordTimeStepperData<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          tmpl::list<
-              evolution::Actions::RunEventsAndDenseTriggers<
-                  tmpl::push_front<events_and_dense_triggers_dg_postprocessors,
-                                   evolution::dg::ApplyBoundaryCorrections<
-                                       local_time_stepping, EvolutionMetavars,
-                                       volume_dim, true>>>,
-              Actions::MutateApply<UpdateU<system, local_time_stepping>>,
-              evolution::dg::Actions::ApplyLtsBoundaryCorrections<
-                  volume_dim, false, use_dg_element_collection>,
-              Actions::MutateApply<ChangeTimeStepperOrder<system>>>,
-          tmpl::list<
-              evolution::Actions::RunEventsAndDenseTriggers<
-                  events_and_dense_triggers_dg_postprocessors>,
-              Actions::MutateApply<UpdateU<system, local_time_stepping>>>>,
+      evolution::Actions::RunEventsAndDenseTriggers<
+          events_and_dense_triggers_dg_postprocessors>,
+      Actions::MutateApply<UpdateU<system>>,
+      evolution::dg::Actions::ApplyLtsBoundaryCorrections<
+          volume_dim, use_dg_element_collection>,
+      Actions::MutateApply<ChangeTimeStepperOrder<system>>,
       tmpl::conditional_t<
           use_dg_subcell,
           // Note: The primitive variables are computed as part of the TCI.
@@ -450,18 +432,15 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                   tmpl::front<ordered_list_of_primitive_recovery_schemes>>>,
           tmpl::list<>>,
       Actions::MutateApply<CleanHistory<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
-          tmpl::list<>>,
+      Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
+      dg::Actions::SpectralFilter<volume_dim,
+                                  typename system::variables_tag::tags_list>,
       tmpl::conditional_t<
           use_dg_subcell,
           tmpl::list<>,
-          tmpl::list<Limiters::Actions::SendData<EvolutionMetavars>,
-                     Limiters::Actions::Limit<EvolutionMetavars>,
-                     VariableFixing::Actions::FixVariables<
-                         grmhd::ValenciaDivClean::Flattener<
-                             ordered_list_of_primitive_recovery_schemes>>>>,
+          tmpl::list<VariableFixing::Actions::FixVariables<
+              grmhd::ValenciaDivClean::Flattener<
+                  ordered_list_of_primitive_recovery_schemes>>>>,
       parameterized_deleptonization,
       VariableFixing::Actions::FixVariables<
           VariableFixing::FixToAtmosphere<volume_dim>>,
@@ -475,11 +454,9 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       Actions::Goto<evolution::dg::subcell::Actions::Labels::EndOfSolvers>,
 
       Actions::Label<evolution::dg::subcell::Actions::Labels::BeginSubcell>,
-      tmpl::conditional_t<local_time_stepping,
-                          // This is just to adjust for FixedLtsRatio, so we
-                          // can pass an empty list of StepChoosers.
-                          Actions::MutateApply<ChangeStepSize<tmpl::list<>>>,
-                          tmpl::list<>>,
+      // This is just to adjust for FixedLtsRatio, so we
+      // can pass an empty list of StepChoosers.
+      Actions::MutateApply<ChangeStepSize<tmpl::list<>>>,
       Actions::MutateApply<evolution::dg::subcell::BackgroundGrVars<
           system, EvolutionMetavars, false>>,
       Actions::MutateApply<evolution::dg::subcell::fd::CellCenteredFlux<
@@ -505,12 +482,9 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       Actions::MutateApply<RecordTimeStepperData<system>>,
       evolution::Actions::RunEventsAndDenseTriggers<
           events_and_dense_triggers_subcell_postprocessors>,
-      Actions::MutateApply<UpdateU<system, local_time_stepping>>,
+      Actions::MutateApply<UpdateU<system>>,
       Actions::MutateApply<CleanHistory<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
-          tmpl::list<>>,
+      Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
       Actions::MutateApply<
           grmhd::ValenciaDivClean::subcell::FixConservativesAndComputePrims<
               ordered_list_of_primitive_recovery_schemes>>,
@@ -534,14 +508,24 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
   using dg_registration_list =
       tmpl::list<observers::Actions::RegisterEventsWithObservers>;
 
+  using equal_rate_regions = tmpl::conditional_t<
+      use_dg_subcell,
+      tmpl::list<evolution::dg::subcell::
+                     SubcellAndNonconformingEqualRateRegions<volume_dim>>,
+      tmpl::list<evolution::dg::NonconformingEqualRateRegions<volume_dim>>>;
+
   using initialization_actions = tmpl::flatten<tmpl::list<
       Initialization::Actions::InitializeItems<
-          Initialization::TimeStepping<EvolutionMetavars, TimeStepperBase>,
+          Initialization::TimeStepping<EvolutionMetavars, TimeStepper, false,
+                                       true>,
           evolution::dg::Initialization::Domain<EvolutionMetavars>,
-          Initialization::TimeStepperHistory<EvolutionMetavars>>,
+          evolution::dg::subcell::GhostZoneInverseJacobian<
+              volume_dim, grmhd::ValenciaDivClean::fd::Tags::Reconstructor>>,
       Initialization::Actions::AddSimpleTags<
           evolution::dg::BackgroundGrVars<system, EvolutionMetavars>>,
       Initialization::Actions::ConservativeSystem<system>,
+      Initialization::Actions::InitializeItems<
+          Initialization::TimeStepperHistory<system>>,
 
       tmpl::conditional_t<
           use_dg_subcell,
@@ -586,16 +570,14 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                      Actions::UpdateConservatives>>,
 
       Initialization::Actions::AddComputeTags<
-          StepChoosers::step_chooser_compute_tags<EvolutionMetavars,
-                                                  local_time_stepping>>,
+          StepChoosers::step_chooser_compute_tags<EvolutionMetavars>>,
       ::evolution::dg::Initialization::Mortars<volume_dim>,
-      tmpl::conditional_t<use_dg_subcell and local_time_stepping,
-                          Initialization::Actions::InitializeItems<
-                              evolution::dg::subcell::DisableLts<3>>,
-                          tmpl::list<>>,
-      tmpl::conditional_t<use_dg_subcell, tmpl::list<>,
-                          Initialization::Actions::Minmod<3>>,
+      evolution::dg::Initialization::Actions::SetupEqualRateRegions<
+          EvolutionMetavars, volume_dim, equal_rate_regions>,
       evolution::Actions::InitializeRunEventsAndDenseTriggers,
+      Initialization::Actions::InitializeItems<
+          evolution::dg::Initialization::SpectralFilters<
+              volume_dim, typename system::variables_tag::tags_list>>,
       intrp::Actions::ElementInitInterpPoints<volume_dim,
                                               interpolation_target_tags>,
       Parallel::Actions::TerminatePhase>>;
@@ -619,28 +601,27 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                      tmpl::push_back<dg_registration_list,
                                      Parallel::Actions::TerminatePhase>>,
 
-          Parallel::PhaseActions<
-              Parallel::Phase::WriteCheckpoint,
-              tmpl::list<evolution::Actions::RunEventsAndTriggers<
-                             Triggers::WhenToCheck::AtCheckpoints>,
-                         Parallel::Actions::TerminatePhase>>,
+                 Parallel::PhaseActions<
+                     Parallel::Phase::WriteCheckpoint,
+                     tmpl::list<evolution::Actions::RunEventsAndTriggers<
+                                    Triggers::WhenToCheck::AtCheckpoints>,
+                                Parallel::Actions::TerminatePhase>>,
 
-          Parallel::PhaseActions<
-              Parallel::Phase::Evolve,
-              tmpl::flatten<tmpl::list<
-                  std::conditional_t<local_time_stepping,
-                                     evolution::Actions::RunEventsAndTriggers<
-                                         Triggers::WhenToCheck::AtSteps>,
-                                     tmpl::list<>>,
-                  evolution::Actions::RunEventsAndTriggers<
-                      Triggers::WhenToCheck::AtSlabs>,
-                  Actions::ChangeSlabSize, step_actions,
-                  Actions::MutateApply<AdvanceTime<>>,
-                  PhaseControl::Actions::ExecutePhaseChange>>>,
-          Parallel::PhaseActions<
-              Parallel::Phase::PostFailureCleanup,
-              tmpl::list<Actions::RunEventsOnFailure<Tags::Time>,
-                         Parallel::Actions::TerminatePhase>>>>;
+                 Parallel::PhaseActions<
+                     Parallel::Phase::Evolve,
+                     tmpl::flatten<tmpl::list<
+                         evolution::Actions::RunEventsAndTriggers<
+                             Triggers::WhenToCheck::AtSteps>,
+                         evolution::Actions::RunEventsAndTriggers<
+                             Triggers::WhenToCheck::AtSlabs>,
+                         Actions::ChangeSlabSize,
+                         evolution::dg::Actions::ChangeFixedLtsRatio,
+                         step_actions, Actions::MutateApply<AdvanceTime<>>,
+                         PhaseControl::Actions::ExecutePhaseChange>>>,
+                 Parallel::PhaseActions<
+                     Parallel::Phase::PostFailureCleanup,
+                     tmpl::list<Actions::RunEventsOnFailure<Tags::Time>,
+                                Parallel::Actions::TerminatePhase>>>>;
 
   struct registration
       : tt::ConformsTo<Parallel::protocols::RegistrationMetavariables> {

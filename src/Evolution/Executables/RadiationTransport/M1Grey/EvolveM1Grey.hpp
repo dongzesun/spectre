@@ -18,10 +18,13 @@
 #include "Evolution/DiscontinuousGalerkin/BackgroundGrVars.hpp"
 #include "Evolution/DiscontinuousGalerkin/CleanMortarHistory.hpp"
 #include "Evolution/DiscontinuousGalerkin/DgElementArray.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/ChangeFixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/FixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/NonconformingEqualRateRegions.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/Mortars.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/QuadratureTag.hpp"
-#include "Evolution/DiscontinuousGalerkin/Limiters/Minmod.hpp"
-#include "Evolution/DiscontinuousGalerkin/Limiters/Tags.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SetupEqualRateRegions.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SpectralFilters.hpp"
 #include "Evolution/Imex/Actions/DoImplicitStep.hpp"
 #include "Evolution/Imex/Actions/RecordTimeStepperData.hpp"
 #include "Evolution/Imex/CleanHistory.hpp"
@@ -30,7 +33,6 @@
 #include "Evolution/Initialization/ConservativeSystem.hpp"
 #include "Evolution/Initialization/DgDomain.hpp"
 #include "Evolution/Initialization/Evolution.hpp"
-#include "Evolution/Initialization/Limiter.hpp"
 #include "Evolution/Initialization/SetVariables.hpp"
 #include "Evolution/Systems/RadiationTransport/M1Grey/BoundaryConditions/Factory.hpp"
 #include "Evolution/Systems/RadiationTransport/M1Grey/BoundaryCorrections/Factory.hpp"
@@ -45,6 +47,7 @@
 #include "IO/Observer/ObserverComponent.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Factory.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
 #include "Parallel/Local.hpp"
@@ -58,9 +61,10 @@
 #include "ParallelAlgorithms/Actions/AddComputeTags.hpp"
 #include "ParallelAlgorithms/Actions/AddSimpleTags.hpp"
 #include "ParallelAlgorithms/Actions/InitializeItems.hpp"
-#include "ParallelAlgorithms/Actions/LimiterActions.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
+#include "ParallelAlgorithms/Actions/SpectralFilter.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
+#include "ParallelAlgorithms/Events/ChangeFixedLtsRatio.hpp"
 #include "ParallelAlgorithms/Events/Completion.hpp"
 #include "ParallelAlgorithms/Events/Factory.hpp"
 #include "ParallelAlgorithms/EventsAndDenseTriggers/DenseTrigger.hpp"
@@ -92,7 +96,6 @@
 #include "Time/TimeSequence.hpp"
 #include "Time/TimeSteppers/Factory.hpp"
 #include "Time/TimeSteppers/ImexTimeStepper.hpp"
-#include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Time/Triggers/TimeTriggers.hpp"
 #include "Time/UpdateU.hpp"
@@ -121,10 +124,7 @@ struct EvolutionMetavars {
 
   using system = RadiationTransport::M1Grey::System<neutrino_species>;
   using temporal_id = Tags::TimeStepId;
-  using TimeStepperBase = ImexTimeStepper;
 
-  static constexpr bool local_time_stepping =
-      TimeStepperBase::local_time_stepping;
   static constexpr bool use_dg_element_collection = false;
 
   using initial_data_list =
@@ -132,8 +132,6 @@ struct EvolutionMetavars {
                    RadiationTransport::M1Grey::Solutions::all_solutions>;
 
   using analytic_variables_tags = typename system::variables_tag::tags_list;
-  using limiter = Tags::Limiter<
-      Limiters::Minmod<3, typename system::variables_tag::tags_list>>;
 
   using analytic_compute = evolution::Tags::AnalyticSolutionsCompute<
       volume_dim, analytic_variables_tags, false, initial_data_list>;
@@ -161,7 +159,8 @@ struct EvolutionMetavars {
                        Events::Completion,
                        dg::Events::field_observations<
                            volume_dim, observe_fields, non_tensor_compute_tags>,
-                       Events::time_events<system>>>>,
+                       Events::time_events<system>,
+                       dg::Events::ChangeFixedLtsRatio<volume_dim>>>>,
         tmpl::pair<evolution::BoundaryCorrection,
                    RadiationTransport::M1Grey::BoundaryCorrections::
                        standard_boundary_corrections<neutrino_species>>,
@@ -174,8 +173,9 @@ struct EvolutionMetavars {
         tmpl::pair<StepChooser<StepChooserUse::LtsStep>,
                    StepChoosers::standard_step_choosers<system, false>>,
         tmpl::pair<StepChooser<StepChooserUse::Slab>,
-                   StepChoosers::standard_slab_choosers<
-                       system, local_time_stepping, false>>,
+                   tmpl::push_back<
+                       StepChoosers::standard_slab_choosers<system, false>,
+                       evolution::dg::StepChoosers::FixedLtsRatio<volume_dim>>>,
         tmpl::pair<TimeSequence<double>,
                    TimeSequences::all_time_sequences<double>>,
         tmpl::pair<TimeSequence<std::uint64_t>,
@@ -183,61 +183,58 @@ struct EvolutionMetavars {
         tmpl::pair<TimeStepper, TimeSteppers::time_steppers>,
         tmpl::pair<Trigger, tmpl::append<Triggers::logical_triggers,
                                          Triggers::time_triggers>>,
-        tmpl::pair<evolution::initial_data::InitialData, initial_data_list>>;
+        tmpl::pair<evolution::initial_data::InitialData, initial_data_list>,
+        tmpl::pair<Filters::Filter<volume_dim,
+                                   typename system::variables_tag::tags_list>,
+                   Filters::all_filters<
+                       volume_dim, typename system::variables_tag::tags_list>>>;
   };
 
   using observed_reduction_data_tags =
       observers::collect_reduction_data_tags<tmpl::flatten<tmpl::list<
           tmpl::at<typename factory_creation::factory_classes, Event>>>>;
 
-  static_assert(not local_time_stepping);
   using step_actions = tmpl::flatten<tmpl::list<
       Actions::MutateApply<
           evolution::dg::BackgroundGrVars<system, EvolutionMetavars>>,
       evolution::dg::Actions::ComputeTimeDerivative<
-          volume_dim, system, AllStepChoosers, local_time_stepping,
-          use_dg_element_collection>,
+          volume_dim, system, AllStepChoosers, use_dg_element_collection>,
       evolution::dg::Actions::ApplyBoundaryCorrectionsToTimeDerivative<
           volume_dim, use_dg_element_collection>,
       Actions::MutateApply<RecordTimeStepperData<system>>,
       imex::Actions::RecordTimeStepperData<system>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          tmpl::list<evolution::Actions::RunEventsAndDenseTriggers<
-                         tmpl::list<evolution::dg::ApplyBoundaryCorrections<
-                             local_time_stepping, EvolutionMetavars, volume_dim,
-                             true>>>,
-                     Actions::MutateApply<UpdateU<system, local_time_stepping>>,
-                     evolution::dg::Actions::ApplyLtsBoundaryCorrections<
-                         volume_dim, false, use_dg_element_collection>,
-                     Actions::MutateApply<ChangeTimeStepperOrder<system>>>,
-          tmpl::list<
-              evolution::Actions::RunEventsAndDenseTriggers<
-                  tmpl::list<imex::ImplicitDenseOutput<system>>>,
-              Actions::MutateApply<UpdateU<system, local_time_stepping>>>>,
+      evolution::Actions::RunEventsAndDenseTriggers<tmpl::list<
+          evolution::dg::ApplyLtsDenseBoundaryCorrections<EvolutionMetavars>,
+          imex::ImplicitDenseOutput<system>>>,
+      Actions::MutateApply<UpdateU<system>>,
+      evolution::dg::Actions::ApplyLtsBoundaryCorrections<
+          volume_dim, use_dg_element_collection>,
       imex::Actions::DoImplicitStep<system>,
+      Actions::MutateApply<ChangeTimeStepperOrder<system>>,
       Actions::MutateApply<CleanHistory<system>>,
       Actions::MutateApply<imex::CleanHistory<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
-          tmpl::list<>>,
-      Limiters::Actions::SendData<EvolutionMetavars>,
-      Limiters::Actions::Limit<EvolutionMetavars>,
+      Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
+      dg::Actions::SpectralFilter<volume_dim,
+                                  typename system::variables_tag::tags_list>,
       Actions::MutateApply<typename RadiationTransport::M1Grey::
                                ComputeM1Closure<neutrino_species>>>>;
 
   using dg_registration_list =
       tmpl::list<observers::Actions::RegisterEventsWithObservers>;
 
+  using equal_rate_regions =
+      tmpl::list<evolution::dg::NonconformingEqualRateRegions<volume_dim>>;
+
   using initialization_actions = tmpl::list<
       Initialization::Actions::InitializeItems<
-          Initialization::TimeStepping<EvolutionMetavars, TimeStepperBase>,
-          evolution::dg::Initialization::Domain<EvolutionMetavars>,
-          Initialization::TimeStepperHistory<EvolutionMetavars>>,
+          Initialization::TimeStepping<EvolutionMetavars, ImexTimeStepper,
+                                       false, true>,
+          evolution::dg::Initialization::Domain<EvolutionMetavars>>,
       Initialization::Actions::AddSimpleTags<
           evolution::dg::BackgroundGrVars<system, EvolutionMetavars>>,
       Initialization::Actions::ConservativeSystem<system>,
+      Initialization::Actions::InitializeItems<
+          Initialization::TimeStepperHistory<system>>,
       evolution::Initialization::Actions::SetVariables<
           domain::Tags::Coordinates<volume_dim, Frame::ElementLogical>>,
       RadiationTransport::M1Grey::Actions::InitializeM1Tags<system>,
@@ -245,11 +242,14 @@ struct EvolutionMetavars {
       Actions::MutateApply<typename RadiationTransport::M1Grey::
                                ComputeM1Closure<neutrino_species>>,
       Initialization::Actions::AddComputeTags<
-          StepChoosers::step_chooser_compute_tags<EvolutionMetavars,
-                                                  local_time_stepping>>,
+          StepChoosers::step_chooser_compute_tags<EvolutionMetavars>>,
       ::evolution::dg::Initialization::Mortars<volume_dim>,
-      Initialization::Actions::Minmod<3>,
+      evolution::dg::Initialization::Actions::SetupEqualRateRegions<
+          EvolutionMetavars, volume_dim, equal_rate_regions>,
       evolution::Actions::InitializeRunEventsAndDenseTriggers,
+      Initialization::Actions::InitializeItems<
+          evolution::dg::Initialization::SpectralFilters<
+              volume_dim, typename system::variables_tag::tags_list>>,
       Parallel::Actions::TerminatePhase>;
 
   using dg_element_array = DgElementArray<
@@ -277,16 +277,15 @@ struct EvolutionMetavars {
 
           Parallel::PhaseActions<
               Parallel::Phase::Evolve,
-              tmpl::flatten<tmpl::list<
-                  std::conditional_t<local_time_stepping,
-                                     evolution::Actions::RunEventsAndTriggers<
-                                         Triggers::WhenToCheck::AtSteps>,
-                                     tmpl::list<>>,
-                  evolution::Actions::RunEventsAndTriggers<
-                      Triggers::WhenToCheck::AtSlabs>,
-                  Actions::ChangeSlabSize, step_actions,
-                  Actions::MutateApply<AdvanceTime<>>,
-                  PhaseControl::Actions::ExecutePhaseChange>>>>>;
+              tmpl::flatten<
+                  tmpl::list<evolution::Actions::RunEventsAndTriggers<
+                                 Triggers::WhenToCheck::AtSteps>,
+                             evolution::Actions::RunEventsAndTriggers<
+                                 Triggers::WhenToCheck::AtSlabs>,
+                             Actions::ChangeSlabSize,
+                             evolution::dg::Actions::ChangeFixedLtsRatio,
+                             step_actions, Actions::MutateApply<AdvanceTime<>>,
+                             PhaseControl::Actions::ExecutePhaseChange>>>>>;
 
   struct registration
       : tt::ConformsTo<Parallel::protocols::RegistrationMetavariables> {

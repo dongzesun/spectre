@@ -7,6 +7,9 @@
 
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Domain/Creators/DomainCreator.hpp"
+#include "Domain/Creators/OptionTags.hpp"
+#include "Domain/Structure/BlockGroups.hpp"
 
 /// \cond
 class ComplexDataVector;
@@ -20,10 +23,27 @@ class DataVector;
  *
  * \see GrSelfForce::FirstOrderSystem
  */
-namespace GrSelfForce {}
+namespace GrSelfForce {
+
+namespace OptionTags {
+
+struct OptionGroup {
+  static std::string name() { return "GrSelfForce"; }
+  static constexpr Options::String help =
+      "Options for the GR self-force system";
+};
+
+struct NullSlicingBlocks {
+  using group = OptionGroup;
+  using type = std::vector<std::string>;
+  static constexpr Options::String help =
+      "The blocks in which to use null slicing (vtu-slicing).";
+};
+
+}  // namespace OptionTags
 
 /// Tags for the GrSelfForce system.
-namespace GrSelfForce::Tags {
+namespace Tags {
 
 /*!
  * \brief The complex m-mode field $(\Psi_m)_{ab}$.
@@ -52,16 +72,16 @@ struct MMode : db::SimpleTag {
 };
 
 /*!
- * \brief The factor multiplying the angular derivative in the principal part of
- * the equations.
+ * \brief The factors $\alpha^i$ multiplying the radial and angular
+ * derivatives in the principal part of the equations.
  *
- * This is the factor $\alpha$ that defines the principal part of the equations
- * and allows to write it in first-order flux form (see
- * `GrSelfForce::FirstOrderSystem`). This factor is set by the analytic data
- * class (see `ScalarSelfForce::AnalyticData::CircularOrbit`).
+ * These are the factors $\alpha^i$ that define the principal part of the
+ * equations and allow writing them in first-order flux form (see
+ * `GrSelfForce::FirstOrderSystem`). They are set by the analytic data class
+ * (see `GrSelfForce::AnalyticData::CircularOrbit`).
  */
 struct Alpha : db::SimpleTag {
-  using type = Scalar<ComplexDataVector>;
+  using type = tnsr::I<ComplexDataVector, 2>;
 };
 
 /*!
@@ -73,16 +93,22 @@ struct Beta : db::SimpleTag {
 };
 
 /*!
- * \brief The factors $\gamma_{{r_\star}ab}^{cd}$ multiplying the
- * $r_\star$-derivative terms in the equations.
+ * \brief The radial component ($i=0$) of the factors $\gamma_{iab}^{cd}$
+ * multiplying the derivative terms in the equations.
+ *
+ * The radial coordinate is $r_\star$ if `PenetratingHorizon` is false and $r$
+ * if it is true.
  */
 struct GammaRstar : db::SimpleTag {
   using type = tnsr::aaBB<ComplexDataVector, 3>;
 };
 
 /*!
- * \brief The factors $\gamma_{\theta ab}^{cd}$ multiplying the
- * $\theta$-derivative terms in the equations.
+ * \brief The angular component ($i=1$) of the factors $\gamma_{iab}^{cd}$
+ * multiplying the derivative terms in the equations.
+ *
+ * The angular coordinate is $\theta$ if `PenetratingHorizon` is false and
+ * $z=\cos\theta$ if it is true.
  */
 struct GammaTheta : db::SimpleTag {
   using type = tnsr::aaBB<ComplexDataVector, 3>;
@@ -124,4 +150,23 @@ struct BoyerLindquistRadius : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
 
-}  // namespace GrSelfForce::Tags
+/*!
+ * \brief Blocks in which we use null slicing (vtu-slicing).
+ */
+template <size_t Dim>
+struct NullSlicingBlocks : db::SimpleTag {
+  using type = std::vector<size_t>;
+  using option_tags = tmpl::list<OptionTags::NullSlicingBlocks,
+                                 domain::OptionTags::DomainCreator<Dim>>;
+  static constexpr bool pass_metavariables = false;
+  static type create_from_options(
+      const std::vector<std::string>& null_slicing_blocks,
+      const std::unique_ptr<DomainCreator<Dim>>& domain_creator) {
+    return domain::block_ids_from_names(null_slicing_blocks,
+                                        domain_creator->block_names(),
+                                        domain_creator->block_groups());
+  }
+};
+
+}  // namespace Tags
+}  // namespace GrSelfForce

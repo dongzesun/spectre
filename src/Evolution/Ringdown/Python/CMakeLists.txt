@@ -11,7 +11,7 @@ spectre_python_add_module(
     Bindings.cpp
     PYTHON_FILES
     __init__.py
-    ComputeAhCCoefsInRingdownDistortedFrame.py
+    ComputeRingdownShapeAndTranslationFoT.py
 )
 
 spectre_python_headers(
@@ -31,12 +31,11 @@ spectre_python_link_libraries(
     DomainStructure
     ErrorHandling
     Options
-    ParallelInterpolation
     Ringdown
     Serialization
     Spectral
     SphericalHarmonics
-    SphericalHarmonicsIO
+    StrahlkorperIO
     Utilities
     pybind11::module
 )

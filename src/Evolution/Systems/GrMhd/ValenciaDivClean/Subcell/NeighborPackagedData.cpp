@@ -41,7 +41,10 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Tag.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/ComputeFluxes.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/System.hpp"
+#include "Evolution/VariableFixing/FixToAtmosphere.hpp"
+#include "Evolution/VariableFixing/Tags.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "NumericalAlgorithms/Spectral/Parity.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
@@ -106,6 +109,9 @@ DirectionalIdMap<3, DataVector> NeighborPackagedData::apply(
 
       const auto& element = db::get<domain::Tags::Element<3>>(box);
       const auto& eos = get<hydro::Tags::GrmhdEquationOfState>(box);
+      const auto& fix_to_atmosphere =
+          db::get<::Tags::VariableFixer<VariableFixing::FixToAtmosphere<3>>>(
+              box);
 
       using dg_package_field_tags =
           typename DerivedCorrection::dg_package_field_tags;
@@ -151,12 +157,13 @@ DirectionalIdMap<3, DataVector> NeighborPackagedData::apply(
 
         call_with_dynamic_type<void, typename grmhd::ValenciaDivClean::fd::
                                          Reconstructor::creatable_classes>(
-            &recons,
-            [&element, &eos, &mortar_id, &ghost_subcell_data, &subcell_mesh,
-             &vars_on_face, &volume_prims](const auto& reconstructor) {
+            &recons, [&element, &eos, &fix_to_atmosphere, &mortar_id,
+                      &ghost_subcell_data, &subcell_mesh, &vars_on_face,
+                      &volume_prims](const auto& reconstructor) {
               reconstructor->reconstruct_fd_neighbor(
                   make_not_null(&vars_on_face), volume_prims, eos, element,
-                  ghost_subcell_data, subcell_mesh, mortar_id.direction());
+                  ghost_subcell_data, subcell_mesh, fix_to_atmosphere,
+                  mortar_id.direction());
             });
 
         // Get the mesh velocity if needed
@@ -180,7 +187,8 @@ DirectionalIdMap<3, DataVector> NeighborPackagedData::apply(
             evolution::dg::subcell::fd::project(
                 make_not_null(&mesh_velocity_on_subcell_face.value().get(i)),
                 mesh_velocity_on_dg_face.get(i), dg_face_mesh,
-                subcell_face_extents);
+                subcell_face_extents,
+                i == 0 ? Spectral::Parity::Odd : Spectral::Parity::Even);
           }
         }
 
@@ -232,7 +240,8 @@ DirectionalIdMap<3, DataVector> NeighborPackagedData::apply(
               dg_normal_covector.get(i),
               dg_mesh.slice_away(mortar_id.direction().dimension()),
               subcell_mesh.extents().slice_away(
-                  mortar_id.direction().dimension()));
+                  mortar_id.direction().dimension()),
+              i == 0 ? Spectral::Parity::Odd : Spectral::Parity::Even);
         }
 
         // Compute the packaged data

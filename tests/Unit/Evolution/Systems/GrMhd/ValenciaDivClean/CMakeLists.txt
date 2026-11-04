@@ -5,6 +5,7 @@ set(LIBRARY "Test_ValenciaDivClean")
 
 set(LIBRARY_SOURCES
   Actions/Test_NumericInitialData.cpp
+  BoundaryConditions/Test_CartoonGhost.cpp
   BoundaryConditions/Test_DirichletAnalytic.cpp
   BoundaryConditions/Test_DemandOutgoingCharSpeeds.cpp
   BoundaryConditions/Test_HydroFreeOutflow.cpp
@@ -41,6 +42,7 @@ set(LIBRARY_SOURCES
   Test_QuadrupoleFormula.cpp
   Test_SetVariablesNeededFixingToFalse.cpp
   Test_Sources.cpp
+  Test_System.cpp
   Test_Tags.cpp
   Test_TimeDerivativeTerms.cpp
   Test_ValenciaDivClean.cpp
@@ -62,6 +64,7 @@ target_link_libraries(
   Hydro
   HydroHelpers
   Importers
+  LinearOperators
   Utilities
   ValenciaDivClean
   )

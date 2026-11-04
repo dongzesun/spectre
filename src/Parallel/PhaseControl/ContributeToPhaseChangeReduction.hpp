@@ -7,12 +7,12 @@
 #include <optional>
 #include <type_traits>
 
+#include "DataStructures/TaggedTuple.hpp"
 #include "Parallel/CharmRegistration.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Local.hpp"
 #include "Parallel/PhaseControl/PhaseControlTags.hpp"
 #include "Parallel/PhaseControlReductionHelpers.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 #include "Parallel/Main.decl.h"
 
@@ -39,7 +39,7 @@ void contribute_to_phase_change_reduction(
   using reduction_data_type =
       PhaseControl::reduction_data<tmpl::list<Ts...>,
                                    phase_change_tags_and_combines_list>;
-  (void)Parallel::charmxx::RegisterReducerFunction<
+  (void)&Parallel::charmxx::RegisterReducerFunction<
       reduction_data_type::combine>::registrar;
   CkCallback callback(CProxy_Main<Metavariables>::index_t::
                           template redn_wrapper_phase_change_reduction<
@@ -65,7 +65,7 @@ void contribute_to_phase_change_reduction(
   using reduction_data_type =
       PhaseControl::reduction_data<tmpl::list<Ts...>,
                                    phase_change_tags_and_combines_list>;
-  (void)Parallel::charmxx::RegisterReducerFunction<
+  (void)&Parallel::charmxx::RegisterReducerFunction<
       reduction_data_type::combine>::registrar;
   CkCallback callback(CProxy_Main<Metavariables>::index_t::
                           template redn_wrapper_phase_change_reduction<

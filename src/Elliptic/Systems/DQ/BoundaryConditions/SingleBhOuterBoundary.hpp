@@ -19,7 +19,7 @@
 #include "Elliptic/BoundaryConditions/BoundaryConditionType.hpp"
 #include "Elliptic/Systems/DQ/BbhAffineMap.hpp"
 #include "Elliptic/Systems/DQ/Tags.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
 #include "Options/Auto.hpp"
 #include "Options/Context.hpp"
 #include "Options/String.hpp"

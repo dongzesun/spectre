@@ -18,6 +18,7 @@ spectre_target_sources(
   PrimitiveFromConservativeOptions.cpp
   SetVariablesNeededFixingToFalse.cpp
   Sources.cpp
+  SpectralFilter.cpp
   TimeDerivativeTerms.cpp
   )
 
@@ -70,7 +71,6 @@ target_link_libraries(
   GrMhdSolutions
   H5
   Hydro
-  Limiters
   Options
   RelativisticEulerSolutions
   Utilities

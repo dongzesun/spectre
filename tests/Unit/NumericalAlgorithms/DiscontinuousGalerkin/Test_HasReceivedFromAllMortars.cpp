@@ -5,15 +5,16 @@
 
 #include <unordered_map>
 
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Neighbors.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/HasReceivedFromAllMortars.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/MortarHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 
@@ -34,7 +35,7 @@ void test_has_received_from_all_mortars() {
   const ElementId<Dim> self_id{1};
   {
     INFO("No neighbors");
-    const Element<Dim> element{self_id, {}};
+    const Element<Dim> element{self_id, {}, domain::topologies::hypercube<Dim>};
     const tuples::TaggedTuple<InboxTag<Dim>> inbox{InboxType<Dim>{{time, {}}}};
     CHECK(
         dg::has_received_from_all_mortars<InboxTag<Dim>>(time, element, inbox));
@@ -46,7 +47,8 @@ void test_has_received_from_all_mortars() {
       {{Direction<Dim>::lower_xi(),
         {{left_id}, OrientationMap<Dim>::create_aligned()}},
        {Direction<Dim>::upper_xi(),
-        {{right_id}, OrientationMap<Dim>::create_aligned()}}}};
+        {{right_id}, OrientationMap<Dim>::create_aligned()}}},
+      domain::topologies::hypercube<Dim>};
   {
     INFO("Complete data");
     const tuples::TaggedTuple<InboxTag<Dim>> inbox{

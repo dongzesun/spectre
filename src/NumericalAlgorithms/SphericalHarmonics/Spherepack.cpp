@@ -65,9 +65,9 @@ thread_local Spherepack_detail::MemoryPool Spherepack::memory_pool_ =
 Spherepack::Spherepack(const size_t l_max, const size_t m_max)
     : l_max_{l_max},
       m_max_{m_max},
-      n_theta_{l_max_ + 1},
-      n_phi_{2 * m_max_ + 1},
-      spectral_size_{2 * (l_max_ + 1) * (m_max_ + 1)},
+      n_theta_{n_theta_points(l_max_)},
+      n_phi_{n_phi_points(m_max_)},
+      spectral_size_{spectral_size(l_max_, m_max_)},
       storage_(l_max_, m_max_) {
   if (l_max_ < 2) {
     ERROR("Must use l_max>=2, not l_max=" << l_max_);
@@ -891,30 +891,44 @@ void Spherepack::fill_scalar_work_arrays() {
   }
 }
 
-DataVector Spherepack::prolong_or_restrict(const DataVector& spectral_coefs,
-                                           const size_t l_max_coefs,
-                                           const size_t m_max_coefs,
-                                           const size_t l_max_target,
-                                           const size_t m_max_target) {
-  if (l_max_coefs == l_max_target and m_max_coefs == m_max_target) {
-    return spectral_coefs;
-  }
-
+void Spherepack::prolong_or_restrict(
+    const gsl::not_null<DataVector*> result, const DataVector& spectral_coefs,
+    const size_t l_max_coefs, const size_t m_max_coefs,
+    const size_t l_max_target, const size_t m_max_target, const size_t stride) {
   ASSERT(spectral_coefs.size() ==
-             Spherepack::spectral_size(l_max_coefs, m_max_coefs),
-         "Expecting " << Spherepack::spectral_size(l_max_coefs, m_max_coefs)
+             Spherepack::spectral_size(l_max_coefs, m_max_coefs) * stride,
+         "Expecting " << Spherepack::spectral_size(l_max_coefs, m_max_coefs) *
+                             stride
                       << ", got " << spectral_coefs.size());
-  const size_t spectral_size_target =
-      Spherepack::spectral_size(l_max_target, m_max_target);
-  DataVector result{spectral_size_target, 0.0};
+  if (l_max_coefs == l_max_target and m_max_coefs == m_max_target) {
+    *result = spectral_coefs;
+    return;
+  }
+  result->destructive_resize(
+      Spherepack::spectral_size(l_max_target, m_max_target) * stride);
+  *result = 0.0;
   SpherepackIterator src_it(l_max_coefs, m_max_coefs);
   SpherepackIterator dest_it(l_max_target, m_max_target);
   for (; dest_it; ++dest_it) {
     if (dest_it.l() <= src_it.l_max() and dest_it.m() <= src_it.m_max()) {
       src_it.set(dest_it.l(), dest_it.m(), dest_it.coefficient_array());
-      result[dest_it()] = spectral_coefs[src_it()];
+      for (size_t s = 0; s < stride; ++s) {
+        (*result)[dest_it() * stride + s] =
+            spectral_coefs[src_it() * stride + s];
+      }
     }
   }
+}
+
+DataVector Spherepack::prolong_or_restrict(const DataVector& spectral_coefs,
+                                           const size_t l_max_coefs,
+                                           const size_t m_max_coefs,
+                                           const size_t l_max_target,
+                                           const size_t m_max_target,
+                                           const size_t stride) {
+  DataVector result{};
+  prolong_or_restrict(make_not_null(&result), spectral_coefs, l_max_coefs,
+                      m_max_coefs, l_max_target, m_max_target, stride);
   return result;
 }
 

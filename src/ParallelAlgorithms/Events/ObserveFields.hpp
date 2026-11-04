@@ -11,11 +11,9 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "DataStructures/ApplyMatrices.hpp"
 #include "DataStructures/DataBox/ObservationBox.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataBox/TagName.hpp"
@@ -43,7 +41,6 @@
 #include "ParallelAlgorithms/Events/Tags.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Tags.hpp"
-#include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Literals.hpp"
@@ -292,12 +289,6 @@ class ObserveFields<VolumeDim, tmpl::list<Tensors...>,
     // If no interpolation_mesh is provided, the interpolation is essentially
     // ignored by the RegularGridInterpolant except for a single copy.
     const intrp::RegularGrid interpolant(mesh, target_mesh);
-    const std::optional<
-        std::array<std::reference_wrapper<const Matrix>, VolumeDim>>
-        projection_matrices =
-            do_projection ? std::make_optional(Spectral::p_projection_matrices(
-                                mesh, target_mesh))
-                          : std::nullopt;
 
     // Remove tensor types, only storing individual components.
     std::vector<TensorComponent> components;
@@ -324,17 +315,20 @@ class ObserveFields<VolumeDim, tmpl::list<Tensors...>,
         };
 
     const auto record_tensor_components_impl =
-        [&record_tensor_component_impl, &interpolant, &projection_matrices,
-         &mesh, do_projection](const auto& tensor,
-                               const FloatingPointType floating_point_type,
-                               const std::string& tag_name) {
+        [&record_tensor_component_impl, &interpolant, &mesh, &target_mesh,
+         do_projection](const auto& tensor,
+                        const FloatingPointType floating_point_type,
+                        const std::string& tag_name) {
           using TensorType = std::decay_t<decltype(tensor)>;
           using VectorType = typename TensorType::type;
           for (size_t i = 0; i < tensor.size(); ++i) {
             auto tensor_component =
-                do_projection ? apply_matrices(*projection_matrices, tensor[i],
-                                               mesh.extents())
-                              : interpolant.interpolate(tensor[i]);
+                do_projection
+                    ? Spectral::project(
+                          tensor[i], mesh, target_mesh,
+                          make_array<VolumeDim>(Spectral::SegmentSize::Full),
+                          make_array<VolumeDim>(Spectral::SegmentSize::Full))
+                    : interpolant.interpolate(tensor[i]);
             const std::string component_name =
                 tag_name + tensor.component_suffix(i);
             if constexpr (std::is_same_v<VectorType, ComplexDataVector>) {
@@ -447,12 +441,11 @@ class ObserveFields<VolumeDim, tmpl::list<Tensors...>,
     if (not active_block_or_block_groups_.has_value()) {
       return true;
     }
-    const std::unordered_set<std::string> block_names =
-        domain::expand_block_groups_to_block_names(
-            active_block_or_block_groups_.value(), domain.block_names(),
-            domain.block_groups());
-    return alg::found(block_names,
-                      domain.blocks().at(element_id.block_id()).name());
+    return not domain::block_or_group_names_containing_block(
+                   domain.blocks().at(element_id.block_id()).name(),
+                   active_block_or_block_groups_.value(), domain.block_names(),
+                   domain.block_groups())
+                   .empty();
   }
 
   std::string subfile_path_;

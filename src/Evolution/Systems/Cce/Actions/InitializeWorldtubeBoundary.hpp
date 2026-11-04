@@ -6,9 +6,11 @@
 #include <cstddef>
 #include <optional>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/VariablesTag.hpp"
 #include "Evolution/Systems/Cce/AnalyticBoundaryDataManager.hpp"
 #include "Evolution/Systems/Cce/AnalyticSolutions/RobinsonTrautman.hpp"
@@ -30,7 +32,6 @@
 #include "Utilities/MakeString.hpp"
 #include "Utilities/Requires.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace Cce {
 /// \cond
@@ -80,6 +81,74 @@ struct InitializeWorldtubeBoundaryBase {
         }
       }
     }
+    // Pass the initial-data generator's interpolator to the worldtube data
+    // manager, which computes the boundary value of Du<Dr<BondiJ>>.
+    if constexpr (std::is_same_v<Tags::H5WorldtubeBoundaryDataManager,
+                                 tmpl::front<ManagerTags>> and
+                  requires { Metavariables::evolve_ccm; }) {
+      using generator_tag = Tags::InitializeJ<Metavariables::evolve_ccm>;
+      if constexpr (db::tag_is_retrievable_v<generator_tag,
+                                             db::DataBox<DataBoxTagsList>>) {
+        auto du_dr_j_interpolator =
+            db::get<generator_tag>(box).du_dr_j_interpolator();
+        if (du_dr_j_interpolator != nullptr) {
+          db::mutate<Tags::H5WorldtubeBoundaryDataManager>(
+              [&du_dr_j_interpolator](const auto data_manager) {
+                (*data_manager)
+                    ->set_du_dr_j_interpolator(std::move(du_dr_j_interpolator));
+              },
+              make_not_null(&box));
+        }
+      }
+    } else if constexpr (std::is_same_v<Tags::AnalyticBoundaryDataManager,
+                                        tmpl::front<ManagerTags>>) {
+      // The analytic manager builds Du<Dr<BondiJ>> only when given an
+      // interpolator, so pass it the generator's whenever the generator needs
+      // that boundary value.
+      if constexpr (db::tag_is_retrievable_v<Tags::InitializeJ<false>,
+                                             db::DataBox<DataBoxTagsList>>) {
+        const auto& generator = db::get<Tags::InitializeJ<false>>(box);
+        if (generator.needs_du_dr_j()) {
+          if (dynamic_cast<const Solutions::RobinsonTrautman*>(
+                  &(db::get<Tags::AnalyticBoundaryDataManager>(box)
+                        .get_generator())) != nullptr) {
+            ERROR(
+                "RobinsonTrautman does not support the centered time stencil "
+                "for Du<Dr<BondiJ>>: past-time samples restart its internal "
+                "evolution and can precede its initial time. Use an "
+                "initial-data generator that does not require "
+                "Du<Dr<BondiJ>>.");
+          }
+          auto du_dr_j_interpolator = generator.du_dr_j_interpolator();
+          if (du_dr_j_interpolator == nullptr) {
+            ERROR(
+                "The initial-data generator needs the `Du<Dr<BondiJ>>` "
+                "worldtube boundary value, but supplied no interpolator to "
+                "build it with. Set the generator's `DuDrJInterpolator` "
+                "option.");
+          }
+          db::mutate<Tags::AnalyticBoundaryDataManager>(
+              [&du_dr_j_interpolator](const auto analytic_manager) {
+                analytic_manager->set_du_dr_j_interpolator(
+                    std::move(du_dr_j_interpolator));
+              },
+              make_not_null(&box));
+        }
+      }
+    } else {
+      // No other manager produces `Du<Dr<BondiJ>>`.
+      if constexpr (db::tag_is_retrievable_v<Tags::InitializeJ<false>,
+                                             db::DataBox<DataBoxTagsList>>) {
+        if (db::get<Tags::InitializeJ<false>>(box).needs_du_dr_j()) {
+          ERROR(
+              "The initial-data generator needs the `Du<Dr<BondiJ>>` worldtube "
+              "boundary value, but this worldtube data manager does not "
+              "produce it. Use a different generator, or add support for that "
+              "boundary value to the manager.");
+        }
+      }
+    }
+
     const size_t l_max = db::get<Tags::LMax>(box);
 
     Initialization::mutate_assign<simple_tags>(

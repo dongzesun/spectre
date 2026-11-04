@@ -11,9 +11,12 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
+#include "Domain/Tags.hpp"
 #include "Elliptic/Systems/SelfForce/Scalar/Tags.hpp"
+#include "Elliptic/Tags.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "PointwiseFunctions/InitialDataUtilities/Background.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
@@ -25,7 +28,7 @@ namespace ScalarSelfForce {
  * $F^i=\{\partial_{r_\star}, \alpha \partial_{\cos\theta}\}\Psi_m$.
  */
 void fluxes(gsl::not_null<tnsr::I<ComplexDataVector, 2>*> flux,
-            const Scalar<ComplexDataVector>& alpha,
+            const tnsr::I<ComplexDataVector, 2>& alpha,
             const tnsr::i<ComplexDataVector, 2>& field_gradient);
 
 /*!
@@ -33,7 +36,7 @@ void fluxes(gsl::not_null<tnsr::I<ComplexDataVector, 2>*> flux,
  * $F^i=\{n_{r_\star}, \alpha n_{\cos\theta}\}\Psi_m$.
  */
 void fluxes_on_face(gsl::not_null<tnsr::I<ComplexDataVector, 2>*> flux,
-                    const Scalar<ComplexDataVector>& alpha,
+                    const tnsr::I<ComplexDataVector, 2>& alpha,
                     const tnsr::I<DataVector, 2>& face_normal_vector,
                     const Scalar<ComplexDataVector>& field);
 
@@ -55,11 +58,11 @@ struct Fluxes {
   static constexpr bool is_trivial = false;
   static constexpr bool is_discontinuous = false;
   static void apply(gsl::not_null<tnsr::I<ComplexDataVector, 2>*> flux,
-                    const Scalar<ComplexDataVector>& alpha,
+                    const tnsr::I<ComplexDataVector, 2>& alpha,
                     const Scalar<ComplexDataVector>& /*field*/,
                     const tnsr::i<ComplexDataVector, 2>& field_gradient);
   static void apply(gsl::not_null<tnsr::I<ComplexDataVector, 2>*> flux,
-                    const Scalar<ComplexDataVector>& alpha,
+                    const tnsr::I<ComplexDataVector, 2>& alpha,
                     const tnsr::i<DataVector, 2>& /*face_normal*/,
                     const tnsr::I<DataVector, 2>& face_normal_vector,
                     const Scalar<ComplexDataVector>& field);
@@ -79,8 +82,11 @@ struct Sources {
 };
 
 /*!
- * \brief Adds or subtracts the singular field to/from the received data on
- * element boundaries.
+ * \brief Modifies the received boundary data to account for jump conditions.
+ *
+ * \par Worldtube jump conditions
+ * The `apply` method adds or subtracts the singular field to/from
+ * the received data on element boundaries.
  *
  * In the regularized region we solve for the regularized field
  * \begin{equation}
@@ -92,6 +98,13 @@ struct Sources {
  * $n_i F^i$, but with an extra minus sign because this quantity is defined with
  * the face normal from the perspective of the sending element (see
  * `elliptic::protocols::FirstOrderSystem`).
+ *
+ * \par VTU-slicing jump conditions
+ * The `apply_linearized` method imposes the jump conditions at the
+ * interfaces between domains with different slicings (v-t and t-u transitions).
+ * At these interfaces the boost function $H(r_*)$ is discontinuous, which
+ * produces a jump in the radial derivative of $\Psi_m$
+ * [Eqs. (2.36)-(2.37) in \cite Vu:2026ypc ].
  */
 struct ModifyBoundaryData {
  private:
@@ -105,6 +118,13 @@ struct ModifyBoundaryData {
       tmpl::list<Tags::FieldIsRegularized,
                  ::Tags::Mortars<Tags::FieldIsRegularized, Dim>,
                  ::Tags::Mortars<singular_vars_on_mortars_tag, Dim>>;
+ public:
+  using argument_tags_linearized = tmpl::list<
+      domain::Tags::Element<Dim>, Tags::NullSlicingBlocks<Dim>,
+      elliptic::Tags::Background<elliptic::analytic_data::Background>>;
+  using const_global_cache_tags = tmpl::list<
+      Tags::NullSlicingBlocks<Dim>,
+      elliptic::Tags::Background<elliptic::analytic_data::Background>>;
   static void apply(
       gsl::not_null<Scalar<ComplexDataVector>*> field,
       gsl::not_null<Scalar<ComplexDataVector>*> n_dot_flux,
@@ -112,6 +132,14 @@ struct ModifyBoundaryData {
       const DirectionalIdMap<Dim, bool>& neighbors_field_is_regularized,
       const DirectionalIdMap<Dim, typename singular_vars_on_mortars_tag::type>&
           singular_vars_on_mortars);
+  static void apply_linearized(
+      gsl::not_null<Scalar<ComplexDataVector>*> field_remote,
+      gsl::not_null<Scalar<ComplexDataVector>*> n_dot_flux_remote,
+      const Scalar<ComplexDataVector>& field_local,
+      const Scalar<ComplexDataVector>& n_dot_flux_local,
+      const DirectionalId<Dim>& mortar_id, const Element<Dim>& element,
+      const std::vector<size_t>& null_slicing_blocks,
+      const elliptic::analytic_data::Background& background);
 };
 
 }  // namespace ScalarSelfForce

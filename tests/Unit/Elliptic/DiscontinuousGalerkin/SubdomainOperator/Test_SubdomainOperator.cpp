@@ -15,6 +15,7 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
@@ -82,6 +83,7 @@
 #include "PointwiseFunctions/Elasticity/ConstitutiveRelations/IsotropicHomogeneous.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/Background.hpp"
+#include "PointwiseFunctions/InitialDataUtilities/InitialGuess.hpp"
 #include "Utilities/CartesianProduct.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeArray.hpp"
@@ -90,7 +92,6 @@
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 
@@ -263,12 +264,14 @@ struct RandomBackground : elliptic::analytic_data::Background {
     return result;
   }
   // ScalarSelfForce background to test complex numbers
-  static Scalar<ComplexDataVector> variables(
+  static tnsr::I<ComplexDataVector, Dim> variables(
       const tnsr::I<DataVector, Dim>& x,
       ScalarSelfForce::Tags::Alpha /*meta*/) {
-    Scalar<ComplexDataVector> result{x.begin()->size()};
+    tnsr::I<ComplexDataVector, Dim> result{x.begin()->size()};
     const DataVector r = get(magnitude(x));
-    get(result) = r;
+    for (size_t i = 0; i < Dim; ++i) {
+      result.get(i) = r;
+    }
     return result;
   }
   static Scalar<ComplexDataVector> variables(
@@ -419,12 +422,12 @@ struct ElementArray {
 
   using background_tag =
       elliptic::Tags::Background<elliptic::analytic_data::Background>;
-
+  using null_slicing_tag = ScalarSelfForce::Tags::NullSlicingBlocks<Dim>;
   using metavariables = Metavariables;
   using chare_type = ActionTesting::MockArrayChare;
   using array_index = ElementId<Dim>;
   using const_global_cache_tags =
-      tmpl::list<domain::Tags::Domain<Dim>, background_tag>;
+      tmpl::list<domain::Tags::Domain<Dim>, background_tag, null_slicing_tag>;
 
   // These tags are communicated on subdomain overlaps to initialize the
   // subdomain geometry. AMR updates these tags, so we have to communicate them
@@ -510,6 +513,7 @@ struct Metavariables {
             tmpl::list<elliptic::BoundaryConditions::AnalyticSolution<System>>>,
         tmpl::pair<elliptic::analytic_data::Background,
                    tmpl::list<RandomBackground<volume_dim>>>,
+        tmpl::pair<elliptic::analytic_data::InitialGuess, tmpl::list<>>,
         tmpl::pair<::amr::Criterion, tmpl::list<::amr::Criteria::Random<
                                          amr::Criteria::Type::p>>>>;
   };
@@ -624,6 +628,7 @@ void test_subdomain_operator(
         domain::Tags::Domain<Dim>, domain::Tags::FunctionsOfTimeInitialize,
         domain::Tags::ExternalBoundaryConditions<Dim>,
         elliptic::Tags::Background<elliptic::analytic_data::Background>,
+        ScalarSelfForce::Tags::NullSlicingBlocks<Dim>,
         LinearSolver::Schwarz::Tags::MaxOverlap<DummyOptionsGroup>,
         logging::Tags::Verbosity<DummyOptionsGroup>,
         elliptic::dg::Tags::PenaltyParameter, elliptic::dg::Tags::Massive,
@@ -633,7 +638,7 @@ void test_subdomain_operator(
         logging::Tags::Verbosity<::amr::OptionTags::AmrGroup>>{
         std::move(domain), domain_creator.functions_of_time(),
         std::move(boundary_conditions),
-        std::make_unique<RandomBackground<Dim>>(),
+        std::make_unique<RandomBackground<Dim>>(), std::vector<size_t>{},
         max_overlap.has_value() ? std::optional<size_t>(overlap) : std::nullopt,
         ::Verbosity::Verbose, penalty_parameter, use_massive_dg_operator,
         quadrature, ::dg::Formulation::StrongInertial, std::move(amr_criteria),
@@ -977,7 +982,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.SubdomainOperator", "[Unit][Elliptic]") {
           {{1, 1}},
           {{{{3, 3}}, {{3, 3}}}},
           make_boundary_condition<system>(
-              elliptic::BoundaryConditionType::Dirichlet)};
+              elliptic::BoundaryConditionType::Dirichlet),
+          nullptr};
       test_subdomain_operator<system>(domain_creator);
     }
     {
@@ -991,7 +997,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.SubdomainOperator", "[Unit][Elliptic]") {
           {{1, 1}},
           {{{{3, 3}}, {{3, 3}}}},
           make_boundary_condition<system>(
-              elliptic::BoundaryConditionType::Dirichlet)};
+              elliptic::BoundaryConditionType::Dirichlet),
+          nullptr};
       test_subdomain_operator<system>(domain_creator);
     }
     {
@@ -1004,7 +1011,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.SubdomainOperator", "[Unit][Elliptic]") {
           {{1, 0, 0}},
           {{{{3, 3}}, {{3, 3}}, {{3, 3}}}},
           make_boundary_condition<system>(
-              elliptic::BoundaryConditionType::Dirichlet)};
+              elliptic::BoundaryConditionType::Dirichlet),
+          nullptr};
       test_subdomain_operator<system>(domain_creator);
     }
   }
@@ -1021,6 +1029,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.SubdomainOperator", "[Unit][Elliptic]") {
           elliptic::BoundaryConditionType::Dirichlet);
       const domain::creators::AlignedLattice<1> domain_creator{
           {{{-2., 0., 2.}}},
+          {},
+          {},
           {{0}},
           {{3}},
           {{{{1}}, {{2}}, {{1}}}},  // Refine once in block 1
@@ -1052,6 +1062,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.SubdomainOperator", "[Unit][Elliptic]") {
       const domain::creators::AlignedLattice<2> domain_creator{
           // Start with 4 unrefined blocks
           {{{-2., 0., 2.}, {-2., 0., 2.}}},
+          {},
+          {},
           {{0, 0}},
           {{3, 3}},
           // Refine once in eta in upper-right block in sketch above
@@ -1070,6 +1082,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.SubdomainOperator", "[Unit][Elliptic]") {
           elliptic::BoundaryConditionType::Dirichlet);
       const domain::creators::AlignedLattice<3> domain_creator{
           {{{-2., 0., 2.}, {-2., 0., 2.}, {-2., 0., 2.}}},
+          {},
+          {},
           {{0, 0, 0}},
           {{3, 3, 3}},
           {{{{1, 0, 0}}, {{2, 1, 1}}, {{0, 1, 1}}}},

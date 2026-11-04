@@ -15,6 +15,7 @@
 
 #include "DataStructures/Index.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Domain/CoordinateMaps/CoordinateMap.hpp"
 #include "Domain/CoordinateMaps/Distribution.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/Side.hpp"
@@ -45,7 +46,11 @@ template <typename Map1, typename Map2>
 class ProductOf2Maps;
 template <typename Map1, typename Map2, typename Map3>
 class ProductOf3Maps;
+class Affine;
+template <size_t Dim>
+class Identity;
 class Interval;
+class PolarToCartesian;
 template <size_t Dim>
 class Wedge;
 class Frustum;
@@ -198,6 +203,87 @@ std::vector<domain::CoordinateMaps::Wedge<3>> sph_wedge_coordinate_maps(
         radial_distribution = {domain::CoordinateMaps::Distribution::Linear},
     ShellWedges which_wedges = ShellWedges::All, double opening_angle = M_PI_2);
 
+/*!
+ * \ingroup ComputationalDomainGroup
+ * \brief Redistribute points in the radial ($\zeta$) direction of a domain
+ * layer (e.g. a shell or cube around an object) between the radii
+ * \f$r_\mathrm{in}\f$ and \f$r_\mathrm{out}\f$.
+ *
+ * The map takes a logical coordinate in \f$[-1, 1]\f$ to a
+ * logarithmically-redistributed logical coordinate in \f$[-1, 1]\f$. It is
+ * meant to be applied before a map that is affine along each radial ray, such
+ * as a `domain::CoordinateMaps::Wedge` map. A `log_map_strength` of 1.0 places
+ * the log-map physical origin ("singularity position") at radius 0; larger
+ * values move it toward the inner radius, concentrating grid points near the
+ * object.
+ *
+ * We define three radial coordinates:
+ * - \f$\zeta\f$: input logical coordinate in \f$[-1, 1]\f$;
+ * - \f$\zeta_{\log}\f$: logarithmically-redistributed logical coordinate in
+ *   \f$[-1, 1]\f$;
+ * - \f$r\f$: physical radius in \f$[r_\mathrm{in}, r_\mathrm{out}]\f$.
+ *
+ * Hence, we define two maps:
+ * - Log map \f$\zeta_{\log}(\zeta)\f$:
+ *   \f{align}
+ *   \ln(\zeta_{\log} - \zeta_0)
+ *   &= \frac{1 + \zeta}{2} \ln(1 - \zeta_0) \nonumber \\
+ *   &+ \frac{1 - \zeta}{2} \ln(-1 - \zeta_0),
+ *   \f}
+ *   where \f$\zeta_0 < -1\f$ is the "logical position" of the log map's
+ *   origin.
+ * - Radius map \f$r(\zeta_{\log})\f$, affine along each radial ray:
+ *   \f{align}
+ *   r(\zeta_{\log}) = \frac{1 - \zeta_{\log}}{2} r_\mathrm{in}
+ *   + \frac{1 + \zeta_{\log}}{2} r_\mathrm{out}.
+ *   \f}
+ *   For example, for a `domain::CoordinateMaps::Wedge` map between two
+ *   spherical surfaces, the redistribution is isotropic. With a flat outer
+ *   surface, \f$r_\mathrm{out}\f$ is the distance to the corners, so the
+ *   redistribution varies with direction.
+ *
+ * Composing these two maps, we get \f$r(\zeta) = r(\zeta_{\log}(\zeta))\f$:
+ *
+ * \f{align}
+ * \ln(r - r_0) &= \frac{1 + \zeta}{2} \ln(r_\mathrm{out} - r_0) \nonumber \\
+ * &+ \frac{1 - \zeta}{2} \ln(r_\mathrm{in} - r_0),
+ * \f}
+ *
+ * where \f$r_0 < r_\mathrm{in}\f$ is the "physical position" of the log map's
+ * origin. For the log map \f$\zeta_{\log}(\zeta)\f$, we need to specify
+ * \f$\zeta_0\f$, but it is easier to specify \f$r_0\f$ because the
+ * ratio of the radial Jacobian (\f$J := dr/d\zeta\f$) at the outer
+ * (\f$\zeta=+1\f$) vs inner (\f$\zeta=-1\f$) boundaries is
+ *
+ * \f{align}
+ * \frac{J_\mathrm{out}}{J_\mathrm{in}}
+ * = \frac{r_\mathrm{out} - r_0}{r_\mathrm{in} - r_0}
+ * := \alpha \frac{r_\mathrm{out}}{r_\mathrm{in}},
+ * \f}
+ *
+ * where \f$\alpha \geq 1\f$ is `log_map_strength`, which we use to
+ * parametrize \f$r_0\f$. Once we specify \f$\alpha\f$, we can invert the
+ * Jacobian ratio above to get
+ *
+ * \f{align}
+ * r_0 = \frac{r_\mathrm{in} r_\mathrm{out} (1 - \alpha)}
+ * {r_\mathrm{in} - \alpha r_\mathrm{out}}.
+ * \f}
+ *
+ * Then, we can invert the radius map \f$r(\zeta_{\log})\f$ to get
+ *
+ * \f{align}
+ * \zeta_0 = \frac{2 r_0 - (r_\mathrm{out} + r_\mathrm{in})}
+ * {r_\mathrm{out} - r_\mathrm{in}}.
+ * \f}
+ *
+ * \param inner_radius The inner radius \f$r_\mathrm{in}\f$ of the layer.
+ * \param outer_radius The outer radius \f$r_\mathrm{out}\f$ of the layer.
+ * \param log_map_strength The log-map strength \f$\alpha \geq 1\f$.
+ */
+domain::CoordinateMaps::Interval radial_distribution_log_map(
+    double inner_radius, double outer_radius, double log_map_strength);
+
 /// \ingroup ComputationalDomainGroup
 /// These are the ten Frustums used in the DomainCreators for binary compact
 /// objects. The Frustums partition the volume defined by two bounding
@@ -274,7 +360,8 @@ std::vector<std::array<size_t, 8>> corners_for_biradially_layered_domains(
         {1, 2, 3, 4, 5, 6, 7, 8}});
 
 /// \ingroup ComputationalDomainGroup
-/// These are the CoordinateMaps used in the Cylinder DomainCreator.
+/// These are the CoordinateMaps used in the Cylinder DomainCreator for when
+/// cylinders are built using cubes instead of a single cylindrical block.
 ///
 /// The `radial_partitioning` specifies the radial boundaries of sub-shells
 /// between `inner_radius` and `outer_radius`, while `partitioning_in_z`
@@ -354,6 +441,26 @@ auto cyl_wedge_coord_map_surrounding_blocks(
         domain::CoordinateMaps::Wedge<2>, domain::CoordinateMaps::Interval>>;
 
 /// \ingroup ComputationalDomainGroup
+/// This is the CoordinateMap used in the Cylinder DomainCreator for when
+/// cylinders are built using a single cylindrical block instead of cubes.
+///
+/// Returns a unit cylinder with the given `inner_radius`, `outer_radius`,
+/// `lower_z_bound`, and `upper_z_bound`. The returned unit cylinder's
+/// intended use is to compose it with `UniformCylindricalEndCap`,
+/// `UniformCylindricalFlatEndCap`, or `UniformCylindricalSide` to create the
+/// different cylinders needed by `domain::CylindricalBinaryCompactObject`.
+::domain::CoordinateMap<
+    Frame::BlockLogical, Frame::Inertial,
+    ::domain::CoordinateMaps::ProductOf3Maps<
+        ::domain::CoordinateMaps::Affine, ::domain::CoordinateMaps::Identity<1>,
+        ::domain::CoordinateMaps::Interval>,
+    ::domain::CoordinateMaps::ProductOf2Maps<
+        ::domain::CoordinateMaps::PolarToCartesian,
+        ::domain::CoordinateMaps::Identity<1>>>
+cyl_coordinate_map(double inner_radius, double outer_radius,
+                   double lower_z_bound, double upper_z_bound);
+
+/// \ingroup ComputationalDomainGroup
 /// \brief The corners for a cylindrical domain split into discs with radial
 /// shells.
 ///
@@ -393,6 +500,10 @@ auto maps_for_rectilinear_domains(
     const std::vector<Index<VolumeDim>>& block_indices_to_exclude = {},
     const std::vector<OrientationMap<VolumeDim>>& orientations_of_all_blocks =
         {},
+    const std::array<std::vector<domain::CoordinateMaps::Distribution>,
+                     VolumeDim>& distributions = {},
+    const std::array<std::vector<std::optional<double>>, VolumeDim>&
+        singularity_positions = {},
     bool use_equiangular_map = false)
     -> std::vector<std::unique_ptr<domain::CoordinateMapBase<
         Frame::BlockLogical, TargetFrame, VolumeDim>>>;
@@ -426,6 +537,10 @@ Domain<VolumeDim> rectilinear_domain(
     const std::array<bool, VolumeDim>& dimension_is_periodic =
         make_array<VolumeDim>(false),
     const std::vector<PairOfFaces>& identifications = {},
+    const std::array<std::vector<domain::CoordinateMaps::Distribution>,
+                     VolumeDim>& distributions = {},
+    const std::array<std::vector<std::optional<double>>, VolumeDim>&
+        singularity_positions = {},
     bool use_equiangular_map = false);
 
 /// \ingroup ComputationalDomainGroup

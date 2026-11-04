@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/CreateGetTypeAliasOrDefault.hpp"
 #include "Utilities/TypeTraits/CreateHasTypeAlias.hpp"
 
 namespace evolution::dg::Actions::detail {
@@ -30,6 +31,20 @@ struct inverse_spatial_metric_tag_impl<true> {
 template <typename System>
 using inverse_spatial_metric_tag = typename inverse_spatial_metric_tag_impl<
     has_inverse_spatial_metric_tag_v<System>>::template f<System>;
+
+CREATE_GET_TYPE_ALIAS_OR_DEFAULT(auxiliary_variables)
+CREATE_GET_TYPE_ALIAS_OR_DEFAULT(dg_auxiliary_boundary_terms_volume_tags)
+CREATE_GET_TYPE_ALIAS_OR_DEFAULT(dg_auxiliary_package_data_temporary_tags)
+CREATE_GET_TYPE_ALIAS_OR_DEFAULT(dg_auxiliary_package_data_volume_tags)
+CREATE_GET_TYPE_ALIAS_OR_DEFAULT(dg_auxiliary_package_field_tags)
+
+// `gradient_variables` is prepended since `partial_derivatives` requires the
+// differentiated tags to be the *leading* tags of the source `Variables`.
+template <typename System,
+          typename VariablesTag = typename System::variables_tag>
+using evolved_and_auxiliary_vars_tags = tmpl::remove_duplicates<tmpl::append<
+    typename System::gradient_variables, typename VariablesTag::tags_list,
+    get_auxiliary_variables_or_default_t<System, tmpl::list<>>>>;
 
 template <bool HasPrimitiveVars = false>
 struct get_primitive_vars {

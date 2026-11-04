@@ -9,6 +9,7 @@
 
 #include "ControlSystem/CombinedName.hpp"
 #include "ControlSystem/Metafunctions.hpp"
+#include "ControlSystem/Tags/IsActiveMap.hpp"
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/ArrayCollection/IsDgElementCollection.hpp"
@@ -93,9 +94,6 @@ struct LimitTimeStep {
       Parallel::GlobalCache<Metavariables>& cache,
       const ElementId<Dim>& array_index, ActionList /*meta*/,
       const ParallelComponent* const /*meta*/) {
-    static_assert(not Metavariables::local_time_stepping,
-                  "The control system LimitTimeStep action is only for global "
-                  "time stepping.");
     const auto& time_step_id = db::get<::Tags::TimeStepId>(box);
     if (time_step_id.substep() != 0) {
       return {Parallel::AlgorithmExecution::Continue, std::nullopt};
@@ -182,14 +180,23 @@ struct LimitTimeStep {
         return;
       }
 
+      const auto& is_active_map =
+          Parallel::get<control_system::Tags::IsActiveMap>(cache);
+
       // Calculate group_expiration
       Parallel::mutable_cache_item_is_ready<domain::Tags::FunctionsOfTime>(
           cache,
           Parallel::make_array_component_id<ParallelComponent>(array_index),
           [&](const auto& functions_of_time) {
+            // Reset default readiness state to true because
+            // mutable_cache_item_is_ready() calls this lambda twice. The first
+            // call may have set ready = false, but FoT could have been updated
+            // before the second call, so we default to true and then do a fresh
+            // readiness check from the fresh FoT below.
+            ready = true;
             tmpl::for_each<group>([&](auto system) {
               using System = tmpl::type_from<decltype(system)>;
-              if (not ready) {
+              if (not ready or not is_active_map.at(System::name())) {
                 return;
               }
               const auto& fot = *functions_of_time.at(System::name());
@@ -297,6 +304,26 @@ struct LimitTimeStep {
 
     change_slab_size(make_not_null(&box), new_step_end);
 
+    return {Parallel::AlgorithmExecution::Continue, std::nullopt};
+  }
+};
+
+/// \ingroup ControlSystemGroup
+/// \brief No-control-system specialization that does nothing.
+///
+/// Exists just to avoid having to put conditionals in metavariables
+/// that may or may not have control systems.
+template <>
+struct LimitTimeStep<tmpl::list<>> {
+ public:
+  template <typename DbTagsList, typename... InboxTags, typename Metavariables,
+            size_t Dim, typename ActionList, typename ParallelComponent>
+  static Parallel::iterable_action_return_t apply(
+      db::DataBox<DbTagsList>& /*box*/,
+      const tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
+      Parallel::GlobalCache<Metavariables>& /*cache*/,
+      const ElementId<Dim>& /*array_index*/, ActionList /*meta*/,
+      const ParallelComponent* const /*meta*/) {
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};
   }
 };

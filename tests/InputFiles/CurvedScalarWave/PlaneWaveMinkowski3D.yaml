@@ -19,7 +19,7 @@ OutputFileChecks:
 ---
 
 Parallelization:
-  ElementDistribution: NumGridPoints
+  ElementDistribution: NumGridPointsAndGridSpacing
 
 ResourceInfo:
   AvoidGlobalProc0: false
@@ -48,12 +48,13 @@ Evolution:
   InitialTimeStep: 0.001
   MinimumTimeStep: 1e-7
   InitialSlabSize: 0.01
+  LocalTimeStepping: Conservative
   VariableOrderAlgorithm:
     GoalOrder: 3
   TimeStepper:
     AdamsBashforth:
       Order: 3
-  StepChoosers:
+  LtsStepChoosers:
     - LimitIncrease:
         Factor: 2
     - PreventRapidIncrease
@@ -76,13 +77,15 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
-
-Filtering:
-  ExpFilter0:
-    Alpha: 12
-    HalfPower: 32
-    Enable: false
-    BlocksToFilter: All
+    Filtering:
+      - Hypercube:
+          HalfPower: 32
+          Enable: false
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
 
 EventsAndTriggersAtCheckpoints:
 
@@ -139,6 +142,8 @@ EventsAndTriggersAtSlabs:
             - Name: PointwiseL2Norm(TwoIndexConstraint)
               NormType: L2Norm
               Components: Individual
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
 
 EventsAndTriggersAtSteps:
 

@@ -4,6 +4,7 @@
 set(LIBS_TO_LINK
   Actions
   ApparentHorizonFinder
+  ApparentHorizonFinderCriteria
   Charmxx::main
   Cce
   CoordinateMaps
@@ -23,7 +24,6 @@ set(LIBS_TO_LINK
   GrMhdSolutions
   Hydro
   Informer
-  Limiters
   LinearOperators
   MathFunctions
   MonteCarloSolutions

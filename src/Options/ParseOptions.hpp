@@ -25,6 +25,7 @@
 #include <vector>
 #include <yaml-cpp/yaml.h>
 
+#include "DataStructures/TaggedTuple.hpp"
 #include "Options/Context.hpp"
 #include "Options/Options.hpp"
 #include "Options/OptionsDetails.hpp"
@@ -39,7 +40,6 @@
 #include "Utilities/NoSuchType.hpp"
 #include "Utilities/PrettyType.hpp"
 #include "Utilities/StdHelpers.hpp"
-#include "Utilities/TaggedTuple.hpp"
 #include "Utilities/TypeTraits.hpp"
 #include "Utilities/TypeTraits/IsA.hpp"
 #include "Utilities/TypeTraits/IsInteger.hpp"
@@ -990,17 +990,24 @@ template <typename OptionList, typename Group>
   auto context = context_;
   context.line = e.mark.line;
   context.column = e.mark.column;
+
+  std::string hint =
+      "This is often due to placing a suboption on the same line as an "
+      "option, e.g.:\nDomainCreator: CreateInterval:\n  IsPeriodicIn: "
+      "[false]\n\nShould be:\nDomainCreator:\n  CreateInterval:\n    "
+      "IsPeriodicIn: [true]\n\nSee an example input file for help.";
+  if (input_source_.back().find('\t') != std::string::npos) {
+    hint = "This may be due to indenting with tabs.";
+  }
   // Inline the top_level branch of PARSE_ERROR to avoid warning that
   // the other branch would call terminate.  (Parser errors can only
   // be generated at top level.)
-  ERROR(
+  ERROR_NO_TRACE(
       "\n"
       << context
-      << "Unable to correctly parse the input file because of a syntax error.\n"
-         "This is often due to placing a suboption on the same line as an "
-         "option, e.g.:\nDomainCreator: CreateInterval:\n  IsPeriodicIn: "
-         "[false]\n\nShould be:\nDomainCreator:\n  CreateInterval:\n    "
-         "IsPeriodicIn: [true]\n\nSee an example input file for help.");
+      << "Unable to correctly parse the input file because of a syntax error:\n"
+      << "  " << e.msg << "\n"
+      << hint);
 }
 
 template <typename OptionList, typename Group>

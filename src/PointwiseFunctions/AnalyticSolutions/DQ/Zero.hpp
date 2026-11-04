@@ -8,6 +8,7 @@
 
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Elliptic/Systems/DQ/Tags.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
@@ -16,7 +17,6 @@
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace DQ::Solutions {
 
@@ -46,6 +46,17 @@ class Zero : public elliptic::analytic_data::AnalyticSolution {
   using PUP::able::register_constructor;
   WRAPPED_PUPable_decl_template(Zero);  // NOLINT
   /// \endcond
+
+  // Match the elliptic analytic-solution interface; the exact fields do
+  // not depend on the numerical mesh or Jacobian.
+  template <typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataVector, Dim>& x, const Mesh<Dim>& /*mesh*/,
+      const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
+                            Frame::Inertial>& /*inv_jacobian*/,
+      tmpl::list<RequestedTags...> meta) const {
+    return variables(x, meta);
+  }
 
   template <typename... RequestedTags>
   tuples::TaggedTuple<RequestedTags...> variables(

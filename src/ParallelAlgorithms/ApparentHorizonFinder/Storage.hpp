@@ -7,6 +7,7 @@
 #include <optional>
 #include <pup.h>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -18,7 +19,7 @@
 #include "Domain/BlockLogicalCoordinates.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
 #include "Parallel/MultiReaderSpinlock.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Destination.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/FastFlow.hpp"
@@ -148,11 +149,14 @@ struct SingleTimeStorage {
    * \brief Elements in which we have found points to interpolate to in previous
    * iterations, to try first before searching all elements.
    *
-   * This is not only a performance optimization, but also important for
-   * robustness. If we try to interpolate from elements in a different order in
-   * each iteration, then points that lie directly on element boundaries can
-   * fluctuate in interpolated value, preventing convergence (see
-   * https://github.com/sxs-collaboration/spectre/issues/3899).
+   * This is only a performance optimization. The interpolated values don't
+   * depend on the order because points that lie directly on shared element
+   * boundaries are always assigned to the same element (see
+   * `element_contains`). Otherwise, the interpolated values at these points
+   * would fluctuate with the order in which element data arrives, which can
+   * prevent convergence (see
+   * https://github.com/sxs-collaboration/spectre/issues/3899) and makes
+   * simulations nondeterministic.
    */
   std::vector<ElementId<3>> element_order{};
   /*!
@@ -167,6 +171,17 @@ struct SingleTimeStorage {
    * \brief The `ah::Destination` for this horizon find.
    */
   Destination destination{};
+  /*!
+   * \brief The dependency that was sent along with the volume data for this
+   * horizon find, if any.
+   *
+   * \details This is copied into `ah::Tags::Dependency` right before the
+   * callbacks for this horizon find are invoked, on success as well as on
+   * failure, so that e.g. `ah::callbacks::SendDependencyToObserverWriter` can
+   * tell the ObserverWriter whether to write or drop the volume data it holds
+   * for this time.
+   */
+  std::optional<std::string> dependency = std::nullopt;
   /*!
    * \brief Whether we have checked if the functions of time are up to date for
    * this horizon find.

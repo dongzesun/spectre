@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <boost/container/small_vector.hpp>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -190,7 +191,7 @@ struct RegisterParallelComponent : RegistrationHelper {
  *
  * The chare that is being registered must have the following in the destructor:
  * \code
- * (void)Parallel::charmxx::RegisterChare<ChareName,
+ * (void)&Parallel::charmxx::RegisterChare<ChareName,
  *     CkIndex_ChareName>::registrar;
  * \endcode
  *
@@ -388,6 +389,11 @@ struct get_value_type {
 
 template <class T>
 struct get_value_type<std::vector<T>> {
+  using type = T;
+};
+
+template <class T, size_t N>
+struct get_value_type<boost::container::small_vector<T, N>> {
   using type = T;
 };
 

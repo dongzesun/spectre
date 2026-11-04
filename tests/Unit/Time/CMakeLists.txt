@@ -12,9 +12,11 @@ set(LIBRARY_SOURCES
   Test_ChangeTimeStepperOrder.cpp
   Test_ChooseLtsStepSize.cpp
   Test_CleanHistory.cpp
+  Test_CollectStepperErrorTolerances.cpp
   Test_EvolutionOrdering.cpp
   Test_History.cpp
   Test_LargestStepperError.cpp
+  Test_LtsMode.cpp
   Test_RecordTimeStepperData.cpp
   Test_SelfStart.cpp
   Test_Slab.cpp

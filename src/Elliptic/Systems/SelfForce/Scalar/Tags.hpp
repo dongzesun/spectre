@@ -54,32 +54,32 @@ namespace Tags {
  *   \Psi_m(r,\theta) e^{im\Delta\phi(r)} e^{im(\phi - \Omega t)}
  * \end{equation}
  *
- * where $\Delta\phi(r) = \frac{a}{r_\plus - r_\minus}
- * \ln(\frac{r-r_\plus}{r-r_\minus})$.
+ * where $\Delta\phi(r) = \frac{a}{r_+ - r_-}
+ * \ln(\frac{r-r_+}{r-r_-})$.
  */
 struct MMode : db::SimpleTag {
   using type = Scalar<ComplexDataVector>;
 };
 
 /*!
- * \brief The factor multiplying the angular derivative in the principal part of
- * the equations.
+ * \brief The factors $\alpha^i$ multiplying the radial and angular
+ * derivatives in the principal part of the equations.
  *
- * This is the factor $\alpha$ that defines the principal part of the equations
- * and allows to write it in first-order flux form given by
+ * These are the factors $\alpha^i$ that define the principal part of the
+ * equations and allow writing them in first-order flux form given by
  * \begin{equation}
  * -\partial_i F^i + \beta \Psi_m + \gamma_i \partial_i \Psi_m = S_m
  * \end{equation}
  * with the flux
  * \begin{equation}
- * F^i = \{\partial_{r_\star}, \alpha \partial_{\cos\theta}\} \Psi_m
+ * F^i = \alpha^i \partial_i \Psi_m
  * \text{.}
  * \end{equation}
- * This factor is set by the analytic data class (see
+ * They are set by the analytic data class (see
  * `ScalarSelfForce::AnalyticData::CircularOrbit`).
  */
 struct Alpha : db::SimpleTag {
-  using type = Scalar<ComplexDataVector>;
+  using type = tnsr::I<ComplexDataVector, 2>;
 };
 
 /*!
@@ -151,14 +151,15 @@ struct BoyerLindquistRadius : db::SimpleTag {
 /*!
  * \brief Blocks in which we use null slicing (vtu-slicing).
  */
+template <size_t Dim>
 struct NullSlicingBlocks : db::SimpleTag {
   using type = std::vector<size_t>;
   using option_tags = tmpl::list<OptionTags::NullSlicingBlocks,
-                                 domain::OptionTags::DomainCreator<2>>;
+                                 domain::OptionTags::DomainCreator<Dim>>;
   static constexpr bool pass_metavariables = false;
   static type create_from_options(
       const std::vector<std::string>& null_slicing_blocks,
-      const std::unique_ptr<DomainCreator<2>>& domain_creator) {
+      const std::unique_ptr<DomainCreator<Dim>>& domain_creator) {
     return domain::block_ids_from_names(null_slicing_blocks,
                                         domain_creator->block_names(),
                                         domain_creator->block_groups());

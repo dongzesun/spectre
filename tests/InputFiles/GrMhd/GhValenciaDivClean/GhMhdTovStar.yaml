@@ -14,6 +14,7 @@ ExpectedOutput:
 
 Parallelization:
   ElementDistribution: NumGridPoints
+  UseSubcellGridPointsForDistribution: False
 
 ResourceInfo:
   AvoidGlobalProc0: false
@@ -21,14 +22,19 @@ ResourceInfo:
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.0001
+  InitialTimeStep: &initial_time_step 0.0001
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper:
     # Both RK3 and AM-PC 3 should work. These are the "standard" time steppers
     # for spectre for hydro right now.
     Rk3HesthavenSsp:
     # AdamsMoultonPc:
     #   Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 PhaseChangeAndTriggers:
   - Trigger:
@@ -144,6 +150,16 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 64
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
+    OnlyDgBlocksAndGroups: None
     Subcell:
       TroubledCellIndicator:
         PerssonTci:
@@ -159,7 +175,6 @@ SpatialDiscretization:
         AlwaysUseSubcells: false
         EnableExtensionDirections: false
         UseHalo: false
-        OnlyDgBlocksAndGroups: None
       SubcellToDgReconstructionMethod: DimByDim
       FiniteDifferenceDerivativeOrder: 2
       FdInterpolationOrder: 1
@@ -177,14 +192,6 @@ SpatialDiscretization:
         ReconstructRhoTimesTemperature: true
     FilterOptions:
       SpacetimeDissipation: 0.1
-
-Filtering:
-  ExpFilter0:
-    Alpha: 36
-    HalfPower: 64
-    Enable: true
-    BlocksToFilter: All
-
 
 EventsAndTriggersAtCheckpoints:
 
@@ -241,6 +248,8 @@ EventsAndTriggersAtSlabs:
             - Name: Error(Pressure)
               NormType: L2Norm
               Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   - Trigger:
       Slabs:
         EvenlySpaced:
@@ -266,6 +275,8 @@ EventsAndTriggersAtSlabs:
           Values: [3]
     Events:
       - Completion
+
+EventsAndTriggersAtSteps:
 
 InterpolationTargets:
   BondiSachsInterpolation:

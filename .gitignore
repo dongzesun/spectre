@@ -33,7 +33,6 @@ CMakeUserPresets.json
 .dir-locals.el
 .cquery_cached_index
 .ycm_extra_conf.py
-.clangd
 .cache
 .projectile-cache.eld
 
@@ -76,10 +75,7 @@ tags
 !Tags/
 
 # AI/LLM Agent/CLI tools
-AGENTS.md
-
+AGENTS.local.md
 .aider*
-
-CLAUDE.md
 .claude/settings.local.json
 CLAUDE.local.md

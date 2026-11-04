@@ -15,7 +15,9 @@
 
 # Building and postprocessing documentation
 beautifulsoup4
-coverxygen
+# coverxygen 1.8.2 has an enum-handling regression (upstream issue #37).
+# Remove this pin once a fix is released.
+coverxygen != 1.8.2
 nbconvert
 pybtex
 sphinx
@@ -23,5 +25,5 @@ sphinx-click
 furo
 myst-parser
 # Code formatting. The required version is locked in the pyproject.toml config.
-black == 23.3.0
+black == 26.5.1
 isort ~= 5.12

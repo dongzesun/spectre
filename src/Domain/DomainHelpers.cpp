@@ -24,6 +24,7 @@
 #include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CoordinateMaps/Interval.hpp"
 #include "Domain/CoordinateMaps/MapInstantiationMacros.hpp"
+#include "Domain/CoordinateMaps/PolarToCartesian.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.tpp"
 #include "Domain/CoordinateMaps/Wedge.hpp"
@@ -740,6 +741,27 @@ std::vector<domain::CoordinateMaps::Wedge<3>> sph_wedge_coordinate_maps(
   return wedges_for_all_layers;
 }
 
+domain::CoordinateMaps::Interval radial_distribution_log_map(
+    const double inner_radius, const double outer_radius,
+    const double log_map_strength) {
+  ASSERT(inner_radius < outer_radius,
+         "inner_radius (" << inner_radius
+                          << ") must be smaller than outer_radius ("
+                          << outer_radius << ").");
+  ASSERT(log_map_strength >= 1.0,
+         "log_map_strength (" << log_map_strength << ") must be at least 1.");
+  // See equation for r_0 in the docs
+  const double radial_singularity_position =
+      (inner_radius * outer_radius * (1.0 - log_map_strength)) /
+      (inner_radius - log_map_strength * outer_radius);
+  // See equation for zeta_0 in the docs
+  const double logical_singularity_position =
+      (2.0 * radial_singularity_position - (outer_radius + inner_radius)) /
+      (outer_radius - inner_radius);
+  const auto distribution = domain::CoordinateMaps::Distribution::Logarithmic;
+  return {-1., 1., -1., 1., distribution, logical_singularity_position};
+}
+
 std::vector<domain::CoordinateMaps::Frustum> frustum_coordinate_maps(
     const double length_inner_cube, const double length_outer_cube,
     const bool equiangular_map_at_outer, const bool equiangular_map_at_inner,
@@ -1185,6 +1207,35 @@ cyl_wedge_coordinate_maps(
   return cylinder_mapping;
 }
 
+domain::CoordinateMap<
+    Frame::BlockLogical, Frame::Inertial,
+    domain::CoordinateMaps::ProductOf3Maps<
+        ::domain::CoordinateMaps::Affine, ::domain::CoordinateMaps::Identity<1>,
+        ::domain::CoordinateMaps::Interval>,
+    domain::CoordinateMaps::ProductOf2Maps<
+        ::domain::CoordinateMaps::PolarToCartesian,
+        ::domain::CoordinateMaps::Identity<1>>>
+cyl_coordinate_map(const double inner_radius, const double outer_radius,
+                   const double lower_z_bound, const double upper_z_bound) {
+  using Affine = domain::CoordinateMaps::Affine;
+  using Identity1D = domain::CoordinateMaps::Identity<1>;
+  using Interval = domain::CoordinateMaps::Interval;
+  using PolarToCartesian = domain::CoordinateMaps::PolarToCartesian;
+  const auto linear = domain::CoordinateMaps::Distribution::Linear;
+
+  // Map: (xi, eta, zeta) in [-1,1] x [0, 2pi] x [-1, 1]
+  //   xi -> r in [inner_r, outer_r]  (Affine)
+  //   eta -> phi in [0, 2pi)         (Identity<1>, passes through)
+  //   zeta -> z in [z_lower, z_upper] (Interval)
+  // Then PolarToCartesian x Identity<1> maps (r, phi, z) -> (x, y, z)
+  return domain::make_coordinate_map<Frame::BlockLogical, Frame::Inertial>(
+      domain::CoordinateMaps::ProductOf3Maps<Affine, Identity1D, Interval>{
+          Affine{-1.0, 1.0, inner_radius, outer_radius}, Identity1D{},
+          Interval{-1.0, 1.0, lower_z_bound, upper_z_bound, linear}},
+      domain::CoordinateMaps::ProductOf2Maps<PolarToCartesian, Identity1D>{
+          PolarToCartesian{}, Identity1D{}});
+}
+
 std::vector<std::array<size_t, 8>> corners_for_cylindrical_layered_domains(
     const size_t number_of_shells, const size_t number_of_discs) {
   using BlockCorners = std::array<size_t, 8>;
@@ -1317,6 +1368,10 @@ maps_for_rectilinear_domains(
     const std::array<std::vector<double>, VolumeDim>& block_demarcations,
     const std::vector<Index<VolumeDim>>& block_indices_to_exclude,
     const std::vector<OrientationMap<VolumeDim>>& orientations_of_all_blocks,
+    const std::array<std::vector<domain::CoordinateMaps::Distribution>,
+                     VolumeDim>& distributions,
+    const std::array<std::vector<std::optional<double>>, VolumeDim>&
+        singularity_positions,
     const bool use_equiangular_map) {
   for (size_t d = 0; d < VolumeDim; d++) {
     ASSERT(gsl::at(block_demarcations, d).size() == domain_extents[d] + 1,
@@ -1330,6 +1385,9 @@ maps_for_rectilinear_domains(
            domain_extents, block_indices_to_exclude)) {
     std::array<double, VolumeDim> lower_bounds{};
     std::array<double, VolumeDim> upper_bounds{};
+    std::array<domain::CoordinateMaps::Distribution, VolumeDim>
+        distributions_i{};
+    std::array<std::optional<double>, VolumeDim> singularity_positions_i{};
     for (size_t d = 0; d < VolumeDim; d++) {
       gsl::at(lower_bounds, d) =
           gsl::at(gsl::at(block_demarcations, d), block_index[d]);
@@ -1337,19 +1395,36 @@ maps_for_rectilinear_domains(
           gsl::at(gsl::at(block_demarcations, d), block_index[d] + 1);
       ASSERT(gsl::at(upper_bounds, d) > gsl::at(lower_bounds, d),
              "The block demarcations must be strictly increasing.");
+      if (gsl::at(distributions, d).empty()) {
+        gsl::at(distributions_i, d) =
+            domain::CoordinateMaps::Distribution::Linear;
+      } else {
+        gsl::at(distributions_i, d) = gsl::at(distributions, d)[block_index[d]];
+      }
+      if (gsl::at(singularity_positions, d).empty()) {
+        gsl::at(singularity_positions_i, d) = std::nullopt;
+      } else {
+        gsl::at(singularity_positions_i, d) =
+            gsl::at(singularity_positions, d)[block_index[d]];
+      }
+    }
+    using Interval = domain::CoordinateMaps::Interval;
+    std::array<Interval, VolumeDim> interval_maps{};
+    for (size_t d = 0; d < VolumeDim; d++) {
+      gsl::at(interval_maps, d) = Interval{-1.0,
+                                           1.0,
+                                           gsl::at(lower_bounds, d),
+                                           gsl::at(upper_bounds, d),
+                                           gsl::at(distributions_i, d),
+                                           gsl::at(singularity_positions_i, d)};
     }
     if (not use_equiangular_map) {
-      using Affine = domain::CoordinateMaps::Affine;
-      std::array<Affine, VolumeDim> affine_maps{};
-      for (size_t d = 0; d < VolumeDim; d++) {
-        gsl::at(affine_maps, d) = Affine{-1.0, 1.0, gsl::at(lower_bounds, d),
-                                         gsl::at(upper_bounds, d)};
-      }
       if (not orientations_of_all_blocks.empty()) {
         maps.push_back(product_of_1d_maps<TargetFrame>(
-            affine_maps, orientations_of_all_blocks[block_orientation_index]));
+            interval_maps,
+            orientations_of_all_blocks[block_orientation_index]));
       } else {
-        maps.push_back(product_of_1d_maps<TargetFrame>(affine_maps));
+        maps.push_back(product_of_1d_maps<TargetFrame>(interval_maps));
       }
     } else {
       using Equiangular = domain::CoordinateMaps::Equiangular;
@@ -1420,6 +1495,10 @@ Domain<VolumeDim> rectilinear_domain(
     const std::vector<OrientationMap<VolumeDim>>& orientations_of_all_blocks,
     const std::array<bool, VolumeDim>& dimension_is_periodic,
     const std::vector<PairOfFaces>& identifications,
+    const std::array<std::vector<domain::CoordinateMaps::Distribution>,
+                     VolumeDim>& distributions,
+    const std::array<std::vector<std::optional<double>>, VolumeDim>&
+        singularity_positions,
     const bool use_equiangular_map) {
   std::vector<Block<VolumeDim>> blocks{};
   auto corners_of_all_blocks =
@@ -1433,7 +1512,8 @@ Domain<VolumeDim> rectilinear_domain(
   }
   auto maps = maps_for_rectilinear_domains<Frame::Inertial>(
       domain_extents, block_demarcations, block_indices_to_exclude,
-      rotations_of_all_blocks, use_equiangular_map);
+      rotations_of_all_blocks, distributions, singularity_positions,
+      use_equiangular_map);
   for (size_t i = 0; i < corners_of_all_blocks.size(); i++) {
     corners_of_all_blocks[i] =
         discrete_rotation(rotations_of_all_blocks[i], corners_of_all_blocks[i]);
@@ -1588,6 +1668,10 @@ INSTANTIATE_MAPS_FUNCTIONS(((Affine2d), (Affine3d), (Equiangular3d),
       const std::vector<Index<DIM(data)>>& block_indices_to_exclude,        \
       const std::vector<OrientationMap<DIM(data)>>&                         \
           orientations_of_all_blocks,                                       \
+      const std::array<std::vector<domain::CoordinateMaps::Distribution>,   \
+                       DIM(data)>& distributions,                           \
+      const std::array<std::vector<std::optional<double>>, DIM(data)>&      \
+          singularity_positions,                                            \
       const bool use_equiangular_map);                                      \
   template std::array<size_t, two_to_the(DIM(data))> discrete_rotation(     \
       const OrientationMap<DIM(data)>& orientation,                         \
@@ -1600,6 +1684,10 @@ INSTANTIATE_MAPS_FUNCTIONS(((Affine2d), (Affine3d), (Equiangular3d),
           orientations_of_all_blocks,                                       \
       const std::array<bool, DIM(data)>& dimension_is_periodic,             \
       const std::vector<PairOfFaces>& identifications,                      \
+      const std::array<std::vector<domain::CoordinateMaps::Distribution>,   \
+                       DIM(data)>& distributions,                           \
+      const std::array<std::vector<std::optional<double>>, DIM(data)>&      \
+          singularity_positions,                                            \
       const bool use_equiangular_map);
 
 GENERATE_INSTANTIATIONS(INSTANTIATE, (1_st, 2_st, 3_st))

@@ -23,7 +23,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: Auto
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Quiet
@@ -43,13 +45,15 @@ DomainCreator:
       OuterRadius: 6.0
       XCoord: 7.683
       ExciseInterior: true
-      UseLogarithmicMap: true
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     ObjectB:
       InnerRadius: 0.45825
       OuterRadius: 6.0
       XCoord: -7.683
       ExciseInterior: true
-      UseLogarithmicMap: true
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     CenterOfMassOffset: [0., 0.]
     Envelope:
       Radius: 100.0
@@ -59,6 +63,7 @@ DomainCreator:
       RadialPartitioning: []
       RadialDistribution: Linear
       OpeningAngle: 90.0
+      UseSphericalHarmonics: false
     UseEquiangularMap: True
     CubeScale: 1.0
     InitialRefinement:
@@ -69,6 +74,7 @@ DomainCreator:
       Envelope: [1, 1, 1]
       OuterShell0:     [1, 1, 1]
     InitialGridPoints: 3
+    UseWorldtube: false
     TimeDependentMaps:
       InitialTime: 0.0
       ExpansionMap:
@@ -103,7 +109,9 @@ SpatialDiscretization:
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.5
+  InitialTimeStep: &initial_time_step 0.5
+  InitialSlabSize: *initial_time_step
+  LocalTimeStepping: Off
   TimeStepper:
     AdamsBashforth:
       Order: 1
@@ -119,6 +127,8 @@ EventsAndTriggersAtSlabs:
     Events:
       - MonitorMemory:
           ComponentsToMonitor: All
+
+EventsAndTriggersAtSteps:
 
 Observers:
   VolumeFileName: "ExportCoordinates3DVolume"

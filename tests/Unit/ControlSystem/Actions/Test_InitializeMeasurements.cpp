@@ -41,7 +41,9 @@
 #include "ParallelAlgorithms/EventsAndDenseTriggers/EventsAndDenseTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndDenseTriggers/Tags.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Slab.hpp"
+#include "Time/Tags/LtsMode.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStep.hpp"
 #include "Time/Tags/TimeStepId.hpp"
@@ -92,6 +94,7 @@ struct SystemA : tt::ConformsTo<control_system::protocols::ControlSystem> {
   using simple_tags = tmpl::list<>;
   using measurement = Measurement<tmpl::list<SystemA, SystemB>>;
   using control_error = control_system::TestHelpers::ControlError;
+  static constexpr size_t deriv_order = 2;
   struct process_measurement {
     template <typename Submeasurement>
     using argument_tags = tmpl::list<>;
@@ -107,6 +110,7 @@ struct SystemB : tt::ConformsTo<control_system::protocols::ControlSystem> {
   using simple_tags = tmpl::list<>;
   using measurement = Measurement<tmpl::list<SystemA, SystemB>>;
   using control_error = control_system::TestHelpers::ControlError;
+  static constexpr size_t deriv_order = 2;
   struct process_measurement {
     template <typename Submeasurement>
     using argument_tags = tmpl::list<>;
@@ -122,6 +126,7 @@ struct SystemC : tt::ConformsTo<control_system::protocols::ControlSystem> {
   using simple_tags = tmpl::list<>;
   using measurement = Measurement<tmpl::list<SystemC>>;
   using control_error = control_system::TestHelpers::ControlError;
+  static constexpr size_t deriv_order = 2;
   struct process_measurement {
     template <typename Submeasurement>
     using argument_tags = tmpl::list<>;
@@ -152,7 +157,7 @@ struct Component {
                                       Metavariables>>;
   using const_global_cache_tags =
       tmpl::list<::Tags::ConcreteTimeStepper<TimeStepper>,
-                 control_system::Tags::Verbosity>;
+                 control_system::Tags::Verbosity, ::Tags::LtsMode>;
   using mutable_global_cache_tags =
       tmpl::list<domain::Tags::FunctionsOfTimeInitialize>;
 
@@ -164,10 +169,8 @@ struct Component {
           control_system::Actions::InitializeMeasurements<control_systems>>>>;
 };
 
-template <bool LocalTimeStepping>
 struct Metavariables {
   using component_list = tmpl::list<Component<Metavariables>>;
-  static constexpr bool local_time_stepping = LocalTimeStepping;
 
   struct factory_creation
       : tt::ConformsTo<Options::protocols::FactoryCreation> {
@@ -179,10 +182,11 @@ struct Metavariables {
   };
 };
 
-template <bool LocalTimeStepping, bool MonotonicTimeStepper>
-void test_initialize_measurements(const bool ab_active, const bool c_active,
+template <bool MonotonicTimeStepper>
+void test_initialize_measurements(const bool local_time_stepping,
+                                  const bool ab_active, const bool c_active,
                                   const bool delay_update) {
-  CAPTURE(LocalTimeStepping);
+  CAPTURE(local_time_stepping);
   CAPTURE(MonotonicTimeStepper);
   CAPTURE(ab_active);
   CAPTURE(c_active);
@@ -190,13 +194,12 @@ void test_initialize_measurements(const bool ab_active, const bool c_active,
 
   using TimeStepperType = TimeSteppers::AdamsMoultonPc<MonotonicTimeStepper>;
 
-  register_factory_classes_with_charm<Metavariables<LocalTimeStepping>>();
+  register_factory_classes_with_charm<Metavariables>();
   register_classes_with_charm<domain::FunctionsOfTime::PiecewisePolynomial<0>,
                               TimeStepperType>();
 
-  using MockRuntimeSystem =
-      ActionTesting::MockRuntimeSystem<Metavariables<LocalTimeStepping>>;
-  using component = Component<Metavariables<LocalTimeStepping>>;
+  using MockRuntimeSystem = ActionTesting::MockRuntimeSystem<Metavariables>;
+  using component = Component<Metavariables>;
   const component* const component_p = nullptr;
 
   const ElementId<3> element_id{0};
@@ -210,6 +213,9 @@ void test_initialize_measurements(const bool ab_active, const bool c_active,
   const double step_to_expiration_ratio = c_active ? 3.0 : 0.2;
 
   auto time_stepper = std::make_unique<TimeStepperType>(4);
+
+  const auto lts_mode =
+      local_time_stepping ? LtsMode::Conservative : LtsMode::Off;
 
   const auto initial_slab = Slab::with_duration_from_start(
       initial_time, step_to_expiration_ratio * (fot_expiration - initial_time));
@@ -242,7 +248,7 @@ void test_initialize_measurements(const bool ab_active, const bool c_active,
   functions.emplace("C", fot->get_clone());
 
   MockRuntimeSystem runner{{std::move(time_stepper), ::Verbosity::Silent,
-                            measurements_per_update, delay_update},
+                            lts_mode, measurements_per_update, delay_update},
                            {std::move(functions), std::move(timescales)}};
   ActionTesting::emplace_array_component_and_initialize<component>(
       make_not_null(&runner), ActionTesting::NodeId{0},
@@ -291,8 +297,8 @@ void test_initialize_measurements(const bool ab_active, const bool c_active,
   if (c_active) {
     // 4 is because of the 3.0 in the step_to_expiration_ratio above.
     const auto reduced_time_step =
-        LocalTimeStepping ? initial_time_step / 4
-                          : Slab(initial_time, fot_expiration).duration();
+        local_time_stepping ? initial_time_step / 4
+                            : Slab(initial_time, fot_expiration).duration();
     CHECK(db::get<::Tags::TimeStep>(box) == reduced_time_step);
   } else {
     CHECK(db::get<::Tags::TimeStep>(box) == initial_time_step);
@@ -323,14 +329,13 @@ void test_initialize_measurements(const bool ab_active, const bool c_active,
 
 SPECTRE_TEST_CASE("Unit.ControlSystem.InitializeMeasurements",
                   "[ControlSystem][Unit]") {
-  for (const auto& [ab_active, c_active, delay_update] :
+  for (const auto& [local_time_stepping, ab_active, c_active, delay_update] :
        cartesian_product(std::array{true, false}, std::array{true, false},
-                         std::array{true, false})) {
-    test_initialize_measurements<false, true>(ab_active, c_active,
-                                              delay_update);
-    test_initialize_measurements<false, false>(ab_active, c_active,
-                                               delay_update);
-    test_initialize_measurements<true, true>(ab_active, c_active, delay_update);
+                         std::array{true, false}, std::array{true, false})) {
+    test_initialize_measurements<true>(local_time_stepping, ab_active, c_active,
+                                       delay_update);
+    test_initialize_measurements<false>(local_time_stepping, ab_active,
+                                        c_active, delay_update);
   }
 }
 }  // namespace

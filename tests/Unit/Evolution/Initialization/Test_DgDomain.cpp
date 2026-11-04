@@ -14,6 +14,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/Block.hpp"
 #include "Domain/CoordinateMaps/Affine.hpp"
@@ -40,6 +41,7 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Neighbors.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/TagsTimeDependent.hpp"
 #include "Evolution/Initialization/DgDomain.hpp"
@@ -59,7 +61,6 @@
 #include "Utilities/Numeric.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace control_system::Tags {
 struct FunctionsOfTimeInitialize;
@@ -417,6 +418,43 @@ void test(const Spectral::Quadrature quadrature) {
                                            domain::Tags::FunctionsOfTime>(
                 runner, self_id));
 
+    // Check the Grid -> Inertial inverse jacobian alias
+    // (domain::Tags::GridToInertialInverseJacobian aliases
+    // std::get<1>(CoordinatesMeshVelocityAndJacobians)).
+    const auto& grid_to_inertial_inverse_jacobian_in_box =
+        ActionTesting::get_databox_tag<
+            component, ::domain::Tags::GridToInertialInverseJacobian<Dim>>(
+            runner, self_id);
+    for (size_t storage_index = 0;
+         storage_index < grid_to_inertial_inverse_jacobian_in_box.size();
+         ++storage_index) {
+      // Check that the `const_cast`s and set_data_ref inside the compute tag
+      // functions worked correctly: the tag must alias the cached tuple
+      // element.
+      CHECK(grid_to_inertial_inverse_jacobian_in_box[storage_index].data() ==
+            std::get<1>(coordinates_mesh_velocity_and_jacobians)[storage_index]
+                .data());
+    }
+    CHECK_ITERABLE_APPROX(grid_to_inertial_inverse_jacobian_in_box,
+                          std::get<1>(expected_coords_mesh_velocity_jacobians));
+
+    // Check the Grid -> Inertial jacobian alias
+    // (domain::Tags::GridToInertialJacobian aliases
+    // std::get<2>(CoordinatesMeshVelocityAndJacobians)).
+    const auto& grid_to_inertial_jacobian_in_box =
+        ActionTesting::get_databox_tag<
+            component, ::domain::Tags::GridToInertialJacobian<Dim>>(runner,
+                                                                    self_id);
+    for (size_t storage_index = 0;
+         storage_index < grid_to_inertial_jacobian_in_box.size();
+         ++storage_index) {
+      CHECK(grid_to_inertial_jacobian_in_box[storage_index].data() ==
+            std::get<2>(coordinates_mesh_velocity_and_jacobians)[storage_index]
+                .data());
+    }
+    CHECK_ITERABLE_APPROX(grid_to_inertial_jacobian_in_box,
+                          std::get<2>(expected_coords_mesh_velocity_jacobians));
+
     for (size_t i = 0; i < Dim; ++i) {
       // Check that the `const_cast`s and set_data_ref inside the compute tag
       // functions worked correctly
@@ -565,9 +603,11 @@ void test(const Spectral::Quadrature quadrature) {
 void test_nonconforming_blocks() {
   using metavars = Metavariables<3>;
   using component = Component<metavars>;
+  using Excision = domain::creators::NonconformingSphericalShells::Excision;
 
   const auto creator = domain::creators::NonconformingSphericalShells(
-      2.0, 3.0, 4.0, 0, 0, 5, 7, 11, nullptr, nullptr);
+      2.0, 3.0, 4.0, Excision{}, std::array<size_t, 2>{0_st, 0_st}, 0_st,
+      std::array<size_t, 2>{11_st, 5_st}, std::array<size_t, 2>{7_st, 5_st});
   auto domain = creator.create_domain();
   const auto initial_refinement = creator.initial_refinement_levels();
   const auto initial_extents = creator.initial_extents();
@@ -611,12 +651,7 @@ void test_nonconforming_blocks() {
   const auto& shell_neighbor_mesh =
       ActionTesting::get_databox_tag<component, domain::Tags::NeighborMesh<3>>(
           runner, shell_id);
-  CHECK(shell_neighbor_mesh.size() == 6);
-  for (size_t block_id = 0; block_id < 6; ++block_id) {
-    CHECK(shell_neighbor_mesh.at(
-              {Direction<3>::lower_xi(), ElementId<3>(block_id)}) ==
-          cubed_sphere_mesh);
-  }
+  CHECK(shell_neighbor_mesh.empty());
 }
 
 namespace test_projectors {
@@ -689,7 +724,8 @@ template <bool IsTimeDependent>
 void test_p_refine() {
   auto global_cache = make_global_cache<IsTimeDependent>();
   const ElementId<1> element_id{0};
-  Element<1> element{element_id, DirectionMap<1, Neighbors<1>>{}};
+  const Element<1> element{element_id, DirectionMap<1, Neighbors<1>>{},
+                     domain::topologies::hypercube<1>};
   const Domain<1>& domain = get<::domain::Tags::Domain<1>>(global_cache);
   const auto& my_block = domain.blocks()[element_id.block_id()];
   ElementMap<1, Frame::Grid> element_map{
@@ -736,7 +772,8 @@ void test_split() {
   const ElementId<1> child_1_id{0, std::array{SegmentId{1, 0}}};
   const ElementId<1> child_2_id{0, std::array{SegmentId{1, 1}}};
 
-  Element<1> parent{parent_id, DirectionMap<1, Neighbors<1>>{}};
+  const Element<1> parent{parent_id, DirectionMap<1, Neighbors<1>>{},
+                    domain::topologies::hypercube<1>};
   const Domain<1>& domain = get<::domain::Tags::Domain<1>>(global_cache);
   const auto& my_block = domain.blocks()[parent_id.block_id()];
   ElementMap<1, Frame::Grid> element_map{
@@ -756,11 +793,12 @@ void test_split() {
                                 std::move(grid_to_inertial_map),
                                 std::move(parent)};
 
-  Element<1> child_1{child_1_id,
+  const Element<1> child_1{child_1_id,
                      DirectionMap<1, Neighbors<1>>{std::pair{
                          Direction<1>::upper_xi(),
                          Neighbors<1>{std::unordered_set{child_2_id},
-                                      OrientationMap<1>::create_aligned()}}}};
+                                      OrientationMap<1>::create_aligned()}}},
+                     domain::topologies::hypercube<1>};
   auto child_1_box = db::create<
       db::AddSimpleTags<Parallel::Tags::GlobalCache<TestMetavariables>,
                         ::domain::Tags::ElementMap<1, Frame::Grid>,
@@ -780,11 +818,12 @@ void test_split() {
                                                             Frame::Inertial>>(
           child_1_box));
 
-  Element<1> child_2{child_2_id,
+  const Element<1> child_2{child_2_id,
                      DirectionMap<1, Neighbors<1>>{std::pair{
                          Direction<1>::lower_xi(),
                          Neighbors<1>{std::unordered_set{child_1_id},
-                                      OrientationMap<1>::create_aligned()}}}};
+                                      OrientationMap<1>::create_aligned()}}},
+                     domain::topologies::hypercube<1>};
   auto child_2_box = db::create<
       db::AddSimpleTags<Parallel::Tags::GlobalCache<TestMetavariables>,
                         ::domain::Tags::ElementMap<1, Frame::Grid>,
@@ -813,16 +852,18 @@ void test_join() {
   const ElementId<1> child_1_id{0, std::array{SegmentId{1, 0}}};
   const ElementId<1> child_2_id{0, std::array{SegmentId{1, 1}}};
 
-  Element<1> child_1{child_1_id,
+  const Element<1> child_1{child_1_id,
                      DirectionMap<1, Neighbors<1>>{std::pair{
                          Direction<1>::upper_xi(),
                          Neighbors<1>{std::unordered_set{child_2_id},
-                                      OrientationMap<1>::create_aligned()}}}};
-  Element<1> child_2{child_2_id,
+                                      OrientationMap<1>::create_aligned()}}},
+                     domain::topologies::hypercube<1>};
+  const Element<1> child_2{child_2_id,
                      DirectionMap<1, Neighbors<1>>{std::pair{
                          Direction<1>::lower_xi(),
                          Neighbors<1>{std::unordered_set{child_1_id},
-                                      OrientationMap<1>::create_aligned()}}}};
+                                      OrientationMap<1>::create_aligned()}}},
+                     domain::topologies::hypercube<1>};
   const Domain<1>& domain = get<::domain::Tags::Domain<1>>(global_cache);
   const auto& my_block = domain.blocks()[child_1_id.block_id()];
   ElementMap<1, Frame::Grid> element_map_1{
@@ -858,7 +899,8 @@ void test_join() {
       items_type{&global_cache, std::move(element_map_2),
                  std::move(grid_to_inertial_map_2), std::move(child_2)});
 
-  Element<1> parent{parent_id, DirectionMap<1, Neighbors<1>>{}};
+  const Element<1> parent{parent_id, DirectionMap<1, Neighbors<1>>{},
+                    domain::topologies::hypercube<1>};
   auto parent_box = db::create<
       db::AddSimpleTags<Parallel::Tags::GlobalCache<TestMetavariables>,
                         ::domain::Tags::ElementMap<1, Frame::Grid>,

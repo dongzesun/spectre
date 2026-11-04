@@ -37,7 +37,6 @@
 #include "ParallelAlgorithms/EventsAndTriggers/EventsAndTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/LogicalTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Trigger.hpp"
-#include "Time/StepChoosers/Factory.hpp"
 #include "Time/TimeSteppers/Factory.hpp"
 #include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Time/Triggers/TimeTriggers.hpp"
@@ -50,9 +49,7 @@ class er;
 /// \endcond
 
 template <template <typename> class BoundaryComponent>
-struct EvolutionMetavars : CharacteristicExtractDefaults<false> {
-  using system = Cce::System<evolve_ccm>;
-  static constexpr bool local_time_stepping = true;
+struct EvolutionMetavars : CharacteristicExtractDefaults<Cce::System<false>> {
   using cce_boundary_component = BoundaryComponent<EvolutionMetavars>;
 
   using component_list =
@@ -65,9 +62,7 @@ struct EvolutionMetavars : CharacteristicExtractDefaults<false> {
     using factory_classes = tmpl::map<
         tmpl::pair<LtsTimeStepper, TimeSteppers::lts_time_steppers>,
         tmpl::pair<StepChooser<StepChooserUse::LtsStep>, cce_step_choosers>,
-        tmpl::pair<StepChooser<StepChooserUse::Slab>,
-                   StepChoosers::standard_slab_choosers<
-                       system, local_time_stepping, false>>,
+        tmpl::pair<StepChooser<StepChooserUse::Slab>, cce_slab_choosers>,
         tmpl::pair<TimeSequence<double>,
                    TimeSequences::all_time_sequences<double>>,
         tmpl::pair<TimeSequence<std::uint64_t>,

@@ -15,26 +15,39 @@ on:
 
 jobs:
   deploy_static_execs:
-    name: Deploy static executables and libraries
-    runs-on: ubuntu-latest
+    name: Deploy static executables and libraries (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # We build native images on matching runners (amd64 on ubuntu-latest, arm64
+    # on the GitHub-hosted ARM64 runner) rather than cross-compiling with QEMU,
+    # which proved fragile. See BuildDockerContainer.yaml for details.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            asset: x86-64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            asset: arm64
     env:
       RELEASE_TAG_NAME: ${{ inputs.tag_name || github.event.release.tag_name }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       # Build static executables in a Docker container with an older version
       # of Ubuntu so that the glibc is compatible with most Linux distros.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Build static executables
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           push: false
           context: .
           file: "./containers/Dockerfile.buildenv"
           target: deploy_static_execs_and_libs
           tags: sxs-collaboration/spectre:deploy_static_execs_and_libs
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           load: true
           build-args: |
             UBUNTU_VERSION=18.04
@@ -46,14 +59,19 @@ jobs:
       - name: Install python dependencies
         run: >
           pip3 install numpy h5py gdown
+      # The files in Google Drive carry a date suffix in their names so that
+      # the data used by older releases stays available when we regenerate
+      # them. Pass '-O' so the local names don't depend on the Drive names:
+      # the steps below and CheckCceOutput.py expect these exact names.
+      # CheckCceOutput.py itself lives in the repo, not in Google Drive.
       - name: Download extra data to include for CCE
         run: |
           gdown \
-          "https://drive.google.com/uc?id=1CmgLLfuLod8stc13EtmjHUvBoIgSVD-Y"
+          "https://drive.google.com/uc?id=1CmgLLfuLod8stc13EtmjHUvBoIgSVD-Y" \
+          -O BondiSachsCceR0200.h5
           gdown \
-          "https://drive.google.com/uc?id=1mN1oFQ7UcB1wsiXw9dphwAprQqufLia0"
-          gdown \
-          "https://drive.google.com/uc?id=1yYMM4PVUec9pIjKTxI4aCpo0Umqconr8"
+          "https://drive.google.com/uc?id=1eVzLmVi_m6qK8EGkgQ201TojhIm9FsYN" \
+          -O CharacteristicExtractReduction_Expected.h5
       - name: Copy CCE executables from the container
         run: >
           mkdir CceExecutables;
@@ -62,6 +80,9 @@ jobs:
 
           cp ./tests/InputFiles/Cce/CharacteristicExtract.yaml
           ./CceExecutables/CharacteristicExtract.yaml
+
+          cp ./tests/InputFiles/Cce/CheckCceOutput.py
+          ./CceExecutables/Tests/CheckCceOutput.py
 
           cp
           ./tests/InputFiles/PreprocessCceWorldtube/PreprocessCceWorldtube.yaml
@@ -76,19 +97,18 @@ jobs:
           ./CceExecutables/PreprocessCceWorldtube/AdmSecondOrderDriverPreprocessCceWorldtube.yaml
 
           docker cp
-          static-execs:/work/spectre/build/bin/CharacteristicExtract
+          static-execs:/sxscollaboration/spectre/build/bin/CharacteristicExtract
           ./CceExecutables/
 
-          docker cp static-execs:/work/spectre/build/bin/PreprocessCceWorldtube
+          docker cp static-execs:/sxscollaboration/spectre/build/bin/PreprocessCceWorldtube
           ./CceExecutables/PreprocessCceWorldtube/
 
           docker cp
-          static-execs:/work/spectre/build/bin/WriteCceWorldtubeCoordsToFile
+          static-execs:/sxscollaboration/spectre/build/bin/WriteCceWorldtubeCoordsToFile
           ./CceExecutables/PreprocessCceWorldtube/
       - name: Test CCE executable outside of container
         run: |
           mv BondiSachsCceR0200.h5 ./CceExecutables/Tests/
-          mv CheckCceOutput.py ./CceExecutables/Tests/
           mv CharacteristicExtractReduction_Expected.h5 \
           ./CceExecutables/Tests/
 
@@ -108,11 +128,11 @@ jobs:
         # though it's a decent bit slower. Specifically, xz is two thirds the
         # size of gzip.
         run:  |
-          tar cJf CceExecutables.tar.xz CceExecutables
+          tar cJf CceExecutables-${{ matrix.asset }}.tar.xz CceExecutables
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG_NAME }}
           fail_on_unmatched_files: true
           files: |
-            CceExecutables.tar.xz
+            CceExecutables-${{ matrix.asset }}.tar.xz

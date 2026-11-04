@@ -12,14 +12,17 @@ spectre_target_sources(
   ObserveAdaptiveSteppingDiagnostics.cpp
   ObserveConstantsPerElement.cpp
   ObserveDataBox.cpp
+  ObserveGridStats.cpp
   ObserveNorms.cpp
   ObserveTimeStep.cpp
+  ReductionScope.cpp
   )
 
 spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  ChangeFixedLtsRatio.hpp
   Completion.hpp
   ErrorIfDataTooBig.hpp
   Factory.hpp
@@ -29,11 +32,13 @@ spectre_target_headers(
   ObserveDataBox.hpp
   ObserveAtExtremum.hpp
   ObserveFields.hpp
+  ObserveGridStats.hpp
   ObserveNorms.hpp
   ObserveTimeStep.hpp
   ObserveTimeStep.tpp
   ObserveTimeStepVolume.hpp
   ObserveTimeStepVolume.tpp
+  ReductionScope.hpp
   Tags.hpp
   )
 
@@ -41,6 +46,7 @@ target_link_libraries(
   ${LIBRARY}
   PUBLIC
   Charmxx::pup
+  DomainStructure
   LinearOperators
   Observer
   Options
@@ -51,7 +57,7 @@ target_link_libraries(
   INTERFACE
   DataStructures
   Domain
-  DomainStructure
+  DomainCreators
   ErrorHandling
   EventsAndTriggers
   H5

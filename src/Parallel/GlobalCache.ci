@@ -3,12 +3,12 @@
 
 module GlobalCache {
 
+  include "DataStructures/TaggedTuple.hpp";
   include "optional";
   include "string";
   include "Parallel/GlobalCacheDeclare.hpp";
   include "Parallel/ParallelComponentHelpers.hpp";
   include "Parallel/ResourceInfo.hpp";
-  include "Utilities/TaggedTuple.hpp";
   include "Parallel/Main.decl.h";
 
   namespace Parallel {
@@ -33,7 +33,7 @@ module GlobalCache {
         const Parallel::ResourceInfo<Metavariables>& resource_info);
     entry void overlay_cache_data(
         tuples::tagged_tuple_from_typelist<
-            Parallel::get_overlayable_option_list<Metavariables>>&);
+            Parallel::get_overlayable_tag_list<Metavariables>>);
     entry void print_mutable_cache_callbacks(const std::string& file_name);
   }
   }  // namespace Parallel

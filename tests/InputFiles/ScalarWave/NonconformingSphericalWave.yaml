@@ -1,0 +1,120 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveScalarWave3D
+Testing:
+  Check: parse;execute
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+  Singletons: Auto
+
+InitialData: &InitialData
+  RegularSphericalWave:
+    Profile:
+      Gaussian:
+        Amplitude: 1.0
+        Width: 1.0
+        Center: 2.4
+
+Amr:
+  Criteria:
+  EnableInBlocks: All
+  Policies:
+    AllowCoarsening: true
+    EnforceTwoToOneBalanceInNormalDirection: true
+    Isotropy: Anisotropic
+    Limits:
+      RefinementLevel: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
+      ErrorBeyondLimits: False
+  Verbosity: Verbose
+
+PhaseChangeAndTriggers:
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: &initial_time_step 0.001
+  InitialSlabSize: *initial_time_step
+  MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
+  TimeStepper:
+    AdamsBashforth:
+      Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
+
+DomainCreator:
+  NonconformingSphericalShells:
+    InnerRadius: 1.9
+    InterfaceRadius: 2.4
+    OuterRadius: 2.9
+    Interior:
+      FillWithSphericity: 0.
+    InitialCubeRefinement: [0, 0]
+    InitialSHRefinement: 0
+    InitialCubeGridPoints: [4, 4]
+    InitialSHGridPoints: [6, 5]
+    RadialPartitioning:
+      - []
+      - []
+    RadialDistribution:
+      - [Linear]
+      - [Linear]
+    UseEquiangularMap: False
+    TimeDependentMaps: None
+    OuterBoundaryCondition:
+      DirichletAnalytic:
+        AnalyticPrescription: *InitialData
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    UpwindPenalty:
+  DiscontinuousGalerkin:
+    Filtering:
+      - Hypercube:
+          HalfPower: 128
+          Enable: True
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
+      - SphericalShell:
+          NumModesToKill: 1
+          AngularHalfPower: 128
+          RadialHalfPower: 128
+          BlocksToFilter: All
+          Enable: true
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+
+EventsAndTriggersAtCheckpoints:
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [50]
+    Events:
+      - Completion
+
+EventsAndTriggersAtSteps:
+
+EventsAndDenseTriggers:
+
+Observers:
+  VolumeFileName: "Volume"
+  ReductionFileName: "Reductions"

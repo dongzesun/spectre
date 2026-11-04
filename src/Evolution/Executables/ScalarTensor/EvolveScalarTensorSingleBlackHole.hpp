@@ -19,9 +19,12 @@
 #include "ControlSystem/Trigger.hpp"
 #include "Domain/Structure/ObjectLabel.hpp"
 #include "Evolution/Actions/RunEventsAndTriggers.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/ChangeFixedLtsRatio.hpp"
 #include "Evolution/Executables/ScalarTensor/ScalarTensorBase.hpp"
 #include "Evolution/Systems/Cce/Callbacks/DumpBondiSachsOnWorldtube.hpp"
 #include "Evolution/Systems/ScalarTensor/Actions/SetInitialData.hpp"
+#include "NumericalAlgorithms/Strahlkorper/IO/InitialShapeFromFile.hpp"
+#include "NumericalAlgorithms/Strahlkorper/InitialShape.hpp"
 #include "Options/FactoryHelpers.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
@@ -29,39 +32,26 @@
 #include "Parallel/PhaseControl/ExecutePhaseChange.hpp"
 #include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/ErrorOnFailedApparentHorizon.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/FailedHorizonFind.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/FindApparentHorizon.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/IgnoreFailedApparentHorizon.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/ObserveCenters.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/ObserveFieldsOnHorizon.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/ObserveTimeSeriesOnHorizon.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Component.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/ComputeExcisionBoundaryVolumeQuantities.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/ComputeExcisionBoundaryVolumeQuantities.tpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/ComputeHorizonVolumeQuantities.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/ComputeHorizonVolumeQuantities.tpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Criteria/Criterion.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Criteria/Factory.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Events/FindApparentHorizon.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/HorizonAliases.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/InterpolationTarget.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/KerrSchild.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Protocols/HorizonMetavars.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Actions/RunEventsOnFailure.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/CleanUpInterpolator.hpp"
 #include "ParallelAlgorithms/Interpolation/Actions/ElementInitInterpPoints.hpp"
 #include "ParallelAlgorithms/Interpolation/Actions/InitializeInterpolationTarget.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolationTargetReceiveVars.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorReceivePoints.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorReceiveVolumeData.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorRegisterElement.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/TryToInterpolate.hpp"
 #include "ParallelAlgorithms/Interpolation/Callbacks/ObserveSurfaceData.hpp"
 #include "ParallelAlgorithms/Interpolation/Callbacks/ObserveTimeSeriesOnSurface.hpp"
-#include "ParallelAlgorithms/Interpolation/Events/Interpolate.hpp"
+#include "ParallelAlgorithms/Interpolation/ComputeExcisionBoundaryVolumeQuantities.hpp"
+#include "ParallelAlgorithms/Interpolation/ComputeExcisionBoundaryVolumeQuantities.tpp"
 #include "ParallelAlgorithms/Interpolation/Events/InterpolateWithoutInterpComponent.hpp"
 #include "ParallelAlgorithms/Interpolation/InterpolationTarget.hpp"
-#include "ParallelAlgorithms/Interpolation/Interpolator.hpp"
 #include "ParallelAlgorithms/Interpolation/Protocols/InterpolationTargetTag.hpp"
 #include "ParallelAlgorithms/Interpolation/Tags.hpp"
 #include "ParallelAlgorithms/Interpolation/Targets/Sphere.hpp"
@@ -119,7 +109,7 @@ struct EvolutionMetavars : public ScalarTensorTemplateBase<EvolutionMetavars> {
         tmpl::list<gr::Tags::Lapse<DataVector>,
                    gr::Tags::Shift<DataVector, 3, Frame::Grid>>;
     using compute_vars_to_interpolate =
-        ah::ComputeExcisionBoundaryVolumeQuantities;
+        intrp::ComputeExcisionBoundaryVolumeQuantities;
     using vars_to_interpolate_to_target = tags_to_observe;
     using compute_items_on_source = tmpl::list<>;
     using compute_items_on_target = tmpl::list<>;
@@ -202,14 +192,12 @@ struct EvolutionMetavars : public ScalarTensorTemplateBase<EvolutionMetavars> {
   struct factory_creation
       : tt::ConformsTo<Options::protocols::FactoryCreation> {
     using factory_classes = Options::add_factory_classes<
-        // Restrict to monotonic time steppers in LTS to avoid control
-        // systems deadlocking.
-        tmpl::insert<
-            tmpl::erase<typename st_base::factory_creation::factory_classes,
-                        LtsTimeStepper>,
-            tmpl::pair<LtsTimeStepper,
-                       TimeSteppers::monotonic_lts_time_steppers>>,
+        typename st_base::factory_creation::factory_classes,
         tmpl::pair<ah::Criterion, ah::Criteria::standard_criteria>,
+        tmpl::pair<ylm::InitialShape<Frame::Distorted>,
+                   tmpl::list<ylm::InitialShapes::Sphere<Frame::Distorted>,
+                              ylm::InitialShapes::FromFile<Frame::Distorted>,
+                              ah::InitialShapes::KerrSchild<Frame::Distorted>>>,
         tmpl::pair<
             Event,
             tmpl::flatten<tmpl::list<
@@ -283,13 +271,12 @@ struct EvolutionMetavars : public ScalarTensorTemplateBase<EvolutionMetavars> {
               Parallel::Phase::Evolve,
               tmpl::flatten<tmpl::list<
                   ::domain::Actions::CheckFunctionsOfTimeAreReady<volume_dim>,
-                  std::conditional_t<local_time_stepping,
-                                     evolution::Actions::RunEventsAndTriggers<
-                                         Triggers::WhenToCheck::AtSteps>,
-                                     tmpl::list<>>,
+                  evolution::Actions::RunEventsAndTriggers<
+                      Triggers::WhenToCheck::AtSteps>,
                   evolution::Actions::RunEventsAndTriggers<
                       Triggers::WhenToCheck::AtSlabs>,
-                  Actions::ChangeSlabSize, step_actions,
+                  Actions::ChangeSlabSize,
+                  evolution::dg::Actions::ChangeFixedLtsRatio, step_actions,
                   Actions::MutateApply<AdvanceTime<>>,
                   PhaseControl::Actions::ExecutePhaseChange>>>,
           Parallel::PhaseActions<

@@ -30,6 +30,7 @@
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Neighbors.hpp"
 #include "Domain/Structure/SegmentId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/Tags/NeighborMesh.hpp"
 #include "Evolution/DiscontinuousGalerkin/InboxTags.hpp"
@@ -40,7 +41,6 @@
 #include "Evolution/DiscontinuousGalerkin/MortarInfo.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarTags.hpp"
 #include "Evolution/DiscontinuousGalerkin/NormalVectorTags.hpp"
-#include "Evolution/DiscontinuousGalerkin/TimeSteppingPolicy.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/MortarHelpers.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
@@ -51,7 +51,9 @@
 #include "Parallel/Phase.hpp"
 #include "ParallelAlgorithms/Amr/Protocols/Projector.hpp"
 #include "Time/BoundaryHistory.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Slab.hpp"
+#include "Time/Tags/LtsMode.hpp"
 #include "Time/Tags/TimeStepId.hpp"
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
@@ -98,11 +100,11 @@ struct Var2 : db::SimpleTag {
   using type = tnsr::I<DataVector, Dim, Frame::Inertial>;
 };
 
-template <size_t Dim, bool LocalTimeStepping>
+template <size_t Dim>
 struct Metavariables {
   static constexpr size_t volume_dim = Dim;
-  static constexpr bool local_time_stepping = LocalTimeStepping;
-  using const_global_cache_tags = tmpl::list<domain::Tags::Domain<Dim>>;
+  using const_global_cache_tags =
+      tmpl::list<domain::Tags::Domain<Dim>, ::Tags::LtsMode>;
   struct system {
     using variables_tag = ::Tags::Variables<tmpl::list<Var1, Var2<Dim>>>;
   };
@@ -113,8 +115,9 @@ struct Metavariables {
 template <size_t Dim>
 using mortar_data_history_type = typename Tags::MortarDataHistory<Dim>::type;
 
-template <bool LocalTimeStepping, size_t Dim>
+template <size_t Dim>
 void test_impl(
+    const bool local_time_stepping,
     const std::vector<std::array<size_t, Dim>>& initial_extents,
     const Element<Dim>& element, const TimeStepId& time_step_id,
     const TimeStepId& next_time_step_id, const Spectral::Quadrature quadrature,
@@ -126,7 +129,7 @@ void test_impl(
                                 evolution::dg::Tags::NormalCovector<Dim>>>>>&
         expected_normal_covector_quantities,
     std::optional<Domain<Dim>> domain = std::nullopt) {
-  using metavars = Metavariables<Dim, LocalTimeStepping>;
+  using metavars = Metavariables<Dim>;
   using MockRuntimeSystem = ActionTesting::MockRuntimeSystem<metavars>;
   if (domain == std::nullopt) {
     std::vector<Block<Dim>> blocks{};
@@ -137,8 +140,10 @@ void test_impl(
     }
     domain = Domain<Dim>{std::move(blocks)};
   }
-  tuples::TaggedTuple<domain::Tags::Domain<Dim>> opts{
-      std::move(domain.value())};
+  const auto lts_mode =
+      local_time_stepping ? LtsMode::Conservative : LtsMode::Off;
+  tuples::TaggedTuple<domain::Tags::Domain<Dim>, ::Tags::LtsMode> opts{
+      std::move(domain.value()), lts_mode};
   MockRuntimeSystem runner{std::move(opts)};
   ActionTesting::emplace_component_and_initialize<component<metavars>>(
       &runner, element.id(),
@@ -168,7 +173,7 @@ void test_impl(
   for (const auto& mortar_id_and_mesh : expected_mortar_meshes) {
     // Just make sure this exists, it is not expected to hold any data
     CHECK(mortar_data.find(mortar_id_and_mesh.first) != mortar_data.end());
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       CHECK(boundary_data_history.find(mortar_id_and_mesh.first) !=
             boundary_data_history.end());
     }
@@ -187,12 +192,13 @@ void test_impl(
         expected_normal_covector_quantities);
 }
 
-template <size_t Dim, bool LocalTimeStepping>
+template <size_t Dim>
 struct Test;
 
-template <bool LocalTimeStepping>
-struct Test<1, LocalTimeStepping> {
-  static void apply(const Spectral::Quadrature quadrature) {
+template <>
+struct Test<1> {
+  static void apply(const Spectral::Quadrature quadrature,
+                    const bool local_time_stepping) {
     INFO("1D");
     // Reference element is denoted by X, has one internal boundary and one
     // external boundary:
@@ -214,7 +220,8 @@ struct Test<1, LocalTimeStepping> {
         Neighbors<1>{{east_id}, OrientationMap<1>::create_aligned()};
     neighbor_meshes[interface_mortar_id] =
         Mesh<1>{initial_extents[0], Spectral::Basis::Legendre, quadrature};
-    const Element<1> element{element_id, neighbors};
+    const Element<1> element{element_id, neighbors,
+                             domain::topologies::hypercube<1>};
     const TimeStepId time_step_id{true, 3, Time{Slab{0.2, 3.4}, {3, 100}}};
     const TimeStepId next_time_step_id{true, 3, Time{Slab{0.2, 3.4}, {6, 100}}};
 
@@ -222,13 +229,11 @@ struct Test<1, LocalTimeStepping> {
         {interface_mortar_id, {}}};
     const ::dg::MortarMap<1, MortarInfo<1>> expected_mortar_infos{
         {interface_mortar_id,
-         MortarInfo<1>{
-             {.interface_data_policy =
-                  evolution::dg::InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy =
-                  LocalTimeStepping
-                      ? evolution::dg::TimeSteppingPolicy::Conservative
-                      : evolution::dg::TimeSteppingPolicy::EqualRate}}}};
+         MortarInfo<1>{{.interface_data_policy =
+                            evolution::dg::InterfaceDataPolicy::CopyProject,
+                        .time_stepping_policy = local_time_stepping
+                                                    ? LtsMode::Conservative
+                                                    : LtsMode::Off}}}};
 
     const DirectionMap<
         1, std::optional<
@@ -237,16 +242,17 @@ struct Test<1, LocalTimeStepping> {
         expected_normal_covector_quantities{{Direction<1>::lower_xi(), {}},
                                             {Direction<1>::upper_xi(), {}}};
 
-    test_impl<LocalTimeStepping>(initial_extents, element, time_step_id,
-                                 next_time_step_id, quadrature, neighbor_meshes,
-                                 expected_mortar_meshes, expected_mortar_infos,
-                                 expected_normal_covector_quantities);
+    test_impl(local_time_stepping, initial_extents, element, time_step_id,
+              next_time_step_id, quadrature, neighbor_meshes,
+              expected_mortar_meshes, expected_mortar_infos,
+              expected_normal_covector_quantities);
   }
 };
 
-template <bool LocalTimeStepping>
-struct Test<2, LocalTimeStepping> {
-  static void apply(const Spectral::Quadrature quadrature) {
+template <>
+struct Test<2> {
+  static void apply(const Spectral::Quadrature quadrature,
+                    const bool local_time_stepping) {
     INFO("2D");
     // Reference element is denoted by X, has two internal boundaries (east and
     // south) and two external boundaries (west and north):
@@ -281,7 +287,8 @@ struct Test<2, LocalTimeStepping> {
     neighbor_meshes[interface_mortar_id_south] =
         Mesh<2>{initial_extents[0], Spectral::Basis::Legendre, quadrature};
 
-    const Element<2> element{element_id, neighbors};
+    const Element<2> element{element_id, neighbors,
+                             domain::topologies::hypercube<2>};
     const TimeStepId time_step_id{true, 3, Time{Slab{0.2, 3.4}, {3, 100}}};
     const TimeStepId next_time_step_id{true, 3, Time{Slab{0.2, 3.4}, {6, 100}}};
 
@@ -294,14 +301,12 @@ struct Test<2, LocalTimeStepping> {
     for (const auto& mortar_id_and_mesh : expected_mortar_meshes) {
       expected_mortar_infos.emplace(
           mortar_id_and_mesh.first,
-          MortarInfo<2>{
-              {.mortar_size = {{Spectral::SegmentSize::Full}},
-               .interface_data_policy =
-                   evolution::dg::InterfaceDataPolicy::CopyProject,
-               .time_stepping_policy =
-                   LocalTimeStepping
-                       ? evolution::dg::TimeSteppingPolicy::Conservative
-                       : evolution::dg::TimeSteppingPolicy::EqualRate}});
+          MortarInfo<2>{{.mortar_size = {{Spectral::SegmentSize::Full}},
+                         .interface_data_policy =
+                             evolution::dg::InterfaceDataPolicy::CopyProject,
+                         .time_stepping_policy = local_time_stepping
+                                                     ? LtsMode::Conservative
+                                                     : LtsMode::Off}});
     }
 
     const DirectionMap<
@@ -313,16 +318,17 @@ struct Test<2, LocalTimeStepping> {
                                             {Direction<2>::lower_eta(), {}},
                                             {Direction<2>::upper_eta(), {}}};
 
-    test_impl<LocalTimeStepping>(initial_extents, element, time_step_id,
-                                 next_time_step_id, quadrature, neighbor_meshes,
-                                 expected_mortar_meshes, expected_mortar_infos,
-                                 expected_normal_covector_quantities);
+    test_impl(local_time_stepping, initial_extents, element, time_step_id,
+              next_time_step_id, quadrature, neighbor_meshes,
+              expected_mortar_meshes, expected_mortar_infos,
+              expected_normal_covector_quantities);
   }
 };
 
-template <bool LocalTimeStepping>
-struct Test<3, LocalTimeStepping> {
-  static void apply(const Spectral::Quadrature quadrature) {
+template <>
+struct Test<3> {
+  static void apply(const Spectral::Quadrature quadrature,
+                    const bool local_time_stepping) {
     INFO("3D");
     // Neighboring elements in:
     // - upper-xi (right id)
@@ -367,7 +373,8 @@ struct Test<3, LocalTimeStepping> {
     neighbor_meshes[interface_mortar_id_top] =
         Mesh<3>{initial_extents[0], Spectral::Basis::Legendre, quadrature};
 
-    const Element<3> element{element_id, neighbors};
+    const Element<3> element{element_id, neighbors,
+                             domain::topologies::hypercube<3>};
     const TimeStepId time_step_id{true, 3, Time{Slab{0.2, 3.4}, {3, 100}}};
     const TimeStepId next_time_step_id{true, 3, Time{Slab{0.2, 3.4}, {6, 100}}};
 
@@ -379,8 +386,7 @@ struct Test<3, LocalTimeStepping> {
         {interface_mortar_id_top,
          Mesh<2>({{2, 3}}, Spectral::Basis::Legendre, quadrature)}};
     const auto expected_time_stepping_policy =
-        LocalTimeStepping ? evolution::dg::TimeSteppingPolicy::Conservative
-                          : evolution::dg::TimeSteppingPolicy::EqualRate;
+        local_time_stepping ? LtsMode::Conservative : LtsMode::Off;
     ::dg::MortarMap<3, MortarInfo<3>> expected_mortar_infos{};
     expected_mortar_infos.emplace(
         interface_mortar_id_right,
@@ -414,18 +420,19 @@ struct Test<3, LocalTimeStepping> {
             {Direction<3>::lower_eta(), {}},  {Direction<3>::upper_eta(), {}},
             {Direction<3>::lower_zeta(), {}}, {Direction<3>::upper_zeta(), {}}};
 
-    test_impl<LocalTimeStepping>(initial_extents, element, time_step_id,
-                                 next_time_step_id, quadrature, neighbor_meshes,
-                                 expected_mortar_meshes, expected_mortar_infos,
-                                 expected_normal_covector_quantities);
+    test_impl(local_time_stepping, initial_extents, element, time_step_id,
+              next_time_step_id, quadrature, neighbor_meshes,
+              expected_mortar_meshes, expected_mortar_infos,
+              expected_normal_covector_quantities);
   }
 };
 
-template <bool LocalTimeStepping>
-void test_nonconforming_blocks() {
+void test_nonconforming_blocks(const bool local_time_stepping) {
   INFO("NonconformingSphericalShells");
+  using Excision = domain::creators::NonconformingSphericalShells::Excision;
   const auto creator = domain::creators::NonconformingSphericalShells(
-      2.0, 3.0, 4.0, 0, 0, 5, 7, 11, nullptr, nullptr);
+      2.0, 3.0, 4.0, Excision{}, std::array<size_t, 2>{0_st, 0_st}, 0_st,
+      std::array<size_t, 2>{11_st, 5_st}, std::array<size_t, 2>{7_st, 5_st});
   auto domain = creator.create_domain();
   const auto initial_refinement = creator.initial_refinement_levels();
   const auto initial_extents = creator.initial_extents();
@@ -439,8 +446,7 @@ void test_nonconforming_blocks() {
   const TimeStepId time_step_id{true, 3, Time{Slab{0.2, 3.4}, {3, 100}}};
   const TimeStepId next_time_step_id{true, 3, Time{Slab{0.2, 3.4}, {6, 100}}};
   const auto expected_time_stepping_policy =
-      LocalTimeStepping ? evolution::dg::TimeSteppingPolicy::Conservative
-                        : evolution::dg::TimeSteppingPolicy::EqualRate;
+      local_time_stepping ? LtsMode::Conservative : LtsMode::Off;
   {
     INFO("Test S2 shell");
     const auto& shell_neighbor_ids =
@@ -473,12 +479,12 @@ void test_nonconforming_blocks() {
                                     evolution::dg::Tags::NormalCovector<3>>>>>
         shell_expected_normal_covector_quantities{
             {Direction<3>::lower_xi(), {}}, {Direction<3>::upper_xi(), {}}};
-    test_impl<LocalTimeStepping>(
-        initial_extents, shell, time_step_id, next_time_step_id,
-        Spectral::Quadrature::GaussLobatto, shell_neighbor_meshes,
-        shell_expected_mortar_meshes, shell_expected_mortar_infos,
-        shell_expected_normal_covector_quantities,
-        std::make_optional<Domain<3>>(std::move(domain)));
+    test_impl(local_time_stepping, initial_extents, shell, time_step_id,
+              next_time_step_id, Spectral::Quadrature::GaussLobatto,
+              shell_neighbor_meshes, shell_expected_mortar_meshes,
+              shell_expected_mortar_infos,
+              shell_expected_normal_covector_quantities,
+              std::make_optional<Domain<3>>(std::move(domain)));
   }
   {
     INFO("Test cubed sphere");
@@ -549,12 +555,11 @@ void test_nonconforming_blocks() {
             {Direction<3>::lower_xi(), {}},   {Direction<3>::upper_xi(), {}},
             {Direction<3>::lower_eta(), {}},  {Direction<3>::upper_eta(), {}},
             {Direction<3>::lower_zeta(), {}}, {Direction<3>::upper_zeta(), {}}};
-    test_impl<LocalTimeStepping>(
-        initial_extents, element, time_step_id, next_time_step_id,
-        Spectral::Quadrature::GaussLobatto, neighbor_meshes,
-        expected_mortar_meshes, expected_mortar_infos,
-        expected_normal_covector_quantities,
-        std::make_optional<Domain<3>>(std::move(domain)));
+    test_impl(local_time_stepping, initial_extents, element, time_step_id,
+              next_time_step_id, Spectral::Quadrature::GaussLobatto,
+              neighbor_meshes, expected_mortar_meshes, expected_mortar_infos,
+              expected_normal_covector_quantities,
+              std::make_optional<Domain<3>>(std::move(domain)));
   }
 }
 
@@ -653,20 +658,19 @@ void test_p_refine(
         expected_normal_covector_and_magnitude,
     const mortar_data_history_type<Dim>& expected_mortar_data_history) {
   auto box = db::create<db::AddSimpleTags<
-      domain::Tags::Domain<Dim>, domain::Tags::Mesh<Dim>,
+      domain::Tags::Domain<Dim>, ::Tags::LtsMode, domain::Tags::Mesh<Dim>,
       domain::Tags::Element<Dim>, domain::Tags::NeighborMesh<Dim>,
       ::Tags::TimeStepId, Tags::MortarData<Dim>, Tags::MortarMesh<Dim>,
       Tags::MortarInfo<Dim>, Tags::MortarNextTemporalId<Dim>,
       evolution::dg::Tags::NormalCovectorAndMagnitude<Dim>,
       Tags::MortarDataHistory<Dim>>>(
-      Domain<Dim>{}, std::move(new_mesh), std::move(new_element),
-      std::move(neighbor_meshes), temporal_id, std::move(mortar_data),
-      std::move(mortar_mesh), std::move(mortar_infos),
-      std::move(mortar_next_temporal_id),
+      Domain<Dim>{}, UsingLts ? LtsMode::Conservative : LtsMode::Off,
+      std::move(new_mesh), std::move(new_element), std::move(neighbor_meshes),
+      temporal_id, std::move(mortar_data), std::move(mortar_mesh),
+      std::move(mortar_infos), std::move(mortar_next_temporal_id),
       std::move(normal_covector_and_magnitude), std::move(mortar_data_history));
 
-  db::mutate_apply<
-      evolution::dg::Initialization::ProjectMortars<Dim, UsingLts>>(
+  db::mutate_apply<evolution::dg::Initialization::ProjectMortars<Dim>>(
       make_not_null(&box), std::make_pair(old_mesh, old_element));
 
   CHECK(db::get<Tags::MortarData<Dim>>(box) == expected_mortar_data);
@@ -690,7 +694,7 @@ Element<1> make_element<1>() {
   DirectionMap<1, Neighbors<1>> neighbors{};
   neighbors[Direction<1>::upper_xi()] =
       Neighbors<1>{{neighbor_id}, OrientationMap<1>::create_aligned()};
-  return Element<1>{element_id, neighbors};
+  return Element<1>{element_id, neighbors, domain::topologies::hypercube<1>};
 }
 
 template <>
@@ -703,7 +707,7 @@ Element<2> make_element<2>() {
       Neighbors<2>{{east_id}, OrientationMap<2>::create_aligned()};
   neighbors[Direction<2>::lower_eta()] =
       Neighbors<2>{{south_id}, OrientationMap<2>::create_aligned()};
-  return Element<2>{element_id, neighbors};
+  return Element<2>{element_id, neighbors, domain::topologies::hypercube<2>};
 }
 
 template <>
@@ -723,7 +727,7 @@ Element<3> make_element<3>() {
       Neighbors<3>{{front_id}, OrientationMap<3>::create_aligned()};
   neighbors[Direction<3>::upper_zeta()] =
       Neighbors<3>{{top_id}, OrientationMap<3>::create_aligned()};
-  return Element<3>{element_id, neighbors};
+  return Element<3>{element_id, neighbors, domain::topologies::hypercube<3>};
 }
 
 template <size_t Dim>
@@ -762,15 +766,14 @@ void test_p_refine_gts() {
       const auto& neighbor_orientation = neighbors.orientation(neighbor);
       mortar_infos.emplace(
           mortar_id,
-          MortarInfo<Dim>{
-              {.mortar_size = ::dg::mortar_size(old_element.id(), neighbor,
-                                                direction.dimension(),
-                                                neighbor_orientation),
-               .interface_data_policy =
-                   neighbor_orientation.is_aligned()
-                       ? InterfaceDataPolicy::CopyProject
-                       : InterfaceDataPolicy::OrientCopyProject,
-               .time_stepping_policy = TimeSteppingPolicy::EqualRate}});
+          MortarInfo<Dim>{{.mortar_size = ::dg::mortar_size(
+                               old_element.id(), neighbor,
+                               direction.dimension(), neighbor_orientation),
+                           .interface_data_policy =
+                               neighbor_orientation.is_aligned()
+                                   ? InterfaceDataPolicy::CopyProject
+                                   : InterfaceDataPolicy::OrientCopyProject,
+                           .time_stepping_policy = LtsMode::Off}});
       mortar_next_temporal_ids.emplace(mortar_id, next_temporal_id);
       neighbor_meshes.emplace(mortar_id, neighbor_mesh);
     }
@@ -798,15 +801,14 @@ void test_p_refine_gts() {
       const auto& neighbor_orientation = neighbors.orientation(neighbor);
       expected_mortar_infos.emplace(
           mortar_id,
-          MortarInfo<Dim>{
-              {.mortar_size = ::dg::mortar_size(new_element.id(), neighbor,
-                                                direction.dimension(),
-                                                neighbor_orientation),
-               .interface_data_policy =
-                   neighbor_orientation.is_aligned()
-                       ? evolution::dg::InterfaceDataPolicy::CopyProject
-                       : evolution::dg::InterfaceDataPolicy::OrientCopyProject,
-               .time_stepping_policy = TimeSteppingPolicy::EqualRate}});
+          MortarInfo<Dim>{{.mortar_size = ::dg::mortar_size(
+                               new_element.id(), neighbor,
+                               direction.dimension(), neighbor_orientation),
+                           .interface_data_policy =
+                               neighbor_orientation.is_aligned()
+                                   ? InterfaceDataPolicy::CopyProject
+                                   : InterfaceDataPolicy::OrientCopyProject,
+                           .time_stepping_policy = LtsMode::Off}});
       expected_mortar_next_temporal_ids.emplace(mortar_id, next_temporal_id);
     }
   }
@@ -950,15 +952,14 @@ void test_p_refine_lts() {
       const auto& neighbor_orientation = neighbors.orientation(neighbor);
       mortar_infos.emplace(
           mortar_id,
-          MortarInfo<Dim>{
-              {.mortar_size = ::dg::mortar_size(old_element.id(), neighbor,
-                                                direction.dimension(),
-                                                neighbor_orientation),
-               .interface_data_policy =
-                   neighbor_orientation.is_aligned()
-                       ? InterfaceDataPolicy::CopyProject
-                       : InterfaceDataPolicy::OrientCopyProject,
-               .time_stepping_policy = TimeSteppingPolicy::Conservative}});
+          MortarInfo<Dim>{{.mortar_size = ::dg::mortar_size(
+                               old_element.id(), neighbor,
+                               direction.dimension(), neighbor_orientation),
+                           .interface_data_policy =
+                               neighbor_orientation.is_aligned()
+                                   ? InterfaceDataPolicy::CopyProject
+                                   : InterfaceDataPolicy::OrientCopyProject,
+                           .time_stepping_policy = LtsMode::Conservative}});
       mortar_next_temporal_ids.emplace(mortar_id, next_temporal_id);
       neighbor_meshes.emplace(mortar_id, neighbor_mesh);
       mortar_data_history.emplace(mortar_id, boundary_history_type<Dim>{});
@@ -1002,15 +1003,14 @@ void test_p_refine_lts() {
       const auto& neighbor_orientation = neighbors.orientation(neighbor);
       expected_mortar_infos.emplace(
           mortar_id,
-          MortarInfo<Dim>{
-              {.mortar_size = ::dg::mortar_size(new_element.id(), neighbor,
-                                                direction.dimension(),
-                                                neighbor_orientation),
-               .interface_data_policy =
-                   neighbor_orientation.is_aligned()
-                       ? InterfaceDataPolicy::CopyProject
-                       : InterfaceDataPolicy::OrientCopyProject,
-               .time_stepping_policy = TimeSteppingPolicy::Conservative}});
+          MortarInfo<Dim>{{.mortar_size = ::dg::mortar_size(
+                               new_element.id(), neighbor,
+                               direction.dimension(), neighbor_orientation),
+                           .interface_data_policy =
+                               neighbor_orientation.is_aligned()
+                                   ? InterfaceDataPolicy::CopyProject
+                                   : InterfaceDataPolicy::OrientCopyProject,
+                           .time_stepping_policy = LtsMode::Conservative}});
       expected_mortar_next_temporal_ids.emplace(mortar_id, next_temporal_id);
       expected_mortar_data_history.emplace(mortar_id,
                                            boundary_history_type<Dim>{});
@@ -1153,12 +1153,14 @@ Tags::MortarDataHistory<2>::type make_boundary_histories(
 // has (5,6), and the others are still (3,4).
 //
 // The central region can do nothing, p-refine, split, or join.
-template <bool LocalTimeStepping>
-void test_h_refinement() {
+void test_h_refinement(const bool local_time_stepping) {
   using NormalVars =
       Variables<tmpl::list<evolution::dg::Tags::MagnitudeOfNormal,
                            evolution::dg::Tags::NormalCovector<2>>>;
   using mortar_data_history_tag = Tags::MortarDataHistory<2>;
+
+  const auto lts_mode =
+      local_time_stepping ? LtsMode::Conservative : LtsMode::Off;
 
   const DirectionalId<2> mortar_id_a(Direction<2>::upper_eta(),
                                      ElementId<2>(0));
@@ -1187,9 +1189,6 @@ void test_h_refinement() {
       std::array{Direction<2>::upper_eta(), Direction<2>::lower_xi()}};
   const TimeStepId temporal_id(true, 5, Slab(3.0, 6.0).start());
   const Mesh<2> orig_mesh = lgl_mesh<2>({{3, 4}});
-  const auto time_stepping_policy = LocalTimeStepping
-                                        ? TimeSteppingPolicy::Conservative
-                                        : TimeSteppingPolicy::EqualRate;
 
   tuples::TaggedTuple<domain::Tags::Mesh<2>, domain::Tags::Element<2>,
                       domain::Tags::NeighborMesh<2>, ::Tags::TimeStepId,
@@ -1209,7 +1208,8 @@ void test_h_refinement() {
          {mortar_id_b.direction(), Neighbors<2>({mortar_id_b.id()}, rotated)},
          {mortar_id_c.direction(), Neighbors<2>({mortar_id_c.id()}, aligned)},
          {mortar_id_d.direction(),
-          Neighbors<2>({mortar_id_d.id(), mortar_id_e.id()}, aligned)}});
+          Neighbors<2>({mortar_id_d.id(), mortar_id_e.id()}, aligned)}},
+        domain::topologies::hypercube<2>);
 
     get<domain::Tags::NeighborMesh<2>>(orig_single_items) = {
         {mortar_id_a, orig_mesh},
@@ -1235,27 +1235,27 @@ void test_h_refinement() {
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_b,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_c,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_d,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::LowerHalf}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_e,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::UpperHalf}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}}};
+              .time_stepping_policy = lts_mode}}}};
 
     get<Tags::MortarNextTemporalId<2>>(orig_single_items) =
         constant_next_temporal_ids(orig_mortar_ids, temporal_id);
@@ -1267,7 +1267,7 @@ void test_h_refinement() {
                               {Direction<2>::upper_xi(), NormalVars(4, 3.0)},
                               {Direction<2>::lower_eta(), NormalVars(3, 4.0)}};
 
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       get<mortar_data_history_tag>(orig_single_items) = make_boundary_histories(
           orig_mortar_ids, orig_mesh,
           get<Tags::MortarMesh<2>>(orig_single_items),
@@ -1284,7 +1284,8 @@ void test_h_refinement() {
        {mortar_id_f.direction(), Neighbors<2>({mortar_id_f.id()}, rotated)},
        {mortar_id_g.direction(),
         Neighbors<2>({mortar_id_g.id(), mortar_id_h.id()}, aligned)},
-       {mortar_id_i.direction(), Neighbors<2>({mortar_id_i.id()}, aligned)}});
+       {mortar_id_i.direction(), Neighbors<2>({mortar_id_i.id()}, aligned)}},
+      domain::topologies::hypercube<2>);
 
   const auto& orig_neighbor_meshes =
       get<domain::Tags::NeighborMesh<2>>(orig_single_items);
@@ -1300,24 +1301,24 @@ void test_h_refinement() {
        MortarInfo<2>{
            {.mortar_size = {{Spectral::SegmentSize::Full}},
             .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-            .time_stepping_policy = time_stepping_policy}}},
+            .time_stepping_policy = lts_mode}}},
       {mortar_id_f,
        MortarInfo<2>{
            {.mortar_size = {{Spectral::SegmentSize::Full}},
             .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-            .time_stepping_policy = time_stepping_policy}}},
+            .time_stepping_policy = lts_mode}}},
       {mortar_id_g,
        MortarInfo<2>{{.mortar_size = {{Spectral::SegmentSize::UpperHalf}},
                       .interface_data_policy = InterfaceDataPolicy::CopyProject,
-                      .time_stepping_policy = time_stepping_policy}}},
+                      .time_stepping_policy = lts_mode}}},
       {mortar_id_h,
        MortarInfo<2>{{.mortar_size = {{Spectral::SegmentSize::LowerHalf}},
                       .interface_data_policy = InterfaceDataPolicy::CopyProject,
-                      .time_stepping_policy = time_stepping_policy}}},
+                      .time_stepping_policy = lts_mode}}},
       {mortar_id_i,
        MortarInfo<2>{{.mortar_size = {{Spectral::SegmentSize::Full}},
                       .interface_data_policy = InterfaceDataPolicy::CopyProject,
-                      .time_stepping_policy = time_stepping_policy}}}};
+                      .time_stepping_policy = lts_mode}}}};
 
   const DirectionMap<2, std::optional<NormalVars>>
       empty_normal_covector_and_magnitude{
@@ -1330,9 +1331,9 @@ void test_h_refinement() {
     INFO("No local refinement");
     auto box = tmpl::as_pack<decltype(orig_single_items)>(
         [&]<typename... Tags>(tmpl::type_<Tags>... /*meta*/) {
-          return db::create<
-              db::AddSimpleTags<domain::Tags::Domain<2>, Tags...>>(
-              Domain<2>{}, get<Tags>(orig_single_items)...);
+          return db::create<db::AddSimpleTags<domain::Tags::Domain<2>,
+                                              ::Tags::LtsMode, Tags...>>(
+              Domain<2>{}, lts_mode, get<Tags>(orig_single_items)...);
         });
 
     const auto& mortar_ids = refined_mortar_ids;
@@ -1344,8 +1345,7 @@ void test_h_refinement() {
         },
         make_not_null(&box));
 
-    db::mutate_apply<
-        evolution::dg::Initialization::ProjectMortars<2, LocalTimeStepping>>(
+    db::mutate_apply<evolution::dg::Initialization::ProjectMortars<2>>(
         make_not_null(&box),
         std::pair(get<domain::Tags::Mesh<2>>(orig_single_items),
                   get<domain::Tags::Element<2>>(orig_single_items)));
@@ -1358,7 +1358,7 @@ void test_h_refinement() {
         {mortar_id_i, lgl_mesh<1>(5)}};
 
     mortar_data_history_tag::type expected_mortar_data_history{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       expected_mortar_data_history = make_boundary_histories(
           refined_mortar_ids, orig_mesh, expected_mortar_meshes,
           make_array<2>(Spectral::SegmentSize::Full),
@@ -1384,9 +1384,9 @@ void test_h_refinement() {
     INFO("Local p-refinement");
     auto box = tmpl::as_pack<decltype(orig_single_items)>(
         [&]<typename... Tags>(tmpl::type_<Tags>... /*meta*/) {
-          return db::create<
-              db::AddSimpleTags<domain::Tags::Domain<2>, Tags...>>(
-              Domain<2>{}, get<Tags>(orig_single_items)...);
+          return db::create<db::AddSimpleTags<domain::Tags::Domain<2>,
+                                              ::Tags::LtsMode, Tags...>>(
+              Domain<2>{}, lts_mode, get<Tags>(orig_single_items)...);
         });
 
     const auto& mortar_ids = refined_mortar_ids;
@@ -1402,8 +1402,7 @@ void test_h_refinement() {
         },
         make_not_null(&box));
 
-    db::mutate_apply<
-        evolution::dg::Initialization::ProjectMortars<2, LocalTimeStepping>>(
+    db::mutate_apply<evolution::dg::Initialization::ProjectMortars<2>>(
         make_not_null(&box),
         std::pair(get<domain::Tags::Mesh<2>>(orig_single_items),
                   get<domain::Tags::Element<2>>(orig_single_items)));
@@ -1416,7 +1415,7 @@ void test_h_refinement() {
         {mortar_id_i, lgl_mesh<1>(5)}};
 
     mortar_data_history_tag::type expected_mortar_data_history{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       expected_mortar_data_history = make_boundary_histories(
           refined_mortar_ids, refined_mesh, expected_mortar_meshes,
           make_array<2>(Spectral::SegmentSize::Full),
@@ -1466,16 +1465,18 @@ void test_h_refinement() {
 
   {
     INFO("Join");
-    auto box =
-        db::create<tmpl::push_front<decltype(orig_single_items)::tags_list,
-                                    domain::Tags::Domain<2>>>();
+    auto box = db::create<
+        tmpl::push_front<decltype(orig_single_items)::tags_list,
+                         domain::Tags::Domain<2>, ::Tags::LtsMode>>();
 
     const auto& mortar_ids = refined_mortar_ids;
-    db::mutate<domain::Tags::Element<2>, domain::Tags::Mesh<2>,
+    db::mutate<::Tags::LtsMode, domain::Tags::Element<2>, domain::Tags::Mesh<2>,
                domain::Tags::NeighborMesh<2>>(
-        [&](const gsl::not_null<Element<2>*> element,
+        [&](const gsl::not_null<LtsMode*> local_lts_mode,
+            const gsl::not_null<Element<2>*> element,
             const gsl::not_null<Mesh<2>*> mesh,
             const gsl::not_null<::dg::MortarMap<2, Mesh<2>>*> neighbor_meshes) {
+          *local_lts_mode = lts_mode;
           *element = refined_single_element;
           *mesh = orig_mesh;
           *neighbor_meshes = refined_single_neighbor_meshes;
@@ -1488,7 +1489,7 @@ void test_h_refinement() {
     mortar_data_history_tag::type history_ne{};
     mortar_data_history_tag::type history_sw{};
     mortar_data_history_tag::type history_se{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       // Only the mortar_size is used for constructing the histories
       const auto dummy_mortar_infos = [](const auto& ids) {
         ::dg::MortarMap<2, MortarInfo<2>> infos{};
@@ -1546,8 +1547,7 @@ void test_h_refinement() {
         {id_sw, {temporal_id, std::move(history_sw)}},
         {id_se, {temporal_id, std::move(history_se)}}};
 
-    db::mutate_apply<
-        evolution::dg::Initialization::ProjectMortars<2, LocalTimeStepping>>(
+    db::mutate_apply<evolution::dg::Initialization::ProjectMortars<2>>(
         make_not_null(&box), children_items);
 
     const ::dg::MortarMap<2, Mesh<1>> expected_mortar_meshes{
@@ -1558,7 +1558,7 @@ void test_h_refinement() {
         {mortar_id_i, lgl_mesh<1>(5)}};
 
     mortar_data_history_tag::type expected_mortar_data_history{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       for (const auto& mortar_id : refined_mortar_ids) {
         expected_mortar_data_history.emplace(mortar_id,
                                              boundary_history_type<2>{});
@@ -1582,26 +1582,30 @@ void test_h_refinement() {
 
   {
     INFO("Split - nw");
-    auto box =
-        db::create<tmpl::push_front<decltype(orig_single_items)::tags_list,
-                                    domain::Tags::Domain<2>>>();
+    auto box = db::create<
+        tmpl::push_front<decltype(orig_single_items)::tags_list,
+                         domain::Tags::Domain<2>, ::Tags::LtsMode>>();
 
     const std::array mortar_ids{mortar_id_a, mortar_id_f, mortar_id_nw_ne,
                                 mortar_id_nw_sw};
-    db::mutate<domain::Tags::Element<2>, domain::Tags::Mesh<2>,
+    db::mutate<::Tags::LtsMode, domain::Tags::Element<2>, domain::Tags::Mesh<2>,
                domain::Tags::NeighborMesh<2>>(
-        [&](const gsl::not_null<Element<2>*> element,
+        [&](const gsl::not_null<LtsMode*> local_lts_mode,
+            const gsl::not_null<Element<2>*> element,
             const gsl::not_null<Mesh<2>*> mesh,
             const gsl::not_null<::dg::MortarMap<2, Mesh<2>>*> neighbor_meshes) {
-          *element = Element<2>(
-              id_nw, {{mortar_id_a.direction(),
-                       Neighbors<2>({mortar_id_a.id()}, rotated)},
-                      {mortar_id_f.direction(),
-                       Neighbors<2>({mortar_id_f.id()}, rotated)},
-                      {mortar_id_nw_ne.direction(),
-                       Neighbors<2>({mortar_id_nw_ne.id()}, aligned)},
-                      {mortar_id_nw_sw.direction(),
-                       Neighbors<2>({mortar_id_nw_sw.id()}, aligned)}});
+          *local_lts_mode = lts_mode;
+          *element =
+              Element<2>(id_nw,
+                         {{mortar_id_a.direction(),
+                           Neighbors<2>({mortar_id_a.id()}, rotated)},
+                          {mortar_id_f.direction(),
+                           Neighbors<2>({mortar_id_f.id()}, rotated)},
+                          {mortar_id_nw_ne.direction(),
+                           Neighbors<2>({mortar_id_nw_ne.id()}, aligned)},
+                          {mortar_id_nw_sw.direction(),
+                           Neighbors<2>({mortar_id_nw_sw.id()}, aligned)}},
+                         domain::topologies::hypercube<2>);
           *mesh = orig_mesh;
           *neighbor_meshes = {
               {mortar_id_a, refined_single_neighbor_meshes.at(mortar_id_a)},
@@ -1611,8 +1615,7 @@ void test_h_refinement() {
         },
         make_not_null(&box));
 
-    db::mutate_apply<
-        evolution::dg::Initialization::ProjectMortars<2, LocalTimeStepping>>(
+    db::mutate_apply<evolution::dg::Initialization::ProjectMortars<2>>(
         make_not_null(&box), orig_single_items);
 
     const ::dg::MortarMap<2, Mesh<1>> expected_mortar_meshes{
@@ -1626,25 +1629,25 @@ void test_h_refinement() {
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_f,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_nw_ne,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_nw_sw,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}}};
+              .time_stepping_policy = lts_mode}}}};
 
     mortar_data_history_tag::type expected_mortar_data_history{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       for (const auto& mortar_id : mortar_ids) {
         expected_mortar_data_history.emplace(mortar_id,
                                              boundary_history_type<2>{});
@@ -1667,26 +1670,30 @@ void test_h_refinement() {
 
   {
     INFO("Split - ne");
-    auto box =
-        db::create<tmpl::push_front<decltype(orig_single_items)::tags_list,
-                                    domain::Tags::Domain<2>>>();
+    auto box = db::create<
+        tmpl::push_front<decltype(orig_single_items)::tags_list,
+                         domain::Tags::Domain<2>, ::Tags::LtsMode>>();
 
     const std::array mortar_ids{mortar_id_a, mortar_id_ne_nw, mortar_id_g,
                                 mortar_id_ne_se};
-    db::mutate<domain::Tags::Element<2>, domain::Tags::Mesh<2>,
+    db::mutate<::Tags::LtsMode, domain::Tags::Element<2>, domain::Tags::Mesh<2>,
                domain::Tags::NeighborMesh<2>>(
-        [&](const gsl::not_null<Element<2>*> element,
+        [&](const gsl::not_null<LtsMode*> local_lts_mode,
+            const gsl::not_null<Element<2>*> element,
             const gsl::not_null<Mesh<2>*> mesh,
             const gsl::not_null<::dg::MortarMap<2, Mesh<2>>*> neighbor_meshes) {
-          *element = Element<2>(
-              id_ne, {{mortar_id_a.direction(),
-                       Neighbors<2>({mortar_id_a.id()}, rotated)},
-                      {mortar_id_ne_nw.direction(),
-                       Neighbors<2>({mortar_id_ne_nw.id()}, aligned)},
-                      {mortar_id_g.direction(),
-                       Neighbors<2>({mortar_id_g.id()}, aligned)},
-                      {mortar_id_ne_se.direction(),
-                       Neighbors<2>({mortar_id_ne_se.id()}, aligned)}});
+          *local_lts_mode = lts_mode;
+          *element =
+              Element<2>(id_ne,
+                         {{mortar_id_a.direction(),
+                           Neighbors<2>({mortar_id_a.id()}, rotated)},
+                          {mortar_id_ne_nw.direction(),
+                           Neighbors<2>({mortar_id_ne_nw.id()}, aligned)},
+                          {mortar_id_g.direction(),
+                           Neighbors<2>({mortar_id_g.id()}, aligned)},
+                          {mortar_id_ne_se.direction(),
+                           Neighbors<2>({mortar_id_ne_se.id()}, aligned)}},
+                         domain::topologies::hypercube<2>);
           *mesh = orig_mesh;
           *neighbor_meshes = {
               {mortar_id_a, refined_single_neighbor_meshes.at(mortar_id_a)},
@@ -1696,8 +1703,7 @@ void test_h_refinement() {
         },
         make_not_null(&box));
 
-    db::mutate_apply<
-        evolution::dg::Initialization::ProjectMortars<2, LocalTimeStepping>>(
+    db::mutate_apply<evolution::dg::Initialization::ProjectMortars<2>>(
         make_not_null(&box), orig_single_items);
 
     const ::dg::MortarMap<2, Mesh<1>> expected_mortar_meshes{
@@ -1711,25 +1717,25 @@ void test_h_refinement() {
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_ne_nw,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_g,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_ne_se,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}}};
+              .time_stepping_policy = lts_mode}}}};
 
     mortar_data_history_tag::type expected_mortar_data_history{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       for (const auto& mortar_id : mortar_ids) {
         expected_mortar_data_history.emplace(mortar_id,
                                              boundary_history_type<2>{});
@@ -1752,26 +1758,30 @@ void test_h_refinement() {
 
   {
     INFO("Split - sw");
-    auto box =
-        db::create<tmpl::push_front<decltype(orig_single_items)::tags_list,
-                                    domain::Tags::Domain<2>>>();
+    auto box = db::create<
+        tmpl::push_front<decltype(orig_single_items)::tags_list,
+                         domain::Tags::Domain<2>, ::Tags::LtsMode>>();
 
     const std::array mortar_ids{mortar_id_sw_nw, mortar_id_f, mortar_id_sw_se,
                                 mortar_id_i};
-    db::mutate<domain::Tags::Element<2>, domain::Tags::Mesh<2>,
+    db::mutate<::Tags::LtsMode, domain::Tags::Element<2>, domain::Tags::Mesh<2>,
                domain::Tags::NeighborMesh<2>>(
-        [&](const gsl::not_null<Element<2>*> element,
+        [&](const gsl::not_null<LtsMode*> local_lts_mode,
+            const gsl::not_null<Element<2>*> element,
             const gsl::not_null<Mesh<2>*> mesh,
             const gsl::not_null<::dg::MortarMap<2, Mesh<2>>*> neighbor_meshes) {
-          *element = Element<2>(
-              id_sw, {{mortar_id_sw_nw.direction(),
-                       Neighbors<2>({mortar_id_sw_nw.id()}, aligned)},
-                      {mortar_id_f.direction(),
-                       Neighbors<2>({mortar_id_f.id()}, rotated)},
-                      {mortar_id_sw_se.direction(),
-                       Neighbors<2>({mortar_id_sw_se.id()}, aligned)},
-                      {mortar_id_i.direction(),
-                       Neighbors<2>({mortar_id_i.id()}, aligned)}});
+          *local_lts_mode = lts_mode;
+          *element =
+              Element<2>(id_sw,
+                         {{mortar_id_sw_nw.direction(),
+                           Neighbors<2>({mortar_id_sw_nw.id()}, aligned)},
+                          {mortar_id_f.direction(),
+                           Neighbors<2>({mortar_id_f.id()}, rotated)},
+                          {mortar_id_sw_se.direction(),
+                           Neighbors<2>({mortar_id_sw_se.id()}, aligned)},
+                          {mortar_id_i.direction(),
+                           Neighbors<2>({mortar_id_i.id()}, aligned)}},
+                         domain::topologies::hypercube<2>);
           *mesh = orig_mesh;
           *neighbor_meshes = {
               {mortar_id_sw_nw, orig_mesh},
@@ -1781,8 +1791,7 @@ void test_h_refinement() {
         },
         make_not_null(&box));
 
-    db::mutate_apply<
-        evolution::dg::Initialization::ProjectMortars<2, LocalTimeStepping>>(
+    db::mutate_apply<evolution::dg::Initialization::ProjectMortars<2>>(
         make_not_null(&box), orig_single_items);
 
     const ::dg::MortarMap<2, Mesh<1>> expected_mortar_meshes{
@@ -1796,25 +1805,25 @@ void test_h_refinement() {
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_f,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::OrientCopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_sw_se,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_i,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}}};
+              .time_stepping_policy = lts_mode}}}};
 
     mortar_data_history_tag::type expected_mortar_data_history{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       for (const auto& mortar_id : mortar_ids) {
         expected_mortar_data_history.emplace(mortar_id,
                                              boundary_history_type<2>{});
@@ -1834,26 +1843,30 @@ void test_h_refinement() {
 
   {
     INFO("Split - se");
-    auto box =
-        db::create<tmpl::push_front<decltype(orig_single_items)::tags_list,
-                                    domain::Tags::Domain<2>>>();
+    auto box = db::create<
+        tmpl::push_front<decltype(orig_single_items)::tags_list,
+                         domain::Tags::Domain<2>, ::Tags::LtsMode>>();
 
     const std::array mortar_ids{mortar_id_se_ne, mortar_id_se_sw, mortar_id_h,
                                 mortar_id_i};
-    db::mutate<domain::Tags::Element<2>, domain::Tags::Mesh<2>,
+    db::mutate<::Tags::LtsMode, domain::Tags::Element<2>, domain::Tags::Mesh<2>,
                domain::Tags::NeighborMesh<2>>(
-        [&](const gsl::not_null<Element<2>*> element,
+        [&](const gsl::not_null<LtsMode*> local_lts_mode,
+            const gsl::not_null<Element<2>*> element,
             const gsl::not_null<Mesh<2>*> mesh,
             const gsl::not_null<::dg::MortarMap<2, Mesh<2>>*> neighbor_meshes) {
-          *element = Element<2>(
-              id_se, {{mortar_id_se_ne.direction(),
-                       Neighbors<2>({mortar_id_se_ne.id()}, aligned)},
-                      {mortar_id_se_sw.direction(),
-                       Neighbors<2>({mortar_id_se_sw.id()}, aligned)},
-                      {mortar_id_g.direction(),
-                       Neighbors<2>({mortar_id_h.id()}, aligned)},
-                      {mortar_id_i.direction(),
-                       Neighbors<2>({mortar_id_i.id()}, aligned)}});
+          *local_lts_mode = lts_mode;
+          *element =
+              Element<2>(id_se,
+                         {{mortar_id_se_ne.direction(),
+                           Neighbors<2>({mortar_id_se_ne.id()}, aligned)},
+                          {mortar_id_se_sw.direction(),
+                           Neighbors<2>({mortar_id_se_sw.id()}, aligned)},
+                          {mortar_id_g.direction(),
+                           Neighbors<2>({mortar_id_h.id()}, aligned)},
+                          {mortar_id_i.direction(),
+                           Neighbors<2>({mortar_id_i.id()}, aligned)}},
+                         domain::topologies::hypercube<2>);
           *mesh = orig_mesh;
           *neighbor_meshes = {
               {mortar_id_se_ne, orig_mesh},
@@ -1863,8 +1876,7 @@ void test_h_refinement() {
         },
         make_not_null(&box));
 
-    db::mutate_apply<
-        evolution::dg::Initialization::ProjectMortars<2, LocalTimeStepping>>(
+    db::mutate_apply<evolution::dg::Initialization::ProjectMortars<2>>(
         make_not_null(&box), orig_single_items);
 
     const ::dg::MortarMap<2, Mesh<1>> expected_mortar_meshes{
@@ -1878,25 +1890,25 @@ void test_h_refinement() {
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_se_sw,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_h,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}},
+              .time_stepping_policy = lts_mode}}},
         {mortar_id_i,
          MortarInfo<2>{
              {.mortar_size = {{Spectral::SegmentSize::Full}},
               .interface_data_policy = InterfaceDataPolicy::CopyProject,
-              .time_stepping_policy = time_stepping_policy}}}};
+              .time_stepping_policy = lts_mode}}}};
 
     mortar_data_history_tag::type expected_mortar_data_history{};
-    if (LocalTimeStepping) {
+    if (local_time_stepping) {
       for (const auto& mortar_id : mortar_ids) {
         expected_mortar_data_history.emplace(mortar_id,
                                              boundary_history_type<2>{});
@@ -1953,13 +1965,12 @@ void test_h_refinement_mortar_sizes_local_impl(
       mortar_meshes.emplace(mortar_id, mortar_mesh);
       mortar_infos.emplace(
           mortar_id,
-          MortarInfo<3>{
-              {.mortar_size = mortar_size,
-               .interface_data_policy =
-                   orientation.is_aligned()
-                       ? InterfaceDataPolicy::CopyProject
-                       : InterfaceDataPolicy::OrientCopyProject,
-               .time_stepping_policy = TimeSteppingPolicy::Conservative}});
+          MortarInfo<3>{{.mortar_size = mortar_size,
+                         .interface_data_policy =
+                             orientation.is_aligned()
+                                 ? InterfaceDataPolicy::CopyProject
+                                 : InterfaceDataPolicy::OrientCopyProject,
+                         .time_stepping_policy = LtsMode::Conservative}});
       mortar_next_temporal_ids.emplace(mortar_id, time_step_id);
       mortar_data_history.emplace(
           mortar_id,
@@ -1970,7 +1981,8 @@ void test_h_refinement_mortar_sizes_local_impl(
   }
   const Element<3> old_element(
       self_id,
-      {{direction, Neighbors<3>(std::move(old_neighbors), orientation)}});
+      {{direction, Neighbors<3>(std::move(old_neighbors), orientation)}},
+      domain::topologies::hypercube<3>);
 
   // Post-refinement data
   std::unordered_set<ElementId<3>> neighbors{};
@@ -1995,20 +2007,22 @@ void test_h_refinement_mortar_sizes_local_impl(
   }
   // NOLINTNEXTLINE(misc-const-correctness) - false positive - object is moved
   Element<3> element(
-      self_id, {{direction, Neighbors<3>(std::move(neighbors), orientation)}});
+      self_id, {{direction, Neighbors<3>(std::move(neighbors), orientation)}},
+      domain::topologies::hypercube<3>);
 
   auto box = db::create<db::AddSimpleTags<
-      domain::Tags::Domain<3>, Tags::MortarData<3>, Tags::MortarMesh<3>,
-      Tags::MortarInfo<3>, Tags::MortarNextTemporalId<3>,
+      domain::Tags::Domain<3>, ::Tags::LtsMode, Tags::MortarData<3>,
+      Tags::MortarMesh<3>, Tags::MortarInfo<3>, Tags::MortarNextTemporalId<3>,
       evolution::dg::Tags::NormalCovectorAndMagnitude<3>,
       mortar_data_history_tag, domain::Tags::Mesh<3>, domain::Tags::Element<3>,
       domain::Tags::NeighborMesh<3>, ::Tags::TimeStepId>>(
-      Domain<3>{}, std::move(mortar_data), std::move(mortar_meshes),
-      std::move(mortar_infos), std::move(mortar_next_temporal_ids),
+      Domain<3>{}, LtsMode::Conservative, std::move(mortar_data),
+      std::move(mortar_meshes), std::move(mortar_infos),
+      std::move(mortar_next_temporal_ids),
       std::move(normal_covector_and_magnitude), std::move(mortar_data_history),
       mesh, std::move(element), std::move(neighbor_meshes), time_step_id);
 
-  db::mutate_apply<evolution::dg::Initialization::ProjectMortars<3, true>>(
+  db::mutate_apply<evolution::dg::Initialization::ProjectMortars<3>>(
       make_not_null(&box), std::pair(mesh, old_element));
 
   check_boundary_histories(db::get<mortar_data_history_tag>(box),
@@ -2094,7 +2108,8 @@ void test_h_refinement_mortar_sizes_remote_impl_split(
   }
   Element<3> parent_element(
       parent_id,
-      {{direction, Neighbors<3>(std::move(parent_neighbors), orientation)}});
+      {{direction, Neighbors<3>(std::move(parent_neighbors), orientation)}},
+      domain::topologies::hypercube<3>);
 
   const tuples::TaggedTuple<domain::Tags::Element<3>, ::Tags::TimeStepId,
                             mortar_data_history_tag>
@@ -2130,21 +2145,23 @@ void test_h_refinement_mortar_sizes_remote_impl_split(
   }
   // NOLINTNEXTLINE(misc-const-correctness) - false positive - object is moved
   Element<3> element(
-      self_id, {{direction, Neighbors<3>(std::move(neighbors), orientation)}});
+      self_id, {{direction, Neighbors<3>(std::move(neighbors), orientation)}},
+      domain::topologies::hypercube<3>);
 
   auto box = db::create<db::AddSimpleTags<
-      domain::Tags::Domain<3>, Tags::MortarData<3>, Tags::MortarMesh<3>,
-      Tags::MortarInfo<3>, Tags::MortarNextTemporalId<3>,
+      domain::Tags::Domain<3>, ::Tags::LtsMode, Tags::MortarData<3>,
+      Tags::MortarMesh<3>, Tags::MortarInfo<3>, Tags::MortarNextTemporalId<3>,
       evolution::dg::Tags::NormalCovectorAndMagnitude<3>,
       mortar_data_history_tag, domain::Tags::Mesh<3>, domain::Tags::Element<3>,
       domain::Tags::NeighborMesh<3>, ::Tags::TimeStepId>>(
-      Domain<3>{}, Tags::MortarData<3>::type{}, Tags::MortarMesh<3>::type{},
-      Tags::MortarInfo<3>::type{}, Tags::MortarNextTemporalId<3>::type{},
+      Domain<3>{}, LtsMode::Conservative, Tags::MortarData<3>::type{},
+      Tags::MortarMesh<3>::type{}, Tags::MortarInfo<3>::type{},
+      Tags::MortarNextTemporalId<3>::type{},
       evolution::dg::Tags::NormalCovectorAndMagnitude<3>::type{},
       mortar_data_history_tag::type{}, mesh, std::move(element),
       std::move(neighbor_meshes), time_step_id);
 
-  db::mutate_apply<evolution::dg::Initialization::ProjectMortars<3, true>>(
+  db::mutate_apply<evolution::dg::Initialization::ProjectMortars<3>>(
       make_not_null(&box), parent_items);
 
   check_boundary_histories(db::get<mortar_data_history_tag>(box),
@@ -2229,21 +2246,23 @@ void test_h_refinement_mortar_sizes_remote_impl_join(
   }
   // NOLINTNEXTLINE(misc-const-correctness) - false positive - object is moved
   Element<3> element(
-      self_id, {{direction, Neighbors<3>(std::move(neighbors), orientation)}});
+      self_id, {{direction, Neighbors<3>(std::move(neighbors), orientation)}},
+      domain::topologies::hypercube<3>);
 
   auto box = db::create<db::AddSimpleTags<
-      domain::Tags::Domain<3>, Tags::MortarData<3>, Tags::MortarMesh<3>,
-      Tags::MortarInfo<3>, Tags::MortarNextTemporalId<3>,
+      domain::Tags::Domain<3>, ::Tags::LtsMode, Tags::MortarData<3>,
+      Tags::MortarMesh<3>, Tags::MortarInfo<3>, Tags::MortarNextTemporalId<3>,
       evolution::dg::Tags::NormalCovectorAndMagnitude<3>,
       mortar_data_history_tag, domain::Tags::Mesh<3>, domain::Tags::Element<3>,
       domain::Tags::NeighborMesh<3>, ::Tags::TimeStepId>>(
-      Domain<3>{}, Tags::MortarData<3>::type{}, Tags::MortarMesh<3>::type{},
-      Tags::MortarInfo<3>::type{}, Tags::MortarNextTemporalId<3>::type{},
+      Domain<3>{}, LtsMode::Conservative, Tags::MortarData<3>::type{},
+      Tags::MortarMesh<3>::type{}, Tags::MortarInfo<3>::type{},
+      Tags::MortarNextTemporalId<3>::type{},
       evolution::dg::Tags::NormalCovectorAndMagnitude<3>::type{},
       mortar_data_history_tag::type{}, mesh, std::move(element),
       std::move(neighbor_meshes), time_step_id);
 
-  db::mutate_apply<evolution::dg::Initialization::ProjectMortars<3, true>>(
+  db::mutate_apply<evolution::dg::Initialization::ProjectMortars<3>>(
       make_not_null(&box), children_items);
 
   check_boundary_histories(db::get<mortar_data_history_tag>(box),
@@ -2295,29 +2314,27 @@ SPECTRE_TEST_CASE("Unit.Evolution.DG.Initialization.Mortars",
                   "[Unit][Evolution]") {
   for (const auto quadrature :
        {Spectral::Quadrature::Gauss, Spectral::Quadrature::GaussLobatto}) {
-    Test<1, true>::apply(quadrature);
-    Test<2, true>::apply(quadrature);
-    Test<3, true>::apply(quadrature);
-
-    Test<1, false>::apply(quadrature);
-    Test<2, false>::apply(quadrature);
-    Test<3, false>::apply(quadrature);
+    for (const auto local_time_stepping : {false, true}) {
+      Test<1>::apply(quadrature, local_time_stepping);
+      Test<2>::apply(quadrature, local_time_stepping);
+      Test<3>::apply(quadrature, local_time_stepping);
+    }
   }
 
   domain::creators::register_derived_with_charm();
-  test_nonconforming_blocks<false>();
+  test_nonconforming_blocks(false);
 
-  static_assert(tt::assert_conforms_to_v<
-                evolution::dg::Initialization::ProjectMortars<1, false>,
-                amr::protocols::Projector>);
+  static_assert(
+      tt::assert_conforms_to_v<evolution::dg::Initialization::ProjectMortars<1>,
+                               amr::protocols::Projector>);
   test_p_refine_gts<1>();
   test_p_refine_gts<2>();
   test_p_refine_gts<3>();
   test_p_refine_lts<1>();
   test_p_refine_lts<2>();
   test_p_refine_lts<3>();
-  test_h_refinement<false>();
-  test_h_refinement<true>();
+  test_h_refinement(false);
+  test_h_refinement(true);
   test_h_refinement_mortar_sizes_local();
   test_h_refinement_mortar_sizes_remote();
 }

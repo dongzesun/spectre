@@ -11,6 +11,7 @@ namespace {
 void test() {
   for (const auto side : std::array{Side::Lower, Side::Upper}) {
     CHECK(domain::has_boundary(domain::Topology::I1, side));
+    CHECK(domain::has_boundary(domain::Topology::B1Radial, side));
     CHECK_FALSE(domain::has_boundary(domain::Topology::S1, side));
     CHECK_FALSE(domain::has_boundary(domain::Topology::S2Colatitude, side));
     CHECK_FALSE(domain::has_boundary(domain::Topology::S2Longitude, side));
@@ -19,6 +20,7 @@ void test() {
     CHECK_FALSE(domain::has_boundary(domain::Topology::B3Longitude, side));
     CHECK_FALSE(domain::has_boundary(domain::Topology::CartoonSphere, side));
     CHECK_FALSE(domain::has_boundary(domain::Topology::CartoonCylinder, side));
+    CHECK_FALSE(domain::has_boundary(domain::Topology::HalfS1, side));
   }
   CHECK_FALSE(domain::has_boundary(domain::Topology::B2Radial, Side::Lower));
   CHECK(domain::has_boundary(domain::Topology::B2Radial, Side::Upper));

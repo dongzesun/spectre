@@ -19,3 +19,5 @@ target_link_libraries(
   ScalarTensorAnalyticData
   Options
 )
+
+add_subdirectory(ScalarField)

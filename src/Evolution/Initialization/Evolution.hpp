@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -11,9 +12,9 @@
 #include <unordered_map>
 #include <utility>
 
-#include "DataStructures/ApplyMatrices.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/TaggedVariant.hpp"
 #include "Domain/Amr/Helpers.hpp"
 #include "Domain/Structure/ChildSize.hpp"
@@ -21,7 +22,6 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarInfo.hpp"
-#include "Evolution/DiscontinuousGalerkin/TimeSteppingPolicy.hpp"
 #include "Evolution/Initialization/Tags.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Projection.hpp"
@@ -30,10 +30,12 @@
 #include "Time/ChangeSlabSize/Tags.hpp"
 #include "Time/ChooseLtsStepSize.hpp"
 #include "Time/History.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Slab.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/Tags/AdaptiveSteppingDiagnostics.hpp"
 #include "Time/Tags/HistoryEvolvedVariables.hpp"
+#include "Time/Tags/LtsMode.hpp"
 #include "Time/Tags/StepNumberWithinSlab.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStep.hpp"
@@ -50,8 +52,8 @@
 #include "Utilities/Literals.hpp"
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
+#include "Utilities/SetNumberOfGridPoints.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace Parallel::Tags {
@@ -79,30 +81,6 @@ struct MortarInfo;
 /// \endcond
 
 namespace Initialization {
-
-namespace detail {
-inline Time initial_time(const bool time_runs_forward,
-                         const double initial_time_value,
-                         const double initial_slab_size) {
-  const Slab initial_slab =
-      time_runs_forward
-          ? Slab::with_duration_from_start(initial_time_value,
-                                           initial_slab_size)
-          : Slab::with_duration_to_end(initial_time_value, initial_slab_size);
-  return time_runs_forward ? initial_slab.start() : initial_slab.end();
-}
-
-template <typename TimeStepper>
-void set_next_time_step_id(const gsl::not_null<TimeStepId*> next_time_step_id,
-                           const Time& initial_time,
-                           const bool time_runs_forward,
-                           const TimeStepper& time_stepper) {
-  *next_time_step_id = TimeStepId(
-      time_runs_forward,
-      -static_cast<int64_t>(time_stepper.number_of_past_steps()), initial_time);
-}
-}  // namespace detail
-
 /// \ingroup InitializationGroup
 /// \brief Initialize items related to time stepping
 ///
@@ -112,12 +90,15 @@ void set_next_time_step_id(const gsl::not_null<TimeStepId*> next_time_step_id,
 /// Since the evolution has not started yet, initialize the state
 /// _before_ the initial time. So `Tags::TimeStepId` is undefined at this point,
 /// and `Tags::Next<Tags::TimeStepId>` is the initial time.
-template <typename Metavariables, typename TimeStepperBase>
+template <typename Metavariables, typename TimeStepperBase,
+          bool WithControlSystems, bool AllowLocalTimeStepping>
 struct TimeStepping {
   /// Tags for constant items added to the GlobalCache.  These items are
   /// initialized from input file options.
-  using const_global_cache_tags =
-      tmpl::list<::Tags::ConcreteTimeStepper<TimeStepperBase>>;
+  using const_global_cache_tags = tmpl::list<
+      ::Tags::ConcreteTimeStepper<TimeStepperBase, WithControlSystems>,
+      tmpl::conditional_t<AllowLocalTimeStepping, ::Tags::LtsMode,
+                          ::Tags::LtsModeForced<LtsMode::Off>>>;
 
   /// Tags for mutable items added to the GlobalCache.  These items are
   /// initialized from input file options.
@@ -125,19 +106,16 @@ struct TimeStepping {
 
   /// Tags for items fetched by the DataBox and passed to the apply function
   using argument_tags =
-      tmpl::list<::Tags::Time, Tags::InitialTimeDelta,
-                 Tags::InitialSlabSize<TimeStepperBase::local_time_stepping>,
-                 ::Tags::ConcreteTimeStepper<TimeStepperBase>>;
+      tmpl::list<::Tags::Time, Tags::InitialTimeDelta, Tags::InitialSlabSize,
+                 ::Tags::TimeStepper<TimeStepperBase>, ::Tags::LtsMode>;
 
   /// Tags for simple DataBox items that are initialized from input file options
   using simple_tags_from_options =
-      tmpl::list<::Tags::Time, Tags::InitialTimeDelta,
-                 Tags::InitialSlabSize<TimeStepperBase::local_time_stepping>>;
+      tmpl::list<::Tags::Time, Tags::InitialTimeDelta, Tags::InitialSlabSize>;
 
   /// Tags for simple DataBox items that are default initialized.
   using default_initialized_simple_tags =
-      tmpl::push_back<StepChoosers::step_chooser_simple_tags<
-                          Metavariables, TimeStepperBase::local_time_stepping>,
+      tmpl::push_back<StepChoosers::step_chooser_simple_tags<Metavariables>,
                       ::Tags::TimeStepId, ::Tags::StepNumberWithinSlab,
                       ::Tags::AdaptiveSteppingDiagnostics>;
 
@@ -153,44 +131,47 @@ struct TimeStepping {
 
   /// Tags for immutable DataBox items (compute items or reference items) added
   /// to the DataBox.
-  using compute_tags = time_stepper_ref_tags<TimeStepperBase>;
+  using compute_tags =
+      time_stepper_ref_tags<TimeStepperBase, WithControlSystems>;
 
-  /// Given the items fetched from a DataBox by the argument_tags when using
-  /// LTS, mutate the items in the DataBox corresponding to return_tags
   static void apply(const gsl::not_null<TimeStepId*> next_time_step_id,
                     const gsl::not_null<TimeDelta*> time_step,
                     const gsl::not_null<double*> slab_size_goal,
                     const double initial_time_value,
                     const double initial_dt_value,
                     const double initial_slab_size,
-                    const LtsTimeStepper& time_stepper) {
-    const bool time_runs_forward = initial_dt_value > 0.0;
-    const Time initial_time = detail::initial_time(
-        time_runs_forward, initial_time_value, initial_slab_size);
-    detail::set_next_time_step_id(next_time_step_id, initial_time,
-                                  time_runs_forward, time_stepper);
-    *time_step = choose_lts_step_size(initial_time, initial_dt_value);
-    *slab_size_goal =
-        time_runs_forward ? initial_slab_size : -initial_slab_size;
-  }
+                    const TimeStepper& time_stepper, const LtsMode lts_mode) {
+    // Ignore the sign of initial_slab_size for user convenience.  GTS
+    // evolutions can set the initial slab size and time step the same
+    // even if they are negative.
 
-  /// Given the items fetched from a DataBox by the argument_tags, when not
-  /// using LTS, mutate the items in the DataBox corresponding to return_tags
-  static void apply(const gsl::not_null<TimeStepId*> next_time_step_id,
-                    const gsl::not_null<TimeDelta*> time_step,
-                    const gsl::not_null<double*> slab_size_goal,
-                    const double initial_time_value,
-                    const double initial_dt_value,
-                    const double initial_slab_size,
-                    const TimeStepper& time_stepper) {
     const bool time_runs_forward = initial_dt_value > 0.0;
-    const Time initial_time = detail::initial_time(
-        time_runs_forward, initial_time_value, initial_slab_size);
-    detail::set_next_time_step_id(next_time_step_id, initial_time,
-                                  time_runs_forward, time_stepper);
-    *time_step = (time_runs_forward ? 1 : -1) * initial_time.slab().duration();
+    const Slab initial_slab =
+        time_runs_forward
+            ? Slab::with_duration_from_start(initial_time_value,
+                                             std::abs(initial_slab_size))
+            : Slab::with_duration_to_end(initial_time_value,
+                                         std::abs(initial_slab_size));
+    const auto initial_time =
+        time_runs_forward ? initial_slab.start() : initial_slab.end();
+
+    *next_time_step_id =
+        TimeStepId(time_runs_forward,
+                   -static_cast<int64_t>(time_stepper.number_of_past_steps()),
+                   initial_time);
     *slab_size_goal =
-        time_runs_forward ? initial_slab_size : -initial_slab_size;
+        (time_runs_forward ? 1.0 : -1.0) * std::abs(initial_slab_size);
+
+    if (lts_mode == LtsMode::Off) {
+      if (std::abs(initial_slab_size) != std::abs(initial_dt_value)) {
+        ERROR_NO_TRACE(
+            "InitialSlabSize and InitialTimeStep must be equal with "
+            "LocalTimeStepping off.");
+      }
+      *time_step = (time_runs_forward ? 1 : -1) * initial_slab.duration();
+    } else {
+      *time_step = choose_lts_step_size(initial_time, initial_dt_value);
+    }
   }
 };
 
@@ -313,31 +294,41 @@ struct ProjectTimeStepping : tt::ConformsTo<amr::protocols::Projector> {
 /// - Modifies: nothing
 ///
 /// \note HistoryEvolvedVariables is allocated, but needs to be initialized
-template <typename Metavariables>
-struct TimeStepperHistory {
-  static constexpr size_t dim = Metavariables::volume_dim;
-  using variables_tag = typename Metavariables::system::variables_tag;
-  using dt_variables_tag = db::add_tag_prefix<::Tags::dt, variables_tag>;
+/// @{
+template <typename System,
+          template <typename> typename CacheTagPrefix = std::type_identity_t,
+          typename = tmpl::conditional_t<
+              tt::is_a_v<tmpl::list, typename System::variables_tag>,
+              typename System::variables_tag,
+              tmpl::list<typename System::variables_tag>>>
+struct TimeStepperHistory;
 
+template <typename System, template <typename> typename CacheTagPrefix,
+          typename... VariablesTags>
+struct TimeStepperHistory<System, CacheTagPrefix,
+                          tmpl::list<VariablesTags...>> {
   using const_global_cache_tags = tmpl::list<>;
   using mutable_global_cache_tags = tmpl::list<>;
   using simple_tags_from_options = tmpl::list<>;
   using simple_tags =
-      tmpl::list<dt_variables_tag,
-                 ::Tags::HistoryEvolvedVariables<variables_tag>>;
+      tmpl::list<db::add_tag_prefix<::Tags::dt, VariablesTags>...,
+                 ::Tags::HistoryEvolvedVariables<VariablesTags>...>;
   using compute_tags = tmpl::list<>;
 
   using argument_tags =
-      tmpl::list<::Tags::TimeStepper<TimeStepper>, domain::Tags::Mesh<dim>>;
+      tmpl::list<CacheTagPrefix<::Tags::TimeStepper<TimeStepper>>,
+                 VariablesTags...>;
   using return_tags = simple_tags;
 
   static void apply(
-      const gsl::not_null<typename dt_variables_tag::type*> dt_vars,
-      const gsl::not_null<TimeSteppers::History<typename variables_tag::type>*>
-          history,
-      const TimeStepper& time_stepper, const Mesh<dim>& mesh) {
+      const gsl::not_null<typename db::add_tag_prefix<
+          ::Tags::dt, VariablesTags>::type*>... dt_vars,
+      const gsl::not_null<
+          TimeSteppers::History<typename VariablesTags::type>*>... history,
+      const TimeStepper& time_stepper,
+      const typename VariablesTags::type&... vars) {
     // Will be overwritten before use
-    dt_vars->initialize(mesh.number_of_grid_points());
+    expand_pack((set_number_of_grid_points(dt_vars, vars), 0)...);
 
     // All steppers we have that need to start at low order require
     // one additional point per order, so this is the order that
@@ -355,9 +346,10 @@ struct TimeStepperHistory {
             },
             time_stepper.order()) -
         time_stepper.number_of_past_steps();
-    history->integration_order(starting_order);
+    expand_pack((history->integration_order(starting_order), 0)...);
   }
 };
+/// @}
 
 /// \brief Initialize/update items related to time stepper history after an AMR
 /// change
@@ -392,13 +384,11 @@ struct ProjectTimeStepperHistory : tt::ConformsTo<amr::protocols::Projector> {
     if (old_mesh == new_mesh) {
       return;  // mesh was not refined, so no projection needed
     }
-    const auto projection_matrices =
-        Spectral::p_projection_matrices(old_mesh, new_mesh);
-    const auto& old_extents = old_mesh.extents();
-    history->map_entries(
-        [&projection_matrices, &old_extents](const auto entry) {
-          *entry = apply_matrices(projection_matrices, *entry, old_extents);
-        });
+    history->map_entries([&old_mesh, &new_mesh](const auto entry) {
+      *entry = Spectral::project(*entry, old_mesh, new_mesh,
+                                 make_array<dim>(Spectral::SegmentSize::Full),
+                                 make_array<dim>(Spectral::SegmentSize::Full));
+    });
     dt_vars->initialize(new_mesh.number_of_grid_points());
   }
 
@@ -419,7 +409,7 @@ struct ProjectTimeStepperHistory : tt::ConformsTo<amr::protocols::Projector> {
         mortar_info, &get<evolution::dg::Tags::MortarInfo<dim>>(parent_items),
         {});
     switch (time_stepping_policy) {
-      case evolution::dg::TimeSteppingPolicy::Conservative: {
+      case LtsMode::Conservative: {
         if (time_stepper.number_of_past_steps() != 0) {
           ERROR_NO_TRACE(
               "Cannot perform h-refinement with LTS steppers requiring "
@@ -444,19 +434,18 @@ struct ProjectTimeStepperHistory : tt::ConformsTo<amr::protocols::Projector> {
         }
         break;
       }
-      case evolution::dg::TimeSteppingPolicy::EqualRate: {
+      case LtsMode::Off: {
         const auto& parent_id =
             get<domain::Tags::Element<dim>>(parent_items).id();
         const auto& parent_mesh = get<domain::Tags::Mesh<dim>>(parent_items);
         const auto child_sizes = domain::child_size(element_id.segment_ids(),
                                                     parent_id.segment_ids());
-        const auto projection_matrices =
-            Spectral::projection_matrix_parent_to_child(parent_mesh, new_mesh,
-                                                        child_sizes);
         transform(history, get<history_tag>(parent_items),
                   [&](const auto& source_entry) {
-                    return apply_matrices(projection_matrices, source_entry,
-                                          parent_mesh.extents());
+                    return Spectral::project(
+                        source_entry, parent_mesh, new_mesh,
+                        make_array<dim>(Spectral::SegmentSize::Full),
+                        child_sizes);
                   });
         break;
       }
@@ -483,7 +472,7 @@ struct ProjectTimeStepperHistory : tt::ConformsTo<amr::protocols::Projector> {
         time_stepping_policy_for_h_refinement<Tags...>(mortar_info, {},
                                                        {&children_items});
     switch (time_stepping_policy) {
-      case evolution::dg::TimeSteppingPolicy::Conservative: {
+      case LtsMode::Conservative: {
         if (time_stepper.number_of_past_steps() != 0) {
           ERROR_NO_TRACE(
               "Cannot perform h-refinement with LTS steppers requiring "
@@ -511,28 +500,27 @@ struct ProjectTimeStepperHistory : tt::ConformsTo<amr::protocols::Projector> {
         }
         break;
       }
-      case evolution::dg::TimeSteppingPolicy::EqualRate: {
+      case LtsMode::Off: {
         bool first_child = true;
         for (const auto& [child_id, child_items] : children_items) {
           const auto& child_mesh = get<domain::Tags::Mesh<dim>>(child_items);
           const auto child_sizes = domain::child_size(child_id.segment_ids(),
                                                       element_id.segment_ids());
-          const auto projection_matrices =
-              Spectral::projection_matrix_child_to_parent(child_mesh, new_mesh,
-                                                          child_sizes);
           if (first_child) {
             transform(history, get<history_tag>(child_items),
                       [&](const auto& source_entry) {
-                        return apply_matrices(projection_matrices, source_entry,
-                                              child_mesh.extents());
+                        return Spectral::project(
+                            source_entry, child_mesh, new_mesh, child_sizes,
+                            make_array<dim>(Spectral::SegmentSize::Full));
                       });
             first_child = false;
           } else {
             transform_mutate(
                 history, get<history_tag>(child_items),
                 [&](const auto dest_entry, const auto& source_entry) {
-                  *dest_entry += apply_matrices(
-                      projection_matrices, source_entry, child_mesh.extents());
+                  *dest_entry += Spectral::project(
+                      source_entry, child_mesh, new_mesh, child_sizes,
+                      make_array<dim>(Spectral::SegmentSize::Full));
                 });
           }
         }
@@ -545,8 +533,7 @@ struct ProjectTimeStepperHistory : tt::ConformsTo<amr::protocols::Projector> {
 
  private:
   template <typename... Tags>
-  static evolution::dg::TimeSteppingPolicy
-  time_stepping_policy_for_h_refinement(
+  static LtsMode time_stepping_policy_for_h_refinement(
       const DirectionalIdMap<dim, evolution::dg::MortarInfo<dim>>&
           element_infos,
       const std::optional<gsl::not_null<
@@ -554,7 +541,7 @@ struct ProjectTimeStepperHistory : tt::ConformsTo<amr::protocols::Projector> {
           parent_infos,
       const std::optional<gsl::not_null<const std::unordered_map<
           ElementId<dim>, tuples::TaggedTuple<Tags...>>*>>& children_items) {
-    std::optional<evolution::dg::TimeSteppingPolicy> policy{};
+    std::optional<LtsMode> policy{};
     const auto process_infos =
         [&policy](const DirectionalIdMap<dim, evolution::dg::MortarInfo<dim>>&
                       infos) {

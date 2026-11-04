@@ -7,8 +7,10 @@
 #include <cstddef>
 
 #include "DataStructures/ComplexDataVector.hpp"
+#include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/SpinWeighted.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/Systems/Cce/AnalyticBoundaryDataManager.hpp"
@@ -16,7 +18,6 @@
 #include "Evolution/Systems/Cce/BoundaryData.hpp"
 #include "Evolution/Systems/Cce/Initialize/InitializeJ.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace Cce::Solutions::TestHelpers {
 
@@ -48,7 +49,7 @@ extract_bondi_scalars_from_cartesian_metric(
   get<0, 0>(inverse_spherical_metric) +=
       -2.0 * get<0, 1>(inverse_spherical_metric) +
       get<1, 1>(inverse_spherical_metric);
-  for(size_t i = 0; i < 3; ++i) {
+  for (size_t i = 0; i < 3; ++i) {
     inverse_spherical_metric.get(0, i) -= inverse_spherical_metric.get(1, i);
   }
   Scalar<SpinWeighted<ComplexDataVector, 0>> bondi_beta{
@@ -138,7 +139,7 @@ extract_dt_bondi_scalars_from_cartesian_metric(
   get<0, 0>(dt_inverse_spherical_metric) +=
       -2.0 * get<0, 1>(dt_inverse_spherical_metric) +
       get<1, 1>(dt_inverse_spherical_metric);
-  for(size_t i = 0; i < 3; ++i) {
+  for (size_t i = 0; i < 3; ++i) {
     inverse_spherical_metric.get(0, i) -= inverse_spherical_metric.get(1, i);
     dt_inverse_spherical_metric.get(0, i) -=
         dt_inverse_spherical_metric.get(1, i);
@@ -315,8 +316,8 @@ void test_initialize_j(const size_t l_max, const size_t number_of_radial_points,
       Spectral::Swsh::number_of_swsh_collocation_points(l_max);
   Variables<Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>>
       boundary_variables{number_of_angular_points};
-  AnalyticBoundaryDataManager analytic_manager{l_max, extraction_radius,
-                                               analytic_solution->get_clone()};
+  const AnalyticBoundaryDataManager analytic_manager{
+      l_max, extraction_radius, analytic_solution->get_clone(), 0.05};
   analytic_manager.populate_hypersurface_boundary_data(
       make_not_null(&boundary_variables), time);
   Scalar<SpinWeighted<ComplexDataVector, 2>> expected_j{
@@ -331,23 +332,64 @@ void test_initialize_j(const size_t l_max, const size_t number_of_radial_points,
   tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>
       test_angular_coordinates{number_of_angular_points};
   auto node_lock = Parallel::NodeLock{};
-  (*(analytic_solution->get_initialize_j(time)))(
-      make_not_null(&test_j), make_not_null(&test_cartesian_coordinates),
-      make_not_null(&test_angular_coordinates),
-      get<Tags::BoundaryValue<Tags::BondiJ>>(boundary_variables),
-      get<Tags::BoundaryValue<Tags::Dr<Tags::BondiJ>>>(boundary_variables),
-      get<Tags::BoundaryValue<Tags::BondiR>>(boundary_variables),
-      get<Tags::BoundaryValue<Tags::BondiBeta>>(boundary_variables), l_max,
-      number_of_radial_points, make_not_null(&node_lock));
-  (*expected_initialize_j)(
-      make_not_null(&expected_j),
-      make_not_null(&expected_cartesian_coordinates),
-      make_not_null(&expected_angular_coordinates),
-      get<Tags::BoundaryValue<Tags::BondiJ>>(boundary_variables),
-      get<Tags::BoundaryValue<Tags::Dr<Tags::BondiJ>>>(boundary_variables),
-      get<Tags::BoundaryValue<Tags::BondiR>>(boundary_variables),
-      get<Tags::BoundaryValue<Tags::BondiBeta>>(boundary_variables), l_max,
-      number_of_radial_points, make_not_null(&node_lock));
+  // Invoke the generator through the box-based dispatch (the path used by
+  // `InitializeFirstHypersurface`); the base no longer exposes a direct
+  // `operator()`. The box holds the generator's `mutate_tags` (outputs) and
+  // `argument_tags` (boundary values, `LMax`, `NumberOfRadialPoints`).
+  const auto run_initialize_j =
+      [&boundary_variables, &node_lock, l_max, number_of_radial_points,
+       number_of_angular_points](
+          const std::unique_ptr<InitializeJ::InitializeJ<false>>& generator,
+          const gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 2>>*> j,
+          const gsl::not_null<tnsr::i<DataVector, 3>*> cartesian_coordinates,
+          const gsl::not_null<
+              tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
+              angular_coordinates) {
+        auto box = db::create<db::AddSimpleTags<
+            Tags::BondiJ, Tags::CauchyCartesianCoords,
+            Tags::CauchyAngularCoords, Tags::BoundaryValue<Tags::BondiJ>,
+            Tags::BoundaryValue<Tags::Dr<Tags::BondiJ>>,
+            Tags::BoundaryValue<Tags::BondiR>,
+            Tags::BoundaryValue<Tags::BondiBeta>,
+            Tags::BoundaryValue<Tags::BondiU>,
+            Tags::BoundaryValue<Tags::BondiW>,
+            Tags::BoundaryValue<Tags::BondiQ>,
+            Tags::BoundaryValue<Tags::Du<Tags::BondiJ>>,
+            Tags::BoundaryValue<Tags::Du<Tags::Dr<Tags::BondiJ>>>,
+            Tags::BoundaryValue<Tags::Du<Tags::BondiR>>, Tags::LMax,
+            Tags::NumberOfRadialPoints>>(
+            Scalar<SpinWeighted<ComplexDataVector, 2>>{
+                number_of_angular_points * number_of_radial_points},
+            tnsr::i<DataVector, 3>{number_of_angular_points},
+            tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>{
+                number_of_angular_points},
+            get<Tags::BoundaryValue<Tags::BondiJ>>(boundary_variables),
+            get<Tags::BoundaryValue<Tags::Dr<Tags::BondiJ>>>(
+                boundary_variables),
+            get<Tags::BoundaryValue<Tags::BondiR>>(boundary_variables),
+            get<Tags::BoundaryValue<Tags::BondiBeta>>(boundary_variables),
+            get<Tags::BoundaryValue<Tags::BondiU>>(boundary_variables),
+            get<Tags::BoundaryValue<Tags::BondiW>>(boundary_variables),
+            get<Tags::BoundaryValue<Tags::BondiQ>>(boundary_variables),
+            get<Tags::BoundaryValue<Tags::Du<Tags::BondiJ>>>(
+                boundary_variables),
+            get<Tags::BoundaryValue<Tags::Du<Tags::Dr<Tags::BondiJ>>>>(
+                boundary_variables),
+            get<Tags::BoundaryValue<Tags::Du<Tags::BondiR>>>(
+                boundary_variables),
+            l_max, number_of_radial_points);
+        (*generator)(make_not_null(&box), make_not_null(&node_lock));
+        *j = db::get<Tags::BondiJ>(box);
+        *cartesian_coordinates = db::get<Tags::CauchyCartesianCoords>(box);
+        *angular_coordinates = db::get<Tags::CauchyAngularCoords>(box);
+      };
+  run_initialize_j(analytic_solution->get_initialize_j(time),
+                   make_not_null(&test_j),
+                   make_not_null(&test_cartesian_coordinates),
+                   make_not_null(&test_angular_coordinates));
+  run_initialize_j(expected_initialize_j, make_not_null(&expected_j),
+                   make_not_null(&expected_cartesian_coordinates),
+                   make_not_null(&expected_angular_coordinates));
   CHECK(test_j == expected_j);
   CHECK(test_cartesian_coordinates == expected_cartesian_coordinates);
   CHECK(test_angular_coordinates == expected_angular_coordinates);

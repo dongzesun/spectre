@@ -19,7 +19,7 @@ OutputFileChecks:
 ---
 
 Parallelization:
-  ElementDistribution: NumGridPoints
+  ElementDistribution: NumGridPointsAndGridSpacing
 
 ResourceInfo:
   AvoidGlobalProc0: false
@@ -33,9 +33,10 @@ Evolution:
   # slab size for evolutions would be 0.1 to observe constraints. If you would
   # like more frequent output, consider using dense output.
   InitialSlabSize: 0.001
+  LocalTimeStepping: Conservative
   VariableOrderAlgorithm:
     GoalOrder: 4
-  StepChoosers:
+  LtsStepChoosers:
     - LimitIncrease:
         Factor: 2
     - ElementSizeCfl:
@@ -59,7 +60,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: Auto
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Quiet
@@ -129,19 +132,21 @@ EvolutionSystem:
         Width: 11.313708499
         Center: [0.0, 0.0, 0.0]
 
-Filtering:
-  ExpFilter0:
-    Alpha: 36.0
-    HalfPower: 64
-    Enable: true
-    BlocksToFilter: All
-
 SpatialDiscretization:
   BoundaryCorrection:
     AveragedUpwindPenalty:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 64
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
 
 EventsAndTriggersAtCheckpoints:
 
@@ -168,6 +173,8 @@ EventsAndTriggersAtSlabs:
             - Name: Error(Phi)
               NormType: L2Norm
               Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
       - ObserveNorms:
           SubfileName: Norms
           TensorsToObserve:
@@ -183,6 +190,8 @@ EventsAndTriggersAtSlabs:
           - Name: PointwiseL2Norm(FourIndexConstraint)
             NormType: L2Norm
             Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   - Trigger:
       Slabs:
         EvenlySpaced:
@@ -248,9 +257,11 @@ ApparentHorizons:
           MaxResidual: 1.e-1
           MinResolutionL: 4
     InitialGuess:
-      LMax: &LMax 8
-      Radius: 2.2
-      Center: *Center
+      InitialL: &LMax 8
+      InitialShape:
+        Sphere:
+          Radius: 2.2
+          Center: *Center
     FastFlow:
       Flow: Fast
       Alpha: 1.0

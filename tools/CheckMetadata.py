@@ -12,6 +12,7 @@ import urllib
 
 import git
 import pybtex
+import pybtex.database
 import yaml
 
 VERSION_PATTERN = r"(\d{4})\.(\d{2})\.(\d{2})(\.\d+)?"
@@ -146,18 +147,14 @@ class TestMetadata(unittest.TestCase):
         self.assertEqual(
             sorted(authors_devs_list, key=lambda a: a["Name"]),
             authors_devs_list,
-            (
-                "'Developers' author list should be ordered alphabetically "
-                "by last name"
-            ),
+            "'Developers' author list should be ordered alphabetically "
+            "by last name",
         )
         self.assertEqual(
             sorted(authors_contribs_list, key=lambda a: a["Name"]),
             authors_contribs_list,
-            (
-                "'Contributors' author list should be ordered alphabetically "
-                "by last name"
-            ),
+            "'Contributors' author list should be ordered alphabetically "
+            "by last name",
         )
 
         # Check all authors
@@ -165,10 +162,8 @@ class TestMetadata(unittest.TestCase):
             split_name = name.split(", ")
             self.assertTrue(
                 len(split_name) == 2 or len(split_name) == 3,
-                (
-                    f"Name '{name}' should be formatted "
-                    "'Last name[, Jr.], First name'"
-                ),
+                f"Name '{name}' should be formatted "
+                "'Last name[, Jr.], First name'",
             )
             if len(split_name) == 3:
                 last_name, jr, first_name = split_name
@@ -201,10 +196,8 @@ class TestMetadata(unittest.TestCase):
                 self.assertIn(
                     affiliation,
                     self.metadata["Affiliations"],
-                    (
-                        "Please use an existing affiliation or add a new one to"
-                        " the main 'Affiliations' list in this file."
-                    ),
+                    "Please use an existing affiliation or add a new one to"
+                    " the main 'Affiliations' list in this file.",
                 )
             self.assertIn("GitHub", author)
 
@@ -269,6 +262,28 @@ class TestMetadata(unittest.TestCase):
             ref_text = to_plaintext_reference(entry)
             if key == "charmpp":
                 self.assertEqual(ref_text, charmpp_ref)
+
+    def test_documentation_bibliography_journal_names(self):
+        for bibliography_file in [
+            "docs/References.bib",
+            "docs/Dependencies.bib",
+        ]:
+            references = pybtex.database.parse_file(
+                os.path.join(self.repo.working_dir, bibliography_file)
+            )
+            journal_macros = [
+                f"{key}: {entry.fields['journal']}"
+                for key, entry in references.entries.items()
+                if "journal" in entry.fields
+                and entry.fields["journal"].startswith("\\")
+            ]
+            self.assertEqual(
+                journal_macros,
+                [],
+                f"Journal names in '{bibliography_file}' should be written"
+                " out directly because Doxygen does not expand LaTeX"
+                f" macros: {journal_macros}",
+            )
 
 
 if __name__ == "__main__":

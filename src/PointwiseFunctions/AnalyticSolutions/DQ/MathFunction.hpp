@@ -17,7 +17,6 @@
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace DQ::Solutions {
 
@@ -84,6 +83,17 @@ class MathFunction : public elliptic::analytic_data::AnalyticSolution {
   using PUP::able::register_constructor;
   WRAPPED_PUPable_decl_template(MathFunction);  // NOLINT
   /// \endcond
+
+  // Match the elliptic analytic-solution interface; the exact fields do
+  // not depend on the numerical mesh or Jacobian.
+  template <typename DataType, typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataType, Dim>& x, const Mesh<Dim>& /*mesh*/,
+      const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
+                            Frame::Inertial>& /*inv_jacobian*/,
+      tmpl::list<RequestedTags...> meta) const {
+    return variables(x, meta);
+  }
 
   template <typename DataType, typename... RequestedTags>
   tuples::TaggedTuple<RequestedTags...> variables(

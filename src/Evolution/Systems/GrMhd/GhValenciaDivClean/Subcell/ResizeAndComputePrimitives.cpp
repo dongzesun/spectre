@@ -9,6 +9,7 @@
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Reconstruction.hpp"
 #include "Evolution/DgSubcell/ReconstructionMethod.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/KastaunEtAl.hpp"
@@ -45,13 +46,15 @@ void ResizeAndComputePrims<OrderedListOfRecoverySchemes>::apply(
     const Scalar<DataVector> fd_pressure =
         get<hydro::Tags::Pressure<DataVector>>(*prim_vars);
     prim_vars->initialize(num_grid_points);
-    if (get(fd_pressure).size() == subcell_mesh.number_of_grid_points()) {
+    if (evolution::dg::subcell::fd::dg_mesh_supports_subcell(dg_mesh) and
+        get(fd_pressure).size() == subcell_mesh.number_of_grid_points()) {
       evolution::dg::subcell::fd::reconstruct(
           make_not_null(
               &get(get<hydro::Tags::Pressure<DataVector>>(*prim_vars))),
           get(fd_pressure), dg_mesh, subcell_mesh.extents(),
           // Always do dim-by-dim reconstruction because it's fast
-          evolution::dg::subcell::fd ::ReconstructionMethod::DimByDim);
+          evolution::dg::subcell::fd::ReconstructionMethod::DimByDim,
+          Spectral::Parity::Even);
     }
 
     // Compute the spatial metric, inverse spatial metric, and sqrt{det{spatial

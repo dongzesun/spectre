@@ -63,11 +63,15 @@ struct SpatialVelocityOneForm;
 template <typename DataType>
 struct SpatialVelocitySquared;
 template <typename DataType>
+struct SpecificEntropy;
+template <typename DataType>
 struct SpecificEnthalpy;
 template <typename DataType>
 struct SpecificInternalEnergy;
 template <typename DataType>
 struct Temperature;
+template <typename DataType, size_t Dim, typename Fr = Frame::Inertial>
+struct TransportVelocity;
 template <typename DataType, size_t Dim, typename Fr = Frame::Inertial>
 struct LowerSpatialFourVelocity;
 template <typename DataType, size_t Dim, typename Fr = Frame::Inertial>

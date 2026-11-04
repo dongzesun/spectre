@@ -10,7 +10,6 @@
 #include "Evolution/Systems/Cce/Actions/PrecomputeKleinGordonSourceVariables.hpp"
 #include "Evolution/Systems/Cce/Components/CharacteristicEvolution.hpp"
 #include "Evolution/Systems/Cce/KleinGordonSource.hpp"
-#include "Evolution/Systems/Cce/KleinGordonSystem.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Local.hpp"
 #include "Parallel/Phase.hpp"
@@ -39,10 +38,10 @@ namespace Cce {
  *  - `Initialization`
  *  - `Evolve`
  * - Modified type aliases in comparison to CharacteristicEvolution:
- *  - `evolved_swsh_tags`: The spin-weighted quantities to be evolved (
- * `KleinGordonPsi` and `BondiJ`).
+ *  - `system::evolved_swsh_tag`: The spin-weighted quantities to be evolved
+ * (`KleinGordonPsi` and `BondiJ`).
  *  - `evolved_swsh_dt_tags`: The spin-weighed quantities associated that are to
- * act as the time derivative to evolve `evolved_swsh_tags` (`KleinGordonPi` and
+ * act as the time derivative to evolve `evolved_swsh_tag` (`KleinGordonPi` and
  * `BondiH`).
  * - Additional type aliases related to the scalar field:
  *  - `klein_gordon_boundary_communication_tags`:  A typelist of tags that will
@@ -57,7 +56,7 @@ struct KleinGordonCharacteristicEvolution
     : CharacteristicEvolution<Metavariables> {
   using metavariables = Metavariables;
   static constexpr bool evolve_ccm = Metavariables::evolve_ccm;
-  using cce_system = Cce::KleinGordonSystem<evolve_ccm>;
+  using cce_system = typename Metavariables::system;
 
   using cce_base = CharacteristicEvolution<Metavariables>;
   using initialize_action_list = tmpl::append<
@@ -121,9 +120,7 @@ struct KleinGordonCharacteristicEvolution
                       tmpl::bind<::Actions::MutateApply,
                                  tmpl::bind<CalculateScriPlusValue, tmpl::_1>>>,
       ::Actions::MutateApply<RecordTimeStepperData<cce_system>>,
-      ::Actions::MutateApply<
-          UpdateU<cce_system, Metavariables::local_time_stepping,
-                  Tags::CceEvolutionPrefix>>>;
+      ::Actions::MutateApply<UpdateU<cce_system, Tags::CceEvolutionPrefix>>>;
 
   using extract_action_list = tmpl::list<
       Actions::RequestBoundaryData<
@@ -132,13 +129,10 @@ struct KleinGordonCharacteristicEvolution
       ::Actions::Label<CceEvolutionLabelTag>,
       tmpl::conditional_t<
           evolve_ccm, tmpl::list<>,
-          tmpl::flatten<tmpl::list<
-              std::conditional_t<Metavariables::local_time_stepping,
-                                 evolution::Actions::RunEventsAndTriggers<
-                                     Triggers::WhenToCheck::AtSteps>,
-                                 tmpl::list<>>,
-              evolution::Actions::RunEventsAndTriggers<
-                  Triggers::WhenToCheck::AtSlabs>>>>,
+          tmpl::flatten<tmpl::list<evolution::Actions::RunEventsAndTriggers<
+                                       Triggers::WhenToCheck::AtSteps>,
+                                   evolution::Actions::RunEventsAndTriggers<
+                                       Triggers::WhenToCheck::AtSlabs>>>>,
       Actions::ReceiveWorldtubeData<
           Metavariables,
           typename Metavariables::cce_boundary_communication_tags>,
@@ -170,9 +164,7 @@ struct KleinGordonCharacteristicEvolution
       ::Actions::MutateApply<ChangeStepSize<
           typename Metavariables::cce_step_choosers, Tags::CceEvolutionPrefix>>,
       ::Actions::MutateApply<RecordTimeStepperData<cce_system>>,
-      ::Actions::MutateApply<
-          UpdateU<cce_system, Metavariables::local_time_stepping,
-                  Tags::CceEvolutionPrefix>>,
+      ::Actions::MutateApply<UpdateU<cce_system, Tags::CceEvolutionPrefix>>,
       ::Actions::MutateApply<
           ChangeTimeStepperOrder<cce_system, Tags::CceEvolutionPrefix>>,
       ::Actions::MutateApply<

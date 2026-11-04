@@ -5,6 +5,7 @@ set(LIBRARY "Test_GhValenciaDivClean")
 
 set(LIBRARY_SOURCES
   Actions/Test_SetInitialData.cpp
+  BoundaryConditions/Test_CartoonGhost.cpp
   BoundaryConditions/Test_ConstraintPreservingFreeOutflow.cpp
   BoundaryConditions/Test_DirichletAnalytic.cpp
   BoundaryConditions/Test_DirichletFreeOutflow.cpp
@@ -23,10 +24,12 @@ set(LIBRARY_SOURCES
   Subcell/Test_PrimsAfterRollback.cpp
   Subcell/Test_ResizeAndComputePrimitives.cpp
   Subcell/Test_ZeroTimeDerivatives.cpp
+  Test_ApplyTensorYlmFilter.cpp
   Test_Characteristics.cpp
   Test_Constraints.cpp
   Test_SetPiAndPhiFromConstraints.cpp
   Test_StressEnergy.cpp
+  Test_System.cpp
   Test_Tags.cpp
   Test_TimeDerivativeTerms.cpp
   )
@@ -51,5 +54,7 @@ target_link_libraries(
   GhGrMhdSolutions
   GhValenciaDivClean
   HydroHelpers
+  M1Grey
+  RadiationTransport
   ValenciaDivClean
   )

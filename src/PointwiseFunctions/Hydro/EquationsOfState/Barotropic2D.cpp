@@ -80,6 +80,24 @@ Scalar<DataType> Barotropic2D<ColdEos>::pressure_from_density_and_enthalpy_impl(
 template <typename ColdEos>
 template <class DataType>
 Scalar<DataType>
+Barotropic2D<ColdEos>::specific_entropy_from_density_and_energy_impl(
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& /*specific_internal_energy*/) const {
+  return underlying_eos_.specific_entropy_from_density(rest_mass_density);
+}
+
+template <typename ColdEos>
+template <class DataType>
+Scalar<DataType>
+Barotropic2D<ColdEos>::specific_entropy_from_density_and_temperature_impl(
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& /*temperature*/) const {
+  return underlying_eos_.specific_entropy_from_density(rest_mass_density);
+}
+
+template <typename ColdEos>
+template <class DataType>
+Scalar<DataType>
 Barotropic2D<ColdEos>::specific_internal_energy_from_density_and_pressure_impl(
     const Scalar<DataType>& rest_mass_density,
     const Scalar<DataType>& /*pressure*/) const {
@@ -124,12 +142,15 @@ Scalar<DataType> Barotropic2D<ColdEos>::
       rest_mass_density);
 }
 
-template class Barotropic2D<EquationsOfState::PolytropicFluid<true>>;
-template class Barotropic2D<EquationsOfState::PolytropicFluid<false>>;
+template class Barotropic2D<PolytropicFluid<true>>;
+template class Barotropic2D<PolytropicFluid<false>>;
 template class Barotropic2D<PiecewisePolytropicFluid<true>>;
 template class Barotropic2D<PiecewisePolytropicFluid<false>>;
 template class Barotropic2D<Spectral>;
 template class Barotropic2D<Enthalpy<PolytropicFluid<true>>>;
+template class Barotropic2D<Enthalpy<Enthalpy<PolytropicFluid<true>>>>;
+template class Barotropic2D<
+    Enthalpy<Enthalpy<Enthalpy<PolytropicFluid<true>>>>>;
 template class Barotropic2D<Enthalpy<Spectral>>;
 template class Barotropic2D<Enthalpy<Enthalpy<Spectral>>>;
 template class Barotropic2D<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>;

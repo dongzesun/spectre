@@ -25,9 +25,9 @@
 #include "Domain/Domain.hpp"
 #include "IO/Logging/Verbosity.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/StrahlkorperFunctions.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Tags.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/StrahlkorperFunctions.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Tags.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/InvokeCallbacks.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Destination.hpp"
@@ -138,6 +138,7 @@ void run_test() {
 
   ah::Storage::SingleTimeStorage<Fr> current_time_storage{};
   current_time_storage.current_iteration = current_iteration;
+  current_time_storage.dependency = dependency;
 
   std::unordered_map<LinkedMessageId<double>,
                      ah::Storage::SingleTimeStorage<Fr>>
@@ -159,8 +160,7 @@ void run_test() {
       std::optional<std::string>{}, tnsr::I<DataVector, 3>{},
       Variables<ah::vars_to_interpolate_to_target<3, Fr>>{});
 
-  ah::invoke_callbacks<HorizonMetavars<Fr>>(make_not_null(&box), cache,
-                                            dependency, status);
+  ah::invoke_callbacks<HorizonMetavars<Fr>>(make_not_null(&box), cache, status);
 
   const auto& box_previous_surfaces =
       db::get<ah::Tags::PreviousSurfaces<Fr>>(box);

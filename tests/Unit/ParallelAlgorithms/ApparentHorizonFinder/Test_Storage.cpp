@@ -8,6 +8,7 @@
 #include <deque>
 #include <optional>
 #include <set>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -21,7 +22,7 @@
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Destination.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/HorizonAliases.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/Storage.hpp"
@@ -60,7 +61,8 @@ void test_storage() {
       {},
       iteration,
       iteration.strahlkorper,
-      Destination::ControlSystem};
+      Destination::ControlSystem,
+      std::optional<std::string>{"FakeDependency"}};
   test_serialization(single_time_storage);
 
   const ah::Storage::PreviousSurface<Fr> previous_surface{

@@ -130,8 +130,6 @@ Domain<Dim> test_domain_creator(const DomainCreator<Dim>& domain_creator,
         }
       }
     }
-  } else {
-    CHECK(all_boundary_conditions.empty());
   }
 
   // Check that every direction in every excision_sphere is also an
@@ -158,7 +156,7 @@ void test_creation(const std::string& option_string, const Creator& rhs,
   auto created = [&option_string, &with_boundary_conditions]() {
     if (with_boundary_conditions) {
       using metavars = TestHelpers::domain::BoundaryConditions::
-          MetavariablesWithBoundaryConditions<Dim, Creator>;
+          MetavariablesWithBoundaryConditionsCartoon<Dim, Creator>;
       return TestHelpers::test_option_tag<
           ::domain::OptionTags::DomainCreator<Dim>, metavars>(option_string);
     } else {

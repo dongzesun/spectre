@@ -32,9 +32,14 @@ PhaseChangeAndTriggers:
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.0001
+  InitialTimeStep: &initial_time_step 0.0001
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper: Rk5Tsitouras
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 5
 
 DomainCreator:
   BinaryCompactObject:
@@ -47,14 +52,16 @@ DomainCreator:
       XCoord: -1e-64
       Interior:
         ExciseWithBoundaryCondition: DemandOutgoingCharSpeeds
-      UseLogarithmicMap: false
+      ShellLogMapStrength: None
+      CubeLogMapStrength: None
     ObjectA:
       InnerRadius: 1.6
       OuterRadius: 2.
       XCoord: *XCoordWorldtube
       Interior:
         ExciseWithBoundaryCondition: Worldtube
-      UseLogarithmicMap: false
+      ShellLogMapStrength: None
+      CubeLogMapStrength: None
     CenterOfMassOffset: [0., 0.]
     CubeScale: 1.0
     Envelope:
@@ -65,7 +72,9 @@ DomainCreator:
       RadialPartitioning: []
       RadialDistribution: Linear
       OpeningAngle: 90.0
+      UseSphericalHarmonics: false
       BoundaryCondition: ConstraintPreservingSphericalRadiation
+    UseWorldtube: true
     TimeDependentMaps:
       InitialTime: 0.
       ExpansionMap:
@@ -74,8 +83,7 @@ DomainCreator:
         DecayTimescaleOuterBoundary: 1.
       RotationMap:
         InitialAngularVelocity: [0., 0., 0.001]
-      TranslationMap:
-        InitialValues: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      TranslationMap: None
       SkewMap: None
       ShapeMapA:
         LMax: 8
@@ -97,6 +105,15 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 32
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
 
 EventsAndTriggersAtCheckpoints:
 
@@ -141,9 +158,14 @@ EventsAndTriggersAtSlabs:
             - Cfl:
                 SafetyFactor: 0.35
 
+EventsAndTriggersAtSteps:
+
 Worldtube:
   ExcisionSphere: ExcisionSphereA
-  ExpansionOrder: 1
+  PunctureField:
+    Schwarzschild:
+      ExpansionOrder: 1
+      BlackHoleMass: 1.0
   Charge: *Charge
   SelfForceOptions: None
   WorldtubeRadiusOptions:
@@ -172,13 +194,6 @@ InterpolationTargets:
     Center: [0.,0.,0.]
     Radius: [400.]
     AngularOrdering: Strahlkorper
-
-Filtering:
-  ExpFilter0:
-    Alpha: 12
-    HalfPower: 32
-    Enable: true
-    BlocksToFilter: All
 
 EventsAndDenseTriggers:
 

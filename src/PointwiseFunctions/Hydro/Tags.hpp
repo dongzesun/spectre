@@ -275,6 +275,12 @@ struct SpatialVelocitySquared : db::SimpleTag {
   using type = Scalar<DataType>;
 };
 
+/// The specific entropy \f$s\f$.
+template <typename DataType>
+struct SpecificEntropy : db::SimpleTag {
+  using type = Scalar<DataType>;
+};
+
 /// The relativistic specific enthalpy \f$h\f$.
 template <typename DataType>
 struct SpecificEnthalpy : db::SimpleTag {
@@ -298,7 +304,7 @@ struct Temperature : db::SimpleTag {
 /// The transport velocity is defined as \f$v_t^i=\alpha v^i-\beta^i\f$,
 /// with $v^i$ being the spatial velocity, $\alpha$ the lapse, and
 /// $\beta^i$ the shift.
-template <typename DataType, size_t Dim, typename Fr = Frame::Inertial>
+template <typename DataType, size_t Dim, typename Fr>
 struct TransportVelocity : db::SimpleTag {
   using type = tnsr::I<DataType, Dim, Fr>;
 };
@@ -362,8 +368,8 @@ struct GrmhdEquationOfState : db::SimpleTag {
           tmpl::at<typename Metavariables::factory_creation::factory_classes,
                    ::evolution::initial_data::InitialData>>(
           initial_data.get(), [](const auto* const derived_initial_data) {
-            if constexpr (::evolution::is_numeric_initial_data_v<
-                              std::decay_t<decltype(*derived_initial_data)>>) {
+            using id_type = std::decay_t<decltype(*derived_initial_data)>;
+            if constexpr (::evolution::is_numeric_initial_data_v<id_type>) {
               ERROR(
                   "Equation of State cannot currently be parsed from numeric"
                   "initial data, please explicitly specify the equation of "
@@ -372,8 +378,16 @@ struct GrmhdEquationOfState : db::SimpleTag {
                   EquationsOfState::PolytropicFluid<true>>>(
                   EquationsOfState::PolytropicFluid<true>(100.0, 2.0));
             } else {
-              return (derived_initial_data->equation_of_state()
-                          .promote_to_3d_eos());
+              using eos_type = std::decay_t<decltype(
+                  std::declval<id_type>().equation_of_state())>;
+              const auto& derived_eos =
+                  derived_initial_data->equation_of_state();
+              if constexpr (eos_type::thermodynamic_dim < 3) {
+                return (derived_eos.promote_to_3d_eos());
+              }
+              else {
+                return derived_eos.get_clone();
+              }
             }
           });
     }

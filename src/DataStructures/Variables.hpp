@@ -31,6 +31,7 @@
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/MathWrapper.hpp"
 #include "DataStructures/SpinWeighted.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/IndexType.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Utilities/EqualWithinRoundoff.hpp"
@@ -43,7 +44,6 @@
 #include "Utilities/Requires.hpp"
 #include "Utilities/SetNumberOfGridPoints.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 #include "Utilities/TypeTraits.hpp"
 #include "Utilities/TypeTraits/IsA.hpp"
 
@@ -66,7 +66,7 @@ class Variables;
  * into it.
  *
  * The `Tags` are `struct`s that must have a public type alias `type` whose
- * value must be a `Tensor<DataVector, ...>`, a `static' method `name()` that
+ * value must be a `Tensor<DataVector, ...>`, a `static` method `name()` that
  * returns a `std::string` of the tag name, and must derive off of
  * `db::SimpleTag`. In general, they should be DataBoxTags that are not compute
  * items. For example,

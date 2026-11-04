@@ -40,6 +40,7 @@ set(LIBRARY_SOURCES
   Test_StaticDeque.cpp
   Test_StripeIterator.cpp
   Test_TaggedContainers.cpp
+  Test_TaggedTuple.cpp
   Test_Tags.cpp
   Test_TempBuffer.cpp
   Test_Transpose.cpp
@@ -52,6 +53,10 @@ set(LIBRARY_SOURCES
 # (it fails to compile templates, can probably be fixed).
 if(NOT ${KOKKOS_CXX_COMPILER_ID} STREQUAL "NVIDIA")
   list(APPEND LIBRARY_SOURCES Test_TaggedVariant.cpp)
+endif()
+
+if (TARGET Kokkos::kokkos)
+  list(APPEND LIBRARY_SOURCES Test_VariablesKokkos.cpp)
 endif()
 
 add_subdirectory(DataBox)

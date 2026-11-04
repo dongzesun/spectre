@@ -12,6 +12,7 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
@@ -23,9 +24,9 @@
 #include "Helpers/PointwiseFunctions/GeneralRelativity/Surfaces/TestHelpers.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/StrahlkorperFunctions.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Tags.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/StrahlkorperFunctions.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Tags.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/HarmonicSchwarzschild.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/Minkowski.hpp"
@@ -54,7 +55,6 @@
 #include "Utilities/StdArrayHelpers.hpp"
 #include "Utilities/StdHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 template <typename Solution, typename Fr, typename ExpectedLambda>
@@ -1170,6 +1170,23 @@ SPECTRE_TEST_CASE("Unit.GrSurfaces.DimensionfulSpinMagnitude",
 
 SPECTRE_TEST_CASE("Unit.GrSurfaces.SpinVector",
                   "[ApparentHorizonFinder][Unit]") {
+  {
+    const ylm::Strahlkorper<Frame::Inertial> sphere{4, 2.0, {0.0, 0.0, 0.0}};
+    const auto box = db::create<
+        db::AddSimpleTags<ylm::Tags::items_tags<Frame::Inertial>>,
+        db::AddComputeTags<ylm::Tags::compute_items_tags<Frame::Inertial>>>(
+        sphere);
+    const auto& cartesian_coords =
+        db::get<ylm::Tags::CartesianCoords<Frame::Inertial>>(box);
+    const size_t number_of_points = sphere.ylm_spherepack().physical_size();
+    const Scalar<DataVector> area_element{number_of_points, 1.0};
+    const Scalar<DataVector> ricci_scalar{number_of_points, 0.5};
+    const Scalar<DataVector> spin_function{number_of_points, 0.0};
+    CHECK(gr::surfaces::spin_vector(0.0, area_element, ricci_scalar,
+                                    spin_function, sphere, cartesian_coords) ==
+          std::array{0.0, 0.0, 0.0});
+  }
+
   // Set up Kerr horizon
   constexpr int l_max = 20;
   const double mass = 2.0;

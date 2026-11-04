@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "Evolution/Actions/RunEventsAndTriggers.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/ChangeFixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/ProjectSpectralFilters.hpp"
 #include "Evolution/Executables/GeneralizedHarmonic/GeneralizedHarmonicBase.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
@@ -25,11 +27,10 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 
-template <size_t VolumeDim, bool UseLts>
-struct EvolutionMetavars
-    : public GeneralizedHarmonicTemplateBase<VolumeDim, UseLts> {
+template <size_t VolumeDim>
+struct EvolutionMetavars : public GeneralizedHarmonicTemplateBase<VolumeDim> {
   static constexpr size_t volume_dim = VolumeDim;
-  using gh_base = GeneralizedHarmonicTemplateBase<volume_dim, UseLts>;
+  using gh_base = GeneralizedHarmonicTemplateBase<volume_dim>;
   using typename gh_base::const_global_cache_tags;
   using typename gh_base::dg_registration_list;
   using initialization_actions =
@@ -38,7 +39,6 @@ struct EvolutionMetavars
   using typename gh_base::initialize_initial_data_dependent_quantities_actions;
   using typename gh_base::observed_reduction_data_tags;
   using typename gh_base::system;
-  static constexpr bool local_time_stepping = gh_base::local_time_stepping;
   static constexpr bool use_dg_element_collection =
       gh_base::use_dg_element_collection;
 
@@ -84,16 +84,15 @@ struct EvolutionMetavars
                                             Parallel::Actions::TerminatePhase>>,
           Parallel::PhaseActions<
               Parallel::Phase::Evolve,
-              tmpl::flatten<tmpl::list<
-                  std::conditional_t<local_time_stepping,
-                                     evolution::Actions::RunEventsAndTriggers<
-                                         Triggers::WhenToCheck::AtSteps>,
-                                     tmpl::list<>>,
-                  ::evolution::Actions::RunEventsAndTriggers<
-                      Triggers::WhenToCheck::AtSlabs>,
-                  Actions::ChangeSlabSize, step_actions,
-                  Actions::MutateApply<AdvanceTime<>>,
-                  PhaseControl::Actions::ExecutePhaseChange>>>>>>;
+              tmpl::flatten<
+                  tmpl::list<evolution::Actions::RunEventsAndTriggers<
+                                 Triggers::WhenToCheck::AtSteps>,
+                             ::evolution::Actions::RunEventsAndTriggers<
+                                 Triggers::WhenToCheck::AtSlabs>,
+                             Actions::ChangeSlabSize,
+                             evolution::dg::Actions::ChangeFixedLtsRatio,
+                             step_actions, Actions::MutateApply<AdvanceTime<>>,
+                             PhaseControl::Actions::ExecutePhaseChange>>>>>>;
 
   struct amr : tt::ConformsTo<::amr::protocols::AmrMetavariables> {
     using element_array = gh_dg_element_array;
@@ -102,13 +101,14 @@ struct EvolutionMetavars
         evolution::dg::Initialization::ProjectDomain<volume_dim>,
         ::amr::projectors::ProjectVariables<volume_dim,
                                             typename system::variables_tag>,
-        evolution::dg::Initialization::ProjectMortars<volume_dim,
-                                                      local_time_stepping>,
+        evolution::dg::Initialization::ProjectMortars<volume_dim>,
         Initialization::ProjectTimeStepperHistory<EvolutionMetavars>,
         evolution::Actions::ProjectRunEventsAndDenseTriggers,
+        evolution::dg::Initialization::ProjectSpectralFilters<
+            volume_dim, typename system::variables_tag::tags_list>,
         ::amr::projectors::DefaultInitialize<
             Initialization::Tags::InitialTimeDelta,
-            Initialization::Tags::InitialSlabSize<local_time_stepping>,
+            Initialization::Tags::InitialSlabSize,
             ::domain::Tags::InitialExtents<volume_dim>,
             ::domain::Tags::InitialRefinementLevels<volume_dim>,
             evolution::dg::Tags::Quadrature,
@@ -116,6 +116,11 @@ struct EvolutionMetavars
             SelfStart::Tags::InitialValue<typename system::variables_tag>,
             SelfStart::Tags::InitialValue<Tags::TimeStep>>,
         ::amr::projectors::CopyFromCreatorOrLeaveAsIs<
+            evolution::dg::Tags::ChangeFixedLtsRatio::NumberOfExpectedMessages,
+            evolution::dg::Tags::ChangeFixedLtsRatio::NewStepSize,
+            Tags::FixedLtsRatio,
+            Parallel::Tags::Section<gh_dg_element_array,
+                                    evolution::dg::Tags::EqualRateRegionId>,
             Tags::ChangeSlabSize::NumberOfExpectedMessages,
             Tags::ChangeSlabSize::NewSlabSize>>;
     static constexpr bool keep_coarse_grids = false;

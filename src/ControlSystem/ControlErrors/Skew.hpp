@@ -14,18 +14,18 @@
 #include "ControlSystem/TimescaleTuner.hpp"
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Creators/Tags/ObjectCenter.hpp"
 #include "Domain/Structure/ObjectLabel.hpp"
 #include "IO/Logging/Verbosity.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Tags.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Tags.hpp"
 #include "Options/String.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace domain::Tags {
@@ -250,7 +250,7 @@ struct Skew : tt::ConformsTo<protocols::ControlError> {
                           (weight_a * inclination_angle_a_ +
                            weight_b * inclination_angle_b_) /
                           (weight_a + weight_b) -
-                      func;
+                      (1.0 - temporal_transition_function) * func;
     } else {
       control_error *= -1.0;
     }

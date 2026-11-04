@@ -15,6 +15,7 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Index.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Tags.hpp"
@@ -39,7 +40,6 @@
 #include "Parallel/Phase.hpp"
 #include "Utilities/FileSystem.hpp"
 #include "Utilities/MakeString.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 
@@ -121,7 +121,7 @@ void test_actions(const std::variant<double, importers::ObservationSelector>&
 
   ActionTesting::MockRuntimeSystem<metavars> runner{{importers::ImporterOptions{
       "TestVolumeData*.h5", "element_data", observation_selection,
-      Options::Auto<double>{}, true}}};
+      Options::Auto<double>{}, true, false, Options::Auto<size_t>{}}}};
 
   // Setup mock data file reader
   ActionTesting::emplace_nodegroup_component<reader_component>(

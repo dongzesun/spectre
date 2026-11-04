@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Amr/NeighborsOfParent.hpp"
 #include "Domain/Amr/Tags/Flags.hpp"
 #include "Domain/Amr/Tags/NeighborFlags.hpp"
@@ -19,16 +20,18 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/IsValidDgMesh.hpp"
 #include "Domain/Structure/Neighbors.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/Tags/NeighborMesh.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Parallel/ElementRegistration.hpp"
 #include "ParallelAlgorithms/Amr/Projectors/Mesh.hpp"
 #include "ParallelAlgorithms/Initialization/MutateAssign.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace Parallel {
@@ -72,20 +75,47 @@ struct InitializeParent {
     }
     auto parent_neighbors = amr::neighbors_of_parent(
         parent_id, children_elements_and_neighbor_info);
-    Element<volume_dim> parent(parent_id, std::move(parent_neighbors.first));
 
     std::vector<Mesh<volume_dim>> projected_children_meshes{};
     projected_children_meshes.reserve(children_items.size());
+    auto parent_topologies =
+        make_array<volume_dim>(domain::Topology::Uninitialized);
+    bool parent_has_bn_topology = false;
     for (const auto& [child_id, child_items] : children_items) {
+      const auto& child =
+          tuples::get<::domain::Tags::Element<volume_dim>>(child_items);
       const auto& child_mesh =
           tuples::get<::domain::Tags::Mesh<volume_dim>>(child_items);
       const auto& child_flags =
           tuples::get<amr::Tags::Info<volume_dim>>(child_items).flags;
-      projected_children_meshes.emplace_back(
-          amr::projectors::mesh(child_mesh, child_flags));
+      const auto& child_topologies = child.topologies();
+      projected_children_meshes.emplace_back(amr::projectors::p_refined_mesh(
+          child_mesh, child_flags, child_topologies));
+      if (not parent_has_bn_topology and
+          child_topologies != parent_topologies) {
+        const domain::Topology first_topology = child_topologies[0];
+        const bool child_has_bn_topology =
+            first_topology == domain::Topology::B1Radial or
+            first_topology == domain::Topology::B2Radial or
+            first_topology == domain::Topology::B3Radial;
+        if (child_has_bn_topology or
+            parent_topologies ==
+                make_array<volume_dim>(domain::Topology::Uninitialized)) {
+          parent_topologies = child_topologies;
+          parent_has_bn_topology = child_has_bn_topology;
+        } else {
+          ERROR("Expect all topologies to be the same, not "
+                << parent_topologies << " and " << child_topologies);
+        }
+      }
     }
+    Element<volume_dim> parent(parent_id, std::move(parent_neighbors.first),
+                               parent_topologies);
     Mesh<volume_dim> parent_mesh =
         amr::projectors::parent_mesh(projected_children_meshes);
+    if (not domain::is_valid_dg_mesh(parent_mesh, parent)) {
+      ERROR("Invalid mesh " << parent_mesh << " for Element " << parent);
+    }
 
     // Default initialization of amr::Tags::Info and amr::Tags::NeighborInfo
     // is okay

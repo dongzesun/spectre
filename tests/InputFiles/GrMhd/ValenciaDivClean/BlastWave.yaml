@@ -11,15 +11,21 @@ Testing:
 
 Parallelization:
   ElementDistribution: NumGridPoints
+  UseSubcellGridPointsForDistribution: False
 
 ResourceInfo:
   AvoidGlobalProc0: false
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.01
+  InitialTimeStep: &initial_time_step 0.01
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper: Rk3HesthavenSsp
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 PhaseChangeAndTriggers:
   - Trigger:
@@ -48,6 +54,10 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - None:
+          BlocksToFilter: All
+    OnlyDgBlocksAndGroups: None
     Subcell:
       TroubledCellIndicator:
         PerssonTci:
@@ -63,7 +73,6 @@ SpatialDiscretization:
         AlwaysUseSubcells: false
         EnableExtensionDirections: false
         UseHalo: false
-        OnlyDgBlocksAndGroups: None
       SubcellToDgReconstructionMethod: DimByDim
       FiniteDifferenceDerivativeOrder: 2
       FdInterpolationOrder: 1
@@ -148,6 +157,8 @@ EventsAndTriggersAtSlabs:
           Values: [2]
     Events:
       - Completion
+
+EventsAndTriggersAtSteps:
 
 EventsAndDenseTriggers:
 

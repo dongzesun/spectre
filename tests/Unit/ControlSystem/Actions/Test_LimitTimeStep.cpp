@@ -16,6 +16,7 @@
 #include "ControlSystem/Actions/LimitTimeStep.hpp"
 #include "ControlSystem/FutureMeasurements.hpp"
 #include "ControlSystem/Tags/FutureMeasurements.hpp"
+#include "ControlSystem/Tags/IsActiveMap.hpp"
 #include "ControlSystem/Tags/MeasurementTimescales.hpp"
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
@@ -67,6 +68,8 @@ struct Var : db::SimpleTag {
   using type = double;
 };
 
+using Updates = std::vector<std::pair<double, double>>;
+
 template <typename Metavariables>
 struct Component {
   using metavariables = Metavariables;
@@ -74,7 +77,8 @@ struct Component {
   using array_index = ElementId<3>;
   using mutable_global_cache_tags =
       tmpl::list<control_system::Tags::MeasurementTimescales,
-                 domain::Tags::FunctionsOfTime>;
+                 domain::Tags::FunctionsOfTime,
+                 control_system::Tags::IsActiveMap>;
   using simple_tags =
       db::AddSimpleTags<control_system::Tags::FutureMeasurements<systemsA>,
                         control_system::Tags::FutureMeasurements<systemsB>,
@@ -87,33 +91,37 @@ struct Component {
       Parallel::PhaseActions<Parallel::Phase::Initialization,
                              tmpl::list<ActionTesting::InitializeDataBox<
                                  simple_tags, compute_tags>>>,
-      Parallel::PhaseActions<
-          Parallel::Phase::Testing,
-          tmpl::list<control_system::Actions::LimitTimeStep<control_systems>>>>;
+      Parallel::PhaseActions<Parallel::Phase::Testing,
+                             tmpl::list<control_system::Actions::LimitTimeStep<
+                                 typename Metavariables::control_systems>>>>;
 };
 
+template <typename ControlSystems>
 struct Metavariables {
-  static constexpr bool local_time_stepping = false;
   using component_list = tmpl::list<Component<Metavariables>>;
+  using control_systems = ControlSystems;
 };
 
 void test(const std::string& test_label, const double initial_time,
           const double initial_step_end,
           const std::optional<double>& expected_step_end,
-          const std::vector<std::pair<double, double>>& measurement_updatesA,
-          const std::vector<std::pair<double, double>>& fot_updatesA,
-          const std::vector<std::pair<double, double>>& measurement_updatesBC,
-          const std::vector<std::pair<double, double>>& fot_updatesB,
-          const std::vector<std::pair<double, double>>& fot_updatesC,
+          const Updates& measurement_updatesA,
+          const std::optional<Updates>& fot_updatesA,
+          const Updates& measurement_updatesBC,
+          const std::optional<Updates>& fot_updatesB,
+          const std::optional<Updates>& fot_updatesC,
           std::unique_ptr<TimeStepper> stepper =
               std::make_unique<TimeSteppers::Rk3HesthavenSsp>(),
           TimeSteppers::History<Var::type> history = {}) {
   INFO(test_label);
   ASSERT(measurement_updatesA.size() > 1, "Bad argument");
   ASSERT(measurement_updatesBC.size() > 1, "Bad argument");
-  ASSERT(fot_updatesA.size() > 1, "Bad argument");
-  ASSERT(fot_updatesB.size() > 1, "Bad argument");
-  ASSERT(fot_updatesC.size() > 1, "Bad argument");
+  ASSERT(not fot_updatesA.has_value() or fot_updatesA->size() > 1,
+         "Bad argument");
+  ASSERT(not fot_updatesB.has_value() or fot_updatesB->size() > 1,
+         "Bad argument");
+  ASSERT(not fot_updatesC.has_value() or fot_updatesC->size() > 1,
+         "Bad argument");
 
   const ElementId<3> element_id{0};
 
@@ -123,7 +131,7 @@ void test(const std::string& test_label, const double initial_time,
   const size_t measurements_per_update = 3;
 
   const auto setup_fot =
-      [](const std::vector<std::pair<double, double>>& updates) {
+      [](const Updates& updates) {
         auto fot =
             std::make_unique<domain::FunctionsOfTime::PiecewisePolynomial<0>>(
                 updates.front().first,
@@ -140,9 +148,19 @@ void test(const std::string& test_label, const double initial_time,
   timescales["LabelA"] = setup_fot(measurement_updatesA);
   timescales["LabelBLabelC"] = setup_fot(measurement_updatesBC);
   domain::Tags::FunctionsOfTime::type functions_of_time{};
-  functions_of_time["LabelA"] = setup_fot(fot_updatesA);
-  functions_of_time["LabelB"] = setup_fot(fot_updatesB);
-  functions_of_time["LabelC"] = setup_fot(fot_updatesC);
+  if (fot_updatesA.has_value()) {
+    functions_of_time["LabelA"] = setup_fot(*fot_updatesA);
+  }
+  if (fot_updatesB.has_value()) {
+    functions_of_time["LabelB"] = setup_fot(*fot_updatesB);
+  }
+  if (fot_updatesC.has_value()) {
+    functions_of_time["LabelC"] = setup_fot(*fot_updatesC);
+  }
+  control_system::Tags::IsActiveMap::type is_active_map{
+      {"LabelA", fot_updatesA.has_value()},
+      {"LabelB", fot_updatesB.has_value()},
+      {"LabelC", fot_updatesC.has_value()}};
 
   const auto setup_measurements =
       [&initial_time](
@@ -166,10 +184,12 @@ void test(const std::string& test_label, const double initial_time,
   auto measurementsA = setup_measurements(*timescales["LabelA"]);
   auto measurementsBC = setup_measurements(*timescales["LabelBLabelC"]);
 
-  using MockRuntimeSystem = ActionTesting::MockRuntimeSystem<Metavariables>;
-  using component = Component<Metavariables>;
-  MockRuntimeSystem runner{
-      {1e-8}, {std::move(timescales), std::move(functions_of_time)}};
+  using MockRuntimeSystem =
+      ActionTesting::MockRuntimeSystem<Metavariables<control_systems>>;
+  using component = Component<Metavariables<control_systems>>;
+  MockRuntimeSystem runner{{1e-8},
+                           {std::move(timescales), std::move(functions_of_time),
+                            std::move(is_active_map)}};
   ActionTesting::emplace_array_component_and_initialize<component>(
       make_not_null(&runner), ActionTesting::NodeId{0},
       ActionTesting::LocalCoreId{0}, element_id,
@@ -188,6 +208,36 @@ void test(const std::string& test_label, const double initial_time,
     CHECK(not ready);
     CHECK(not expected_step_end.has_value());
   }
+}
+
+// Check that the action does noting with no control systems, even if
+// the setup would be invalid with control systems.
+void test_no_control_systems() {
+  const ElementId<3> element_id{0};
+
+  std::unique_ptr<TimeStepper> stepper =
+      std::make_unique<TimeSteppers::AdamsMoultonPc<false>>(4);
+  const Slab initial_slab(0.0, 1.0);
+  const TimeStepId initial_id(true, 0, initial_slab.start());
+  // Simulate LTS
+  const auto time_step = initial_slab.duration() / 2;
+
+  using MockRuntimeSystem =
+      ActionTesting::MockRuntimeSystem<Metavariables<tmpl::list<>>>;
+  using component = Component<Metavariables<tmpl::list<>>>;
+  MockRuntimeSystem runner{{}};
+  ActionTesting::emplace_array_component_and_initialize<component>(
+      make_not_null(&runner), ActionTesting::NodeId{0},
+      ActionTesting::LocalCoreId{0}, element_id,
+      {control_system::FutureMeasurements{},
+       control_system::FutureMeasurements{}, std::move(stepper), initial_id,
+       TimeStepId{}, time_step, AdaptiveSteppingDiagnostics{},
+       TimeSteppers::History<Var::type>{}});
+
+  ActionTesting::set_phase(make_not_null(&runner), Parallel::Phase::Testing);
+  ActionTesting::next_action<component>(make_not_null(&runner), element_id);
+  CHECK(ActionTesting::get_databox_tag<component, Tags::TimeStep>(
+            runner, element_id) == time_step);
 }
 }  // namespace
 
@@ -209,102 +259,109 @@ SPECTRE_TEST_CASE("Unit.ControlSystem.Actions.LimitTimeStep",
   // clang-format off
   test("No control systems", 1.0, 5.0, 5.0,
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
+       std::nullopt,
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Step much shorter than limit", 1.0, 5.0, 5.0,
        {{0.0, 10.0}, {50.0, nan}},
-       {{0.0, arbitrary}, {50.0, nan}},  // goal range [20, 50]
+       Updates{{0.0, arbitrary}, {50.0, nan}},  // goal range [20, 50]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Limited by expiration", 1.0, 5.0, 4.0,
        {{0.0, 1.0}, {5.0, nan}},
-       {{0.0, arbitrary}, {4.0, nan}},  // goal range [2, 4]
+       Updates{{0.0, arbitrary}, {4.0, nan}},  // goal range [2, 4]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Adjusted to keep steps even", 1.0, 8.0, 6.0,
        {{0.0, 5.0}, {20.0, nan}},
-       {{0.0, arbitrary}, {11.0, nan}},  // goal range [10, 11]
+       Updates{{0.0, arbitrary}, {11.0, nan}},  // goal range [10, 11]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Past update but not to expiration", 1.0, 8.0, 8.0,
        {{0.0, 3.0}, {20.0, nan}},
-       {{0.0, arbitrary}, {11.0, nan}},  // goal range [6, 11]
+       Updates{{0.0, arbitrary}, {11.0, nan}},  // goal range [6, 11]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Limited by expiration, 2 systems", 1.0, 7.0, 5.0,
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
+       std::nullopt,
        {{0.0, 1.0}, {5.0, nan}},
-       {{0.0, arbitrary}, {5.0, nan}},  // goal range [2, 5]
-       {{0.0, arbitrary}, {6.0, nan}});  // goal range [2, 6]
+       Updates{{0.0, arbitrary}, {5.0, nan}},  // goal range [2, 5]
+       Updates{{0.0, arbitrary}, {6.0, nan}});  // goal range [2, 6]
+  test("Inactive system in active group", 1.0, 7.0, 5.0,
+       {{0.0, infinity}, {infinity, nan}},
+       std::nullopt,
+       {{0.0, 1.0}, {5.0, nan}},
+       Updates{{0.0, arbitrary}, {5.0, nan}},  // goal range [2, 5]
+       std::nullopt);
   test("Limited by expiration, 2 measurements", 1.0, 6.0, 5.0,
        {{0.0, 2.0}, {10.0, nan}},
-       {{0.0, arbitrary}, {6.0, nan}},  // goal range [4, 6]
+       Updates{{0.0, arbitrary}, {6.0, nan}},  // goal range [4, 6]
        {{0.0, 1.0}, {5.0, nan}},
-       {{0.0, arbitrary}, {5.0, nan}},  // goal range [2, 5]
-       {{0.0, arbitrary}, {infinity, nan}});
+       Updates{{0.0, arbitrary}, {5.0, nan}},  // goal range [2, 5]
+       Updates{{0.0, arbitrary}, {infinity, nan}});
   test("Adjusted to keep steps even, 2 systems", 1.0, 11.0, 7.0,
        {{0.0, 6.0}, {20.0, nan}},
-       {{0.0, arbitrary}, {13.0, nan}},  // goal range [12, 13]
+       Updates{{0.0, arbitrary}, {13.0, nan}},  // goal range [12, 13]
        {{0.0, 2.0}, {20.0, nan}},
-       {{0.0, arbitrary}, {15.0, nan}},  // goal range [4, 15]
-       {{0.0, arbitrary}, {infinity, nan}});
+       Updates{{0.0, arbitrary}, {15.0, nan}},  // goal range [4, 15]
+       Updates{{0.0, arbitrary}, {infinity, nan}});
   test("Adjusted to keep steps even, limited by update", 1.0, 11.0, 8.0,
        {{0.0, 6.0}, {20.0, nan}},
-       {{0.0, arbitrary}, {13.0, nan}},  // goal range [12, 13]
+       Updates{{0.0, arbitrary}, {13.0, nan}},  // goal range [12, 13]
        {{0.0, 4.0}, {20.0, nan}},
-       {{0.0, arbitrary}, {15.0, nan}},  // goal range [8, 15]
-       {{0.0, arbitrary}, {infinity, nan}});
+       Updates{{0.0, arbitrary}, {15.0, nan}},  // goal range [8, 15]
+       Updates{{0.0, arbitrary}, {infinity, nan}});
   test("Would be limited by expiration as of now", 1.0, 5.0, 5.0,
        {{0.0, 2.0}, {5.0, nan}},
-       {{0.0, arbitrary}, {2.0, arbitrary}, {20.0, nan}},  // goal range [4, 20]
+       Updates{{0.0, arbitrary}, {2.0, arbitrary},
+               {20.0, nan}},  // goal range [4, 20]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Insufficient timescale data", 1.0, 5.0, std::nullopt,
        {{0.0, 10.0}, {5.0, nan}},
-       {{0.0, arbitrary}, {50.0, nan}},  // goal range [?, ?]
+       Updates{{0.0, arbitrary}, {50.0, nan}},  // goal range [?, ?]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Barely sufficient timescale data", 1.0, 5.0, 5.0,
        {{0.0, 10.0}, {10.0, nan}},
-       {{0.0, arbitrary}, {50.0, nan}},  // goal range [20, 50]
+       Updates{{0.0, arbitrary}, {50.0, nan}},  // goal range [20, 50]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Insufficient FoT data", 1.0, 5.0, std::nullopt,
        {{0.0, 10.0}, {50.0, nan}},
-       {{0.0, arbitrary}, {15.0, nan}},  // goal range [20, ?]
+       Updates{{0.0, arbitrary}, {15.0, nan}},  // goal range [20, ?]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
   test("Barely insufficient FoT data", 1.0, 5.0, std::nullopt,
        {{0.0, 10.0}, {50.0, nan}},
-       {{0.0, arbitrary}, {20.0, nan}},  // goal range [20, ?]
+       Updates{{0.0, arbitrary}, {20.0, nan}},  // goal range [20, ?]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}});
+       std::nullopt,
+       std::nullopt);
 
   test("Does nothing with Adams-Bashforth", 1.0, 5.0, 5.0,
        {{0.0, 1.0}, {5.0, nan}},
-       {{0.0, arbitrary}, {3.0, nan}},  // goal range [2, 3]
+       Updates{{0.0, arbitrary}, {3.0, nan}},  // goal range [2, 3]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
+       std::nullopt,
+       std::nullopt,
        std::make_unique<TimeSteppers::AdamsBashforth>(4));
   test("Doesn't need data with Adams-Bashforth", 1.0, 5.0, 5.0,
        {{0.0, 10.0}, {5.0, nan}},
-       {{0.0, arbitrary}, {50.0, nan}},  // goal range [?, ?]
+       Updates{{0.0, arbitrary}, {50.0, nan}},  // goal range [?, ?]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
+       std::nullopt,
+       std::nullopt,
        std::make_unique<TimeSteppers::AdamsBashforth>(4));
 
   TimeSteppers::History<Var::type> history{};
@@ -312,21 +369,23 @@ SPECTRE_TEST_CASE("Unit.ControlSystem.Actions.LimitTimeStep",
   history.insert(TimeStepId(true, 0, Slab(1.0, 5.0).start()), {}, {});
   test("Step can't change but is OK", 1.0, 5.0, 5.0,
        {{0.0, 10.0}, {50.0, nan}},
-       {{0.0, arbitrary}, {50.0, nan}},  // goal range [20, 50]
+       Updates{{0.0, arbitrary}, {50.0, nan}},  // goal range [20, 50]
        {{0.0, infinity}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
-       {{0.0, arbitrary}, {infinity, nan}},
+       std::nullopt,
+       std::nullopt,
        std::make_unique<TimeSteppers::AdamsMoultonPc<false>>(4), history);
   CHECK_THROWS_WITH(
       test("Step can't change but is not OK", 1.0, 5.0, 0.0,
            {{0.0, 1.0}, {5.0, nan}},
-           {{0.0, arbitrary}, {4.0, nan}},  // goal range [2, 4]
+           Updates{{0.0, arbitrary}, {4.0, nan}},  // goal range [2, 4]
            {{0.0, infinity}, {infinity, nan}},
-           {{0.0, arbitrary}, {infinity, nan}},
-           {{0.0, arbitrary}, {infinity, nan}},
+           std::nullopt,
+           std::nullopt,
            std::make_unique<TimeSteppers::AdamsMoultonPc<false>>(4), history),
       Catch::Matchers::ContainsSubstring(
           "Step must be decreased to avoid control-system deadlock, but "
           "time-stepper requires a fixed step size."));
   // clang-format on
+
+  test_no_control_systems();
 }

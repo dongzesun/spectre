@@ -15,9 +15,18 @@ import spectre.IO.H5 as spectre_h5
 from spectre import Spectral
 from spectre.DataStructures import DataVector
 from spectre.Domain import (
+    PiecewisePolynomial2,
     PiecewisePolynomial3,
     QuaternionFunctionOfTime,
+    serialize_domain,
     serialize_functions_of_time,
+)
+from spectre.Domain.Creators import BinaryCompactObject
+from spectre.Domain.Creators.TimeDependentOptions import (
+    BinaryCompactObjectTimeDependentOptions,
+    ExpansionMapOptions,
+    RotationMapOptions,
+    TranslationMapOptions,
 )
 from spectre.Informer import unit_test_build_path
 from spectre.IO.H5 import ElementVolumeData, TensorComponent
@@ -56,8 +65,8 @@ class TestInitialData(unittest.TestCase):
             submit=False,
             executable=str(self.bin_dir / "SolveXcts"),
         )
-        self.id_dir = self.test_dir / "ID"
-        self.horizons_filename = self.id_dir / "Horizons.h5"
+        self.id_run_dir = self.test_dir / "ID"
+        self.horizons_filename = self.id_run_dir / "Horizons.h5"
         with spectre_h5.H5File(
             str(self.horizons_filename.resolve()), "a"
         ) as horizons_file:
@@ -76,7 +85,7 @@ class TestInitialData(unittest.TestCase):
             submit=False,
             executable=str(self.bin_dir / "EvolveGhBinaryBlackHole"),
         )
-        self.inspiral_dir = self.test_dir / "Inspiral" / "Segment_0000"
+        self.inspiral_dir = self.test_dir / "Inspiral" / "0000_Inspiral"
         # Making fake reduction data with simple derivative
         self.inspiral_reduction_data = self.inspiral_dir / "BbhReductions.h5"
         with spectre_h5.H5File(
@@ -99,7 +108,7 @@ class TestInitialData(unittest.TestCase):
                 "coef(2,2)",
             ]
             shape_coefs = [5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
-            times = [4990, 4992, 4994, 4996, 4998, 5000]
+            times = [4999.5, 4999.6, 4999.7, 4999.8, 4999.9, 5000]
             reduction_dat = reduction_file.try_insert_dat(
                 "ObservationAhC_Ylm.dat", legend, 0
             )
@@ -128,32 +137,84 @@ class TestInitialData(unittest.TestCase):
 
         # Making volume data for functions of time to be extracted
         rotation_fot = QuaternionFunctionOfTime(
-            0.0,
+            times[0],
             [DataVector(size=4, fill=1.0)],
             4 * [DataVector(size=3, fill=0.0)],
             math.inf,
         )
         expansion_fot = PiecewisePolynomial3(
-            0.0, 4 * [DataVector(size=1, fill=1.0)], math.inf
+            times[0], 4 * [DataVector(size=1, fill=0.01)], math.inf
         )
         expansion_outer_fot = PiecewisePolynomial3(
-            0.0, 4 * [DataVector(size=1, fill=1.0)], math.inf
+            times[0], 4 * [DataVector(size=1, fill=1.0)], math.inf
+        )
+        translation_fot = PiecewisePolynomial2(
+            times[0],
+            [
+                DataVector([1.0, -1.0, 0.5]),
+                DataVector([0.1, -0.4, -0.3]),
+                DataVector([0.0, 0.0, 0.0]),
+            ],
+            math.inf,
         )
         serialized_fots = serialize_functions_of_time(
             {
                 "Expansion": expansion_fot,
                 "ExpansionOuterBoundary": expansion_outer_fot,
                 "Rotation": rotation_fot,
+                "Translation": translation_fot,
             }
         )
+
+        expansion_map = ExpansionMapOptions([1.0, 1e-4, 0.0], 100.0, 1e-6)
+        rotation_map = RotationMapOptions([[0.0, 0.0, 0.0, 1.0]], 100.0)
+        translation_map = TranslationMapOptions(
+            [[1.0, -1.0, 0.5], [0.1, -0.4, -0.3], [0.0, 0.0, 0.0]]
+        )
+        bco_time_dependent_options = BinaryCompactObjectTimeDependentOptions(
+            4990.0,
+            expansion_map,
+            rotation_map,
+            translation_map,
+            None,
+            None,
+            None,
+            None,
+        )
+
+        bco_domain = BinaryCompactObject(
+            inner_radius_a=0.5,
+            outer_radius_a=1.0,
+            x_coord_a=2.0,
+            excise_a=True,
+            shell_log_map_strength_a=1.0,
+            cube_log_map_strength_a=None,
+            inner_radius_b=0.5,
+            outer_radius_b=1.0,
+            x_coord_b=-2.0,
+            excise_b=True,
+            shell_log_map_strength_b=1.0,
+            cube_log_map_strength_b=None,
+            center_of_mass_offset=[0.1, 0.2],
+            envelope_radius=50.0,
+            outer_radius=600.0,
+            cube_scale=1.2,
+            initial_refinement=1,
+            initial_number_of_grid_points=5,
+            use_equiangular_map=True,
+            radial_partitioning_outer_shell=[],
+            opening_angle_in_degrees=120.0,
+            time_dependent_options=bco_time_dependent_options,
+        ).create_domain()
+        serialized_binary_domain = serialize_domain(bco_domain)
+
         self.inspiral_volume_data = self.inspiral_dir / "BbhVolume0.h5"
-        obs_values = [4990.0, 4992.0, 4994.0, 4996.0, 4998.0, 5000.0]
         with spectre_h5.H5File(self.inspiral_volume_data, "w") as volume_file:
             volfile = volume_file.insert_vol("ForContinuation", version=0)
             for x in range(0, 5):
                 volfile.write_volume_data(
                     observation_id=x,
-                    observation_value=obs_values[x],
+                    observation_value=times[x],
                     elements=[
                         ElementVolumeData(
                             element_name="foo",
@@ -168,6 +229,7 @@ class TestInitialData(unittest.TestCase):
                             quadrature=[Spectral.Quadrature.GaussLobatto],
                         )
                     ],
+                    serialized_domain=serialized_binary_domain,
                     serialized_observation_functions_of_time=serialized_fots,
                 )
 
@@ -219,7 +281,7 @@ class TestInitialData(unittest.TestCase):
         except SystemExit as e:
             self.assertEqual(e.code, 0)
         self.assertTrue(
-            (self.test_dir / "Ringdown/Segment_0000/Ringdown.yaml").exists()
+            (self.test_dir / "Ringdown/0000_Ringdown/Ringdown.yaml").exists()
         )
         self.assertTrue(
             (self.test_dir / "RingdownCoefs.h5").exists(),
@@ -243,13 +305,12 @@ class TestInitialData(unittest.TestCase):
             self.assertEqual(e.code, 0)
         self.assertTrue(
             (
-                self.test_dir
-                / "Pipeline/000_Ringdown/Segment_0000/Ringdown.yaml"
+                self.test_dir / "Pipeline/Ecc0/Lev1/0000_Ringdown/Ringdown.yaml"
             ).exists()
         )
         self.assertTrue(
             (
-                self.test_dir / "Pipeline/000_Ringdown/RingdownShapeCoefs.h5"
+                self.test_dir / "Pipeline/Ecc0/Lev1/RingdownShapeCoefs.h5"
             ).exists(),
         )
 

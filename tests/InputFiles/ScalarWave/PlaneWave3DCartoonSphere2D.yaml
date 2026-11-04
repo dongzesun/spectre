@@ -1,0 +1,113 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveScalarWave3D
+Testing:
+  Check: parse;execute
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+  Singletons: Auto
+
+InitialData: &InitialData
+  RegularSphericalWave:
+    Profile:
+      Gaussian:
+        Amplitude: 2.0
+        Width: 1.0
+        Center: 0.0
+
+Amr:
+  Criteria:
+  EnableInBlocks: All
+  Policies:
+    EnforceTwoToOneBalanceInNormalDirection: true
+    Isotropy: Anisotropic
+    Limits:
+      RefinementLevel: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
+      ErrorBeyondLimits: False
+    AllowCoarsening: True
+  Verbosity: Verbose
+
+PhaseChangeAndTriggers:
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: &initial_time_step 0.001
+  InitialSlabSize: *initial_time_step
+  MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
+  TimeStepper:
+    AdamsBashforth:
+      Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
+
+DomainCreator:
+  CartoonSphere2D:
+    InnerRadius: 5.0
+    OuterRadius: 20.0
+    InitialAngularRefinement: 1
+    InitialRadialRefinement: 2
+    InitialGridPoints: [10, 11]
+    RadialPartitioning: [10.0]
+    UseEquiangularMap: true
+    RadialDistribution: Linear
+    TimeDependence: None
+    Interior:
+      FillWithSphericity: 0.0
+    OuterBoundaryCondition:
+      DirichletAnalytic:
+        AnalyticPrescription: *InitialData
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    UpwindPenalty:
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 128
+          Enable: false
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
+
+EventsAndTriggersAtCheckpoints:
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Times:
+        Specified:
+          Values: [&final_time 0.05]
+    Events:
+      - Completion
+  - Trigger: Always
+    Events:
+      - ChangeSlabSize:
+          DelayChange: 0
+          StepChoosers:
+            - StepToTimes:
+                Times:
+                  Specified:
+                    Values: [*final_time]
+
+EventsAndTriggersAtSteps:
+
+EventsAndDenseTriggers:
+
+Observers:
+  VolumeFileName: "CartoonSphereGaussianWave3DVolume"
+  ReductionFileName: "CartoonSphereGaussianWave3DReductions"

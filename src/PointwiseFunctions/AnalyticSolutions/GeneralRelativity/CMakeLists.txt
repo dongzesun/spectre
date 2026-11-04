@@ -11,9 +11,11 @@ spectre_target_sources(
   GaugeWave.cpp
   GaugePlaneWave.cpp
   HarmonicSchwarzschild.cpp
+  HighSpinKerrPuncture.cpp
   KerrSchild.cpp
   Minkowski.cpp
   SphericalKerrSchild.cpp
+  TeukolskyWave.cpp
   TrumpetSchwarzschild.cpp
   WrappedGr.cpp
   )
@@ -26,10 +28,12 @@ spectre_target_headers(
   GaugeWave.hpp
   GaugePlaneWave.hpp
   HarmonicSchwarzschild.hpp
+  HighSpinKerrPuncture.hpp
   KerrSchild.hpp
   Minkowski.hpp
   Solutions.hpp
   SphericalKerrSchild.hpp
+  TeukolskyWave.hpp
   TrumpetSchwarzschild.hpp
   WrappedGr.hpp
   WrappedGr.tpp

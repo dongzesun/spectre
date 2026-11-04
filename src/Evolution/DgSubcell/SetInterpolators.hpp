@@ -21,11 +21,13 @@
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/GhostZoneLogicalCoordinates.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/SliceTensor.hpp"
 #include "Evolution/DgSubcell/SubcellOptions.hpp"
 #include "Evolution/DgSubcell/Tags/Interpolators.hpp"
 #include "Evolution/DgSubcell/Tags/Mesh.hpp"
 #include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
+#include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
@@ -64,7 +66,8 @@ struct SetInterpolators {
                  evolution::dg::subcell::Tags::Mesh<Dim>,
                  evolution::dg::subcell::Tags::Mesh<Dim>,
                  ::domain::Tags::ElementMap<Dim, Frame::Grid>, ReconstructorTag,
-                 evolution::dg::subcell::Tags::SubcellOptions<Dim>>;
+                 evolution::dg::subcell::Tags::SubcellOptions<Dim>,
+                 evolution::dg::Tags::OnlyDgBlockIds<Dim>>;
 
   template <typename ReconstructorType>
   static void apply(
@@ -88,9 +91,19 @@ struct SetInterpolators {
       const Mesh<Dim>& neighbor_fd_mesh,
       const ElementMap<Dim, Frame::Grid>& element_map,
       const ReconstructorType& reconstructor,
-      const evolution::dg::subcell::SubcellOptions& subcell_options) {
-    if (alg::found(subcell_options.only_dg_block_ids(),
-                   element.id().block_id())) {
+      const evolution::dg::subcell::SubcellOptions& subcell_options,
+      const std::vector<size_t>& only_dg_block_ids) {
+    // Skip for elements that are DG-only: either in a DG-only block,
+    // bordering a DG-only block, or on a non-subcell-compatible mesh.
+    if (not fd::dg_mesh_supports_subcell(my_dg_mesh) or
+        alg::found(only_dg_block_ids, element.id().block_id()) or
+        alg::any_of(
+            element.neighbors(),
+            [&only_dg_block_ids](const auto& direction_and_neighbors) {
+              return alg::found(
+                  only_dg_block_ids,
+                  direction_and_neighbors.second.ids().begin()->block_id());
+            })) {
       return;
     }
     const bool enable_extension_directions =
@@ -121,10 +134,13 @@ struct SetInterpolators {
         //    ghost zones.
         // 3. Create interpolators
 
-        if (not is_isotropic(neighbor_fd_mesh)) {
+        if (not is_isotropic(neighbor_fd_mesh) and
+            neighbor_fd_mesh.basis(Dim - 1) != Spectral::Basis::Cartoon) {
           ERROR("We assume an isotropic mesh but got "
                 << neighbor_fd_mesh << " ElementID is " << element.id());
         }
+        // Extra checks for cartoon meshes not checked above
+        fd::verify_subcell_mesh(neighbor_fd_mesh, true);
 
         const auto get_logical_coords = [&element, &neighbor_id, &direction](
                                             const auto& map,

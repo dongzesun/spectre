@@ -1,0 +1,256 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#include "Framework/TestingFramework.hpp"
+
+#include <array>
+#include <cstddef>
+
+#include "DataStructures/Tags/TempTensor.hpp"
+#include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Evolution/Systems/GeneralizedHarmonic/System.hpp"
+#include "NumericalAlgorithms/Spectral/Parity.hpp"
+#include "NumericalAlgorithms/Spectral/ParityFromSymmetry.hpp"
+#include "Utilities/TMPL.hpp"
+
+namespace Spectral {
+namespace {
+
+void test_basic_functionality() {
+  const Scalar<double> scalar{1};
+  const auto [scalar_list, scalar_even, scalar_odd] =
+      compute_parity_list<Scalar<double>>();
+  const std::array<size_t, scalar.size() + 1> scalar_expected_list{1, 0};
+  CHECK(scalar_list == scalar_expected_list);
+  CHECK(scalar_even == 1);
+  CHECK(scalar_odd == 0);
+
+  const tnsr::a<double, 3> tensor_a{1};
+  const auto [tensor_a_list, a_even, a_odd] =
+      compute_parity_list<tnsr::a<double, 3>>();
+  const std::array<size_t, tensor_a.size() + 1> tensor_a_expected_list{1, 1, 2,
+                                                                       0, 0};
+  CHECK(tensor_a_list == tensor_a_expected_list);
+  CHECK(a_even == 3);
+  CHECK(a_odd == 1);
+
+  const tnsr::aI<double, 2> tensor_ai{1};
+  const auto [tensor_ai_list, ai_even, ai_odd] =
+      compute_parity_list<tnsr::aI<double, 2>>();
+  const std::array<size_t, tensor_ai.size() + 1> tensor_ai_expected_list{
+      0, 1, 1, 1, 1, 1, 1};
+  CHECK(tensor_ai_list == tensor_ai_expected_list);
+  CHECK(ai_even == 3);
+  CHECK(ai_odd == 3);
+
+  // Test edge cases
+  using empty_tags = tmpl::list<>;
+  const auto [empty_list, empty_even, empty_odd] =
+      compute_parity_list<empty_tags>();
+  const std::array<size_t, 1> empty_expected{0};
+  CHECK(empty_list == empty_expected);
+  CHECK(empty_even == 0);
+  CHECK(empty_odd == 0);
+
+  using single_tag = tmpl::list<::Tags::TempScalar<0>>;
+  const auto [single_list, single_even, single_odd] =
+      compute_parity_list<single_tag>();
+  const std::array<size_t, 2> single_expected{1, 0};
+  CHECK(single_list == single_expected);
+  CHECK(single_even == 1);
+  CHECK(single_odd == 0);
+}
+
+void test_expected_properties() {
+  const tnsr::ia<double, 2> tensor_ia{1};
+  const auto [ia_list, ia_even, ia_odd] =
+      compute_parity_list<tnsr::ia<double, 2>>();
+
+  // Total components = even_count + odd_count
+  CHECK(ia_even + ia_odd == tensor_ia.size());
+
+  // Sum of run lengths equals total components
+  size_t total_from_runs = 0;
+  for (const auto& count : ia_list) {
+    total_from_runs += count;
+  }
+  CHECK(total_from_runs == tensor_ia.size());
+
+  // Non-zero entries should be contiguous (no gaps)
+  bool first_index = true;
+  bool found_zero = false;
+  for (const auto& count : ia_list) {
+    if (first_index) {
+      first_index = false;
+    } else {
+      if (count == 0) {
+        found_zero = true;
+      } else if (found_zero) {
+        FAIL("Found non-zero entry after zero in run-length array");
+      }
+    }
+  }
+}
+
+template <typename VarsTags>
+void check_vars_scalar_constexpr(Variables<VarsTags> /*meta*/) {
+  constexpr auto res = compute_parity_list<VarsTags>();
+  static_assert(std::get<0>(res) == std::array<size_t, 2>{1, 0});
+  static_assert(std::get<1>(res) == 1 and std::get<2>(res) == 0);
+}
+
+template <typename DataType, typename SymmList, typename IndexList>
+void check_scalar_constexpr(Tensor<DataType, SymmList, IndexList> /*meta*/) {
+  constexpr auto res =
+      compute_parity_list<Tensor<DataType, SymmList, IndexList>>();
+  static_assert(std::get<0>(res) == std::array<size_t, 2>{1, 0});
+  static_assert(std::get<1>(res) == 1 and std::get<2>(res) == 0);
+}
+
+void test_constexpr() {
+  // This test is trivial because it works, but it exists because when the
+  // compute_party_list is used in practice, the object's value is not known
+  // at compiletime, so it cannot be passed if we want the
+  // evaluation to be done at compiletime--it has to be purely template
+  // evaluation. As all the tests in this file are done with objects that can be
+  // fully determined at compiletime, this passing as a parameter to a function
+  // makes it actually test it's constexpr-ness
+  using test_tags = tmpl::list<::Tags::TempScalar<0>>;
+  const Variables<test_tags> scalar_vars(1);
+  check_vars_scalar_constexpr(scalar_vars);
+
+  const Scalar<DataVector> scalar(1_st);
+  check_scalar_constexpr(scalar);
+}
+
+void test_make_component_parity_array() {
+  {
+    constexpr auto result = make_component_parity_array<Scalar<DataVector>>();
+    static_assert(result.size() == 1);
+    static_assert(result[0] == Parity::Even);
+  }
+  {
+    constexpr auto result =
+        make_component_parity_array<tnsr::i<DataVector, 3>>();
+    static_assert(result.size() == 3);
+    static_assert(result[0] == Parity::Odd);
+    static_assert(result[1] == Parity::Even);
+    static_assert(result[2] == Parity::Even);
+  }
+  {
+    constexpr auto result =
+        make_component_parity_array<tnsr::ii<DataVector, 3>>();
+    static_assert(result.size() == 6);
+    static_assert(result[0] == Parity::Even);
+    static_assert(result[1] == Parity::Odd);
+    static_assert(result[2] == Parity::Odd);
+    static_assert(result[3] == Parity::Even);
+    static_assert(result[4] == Parity::Even);
+    static_assert(result[5] == Parity::Even);
+  }
+  {
+    constexpr auto result =
+        make_component_parity_array<tnsr::I<DataVector, 3>>();
+    static_assert(result.size() == 3);
+    static_assert(result[0] == Parity::Odd);
+    static_assert(result[1] == Parity::Even);
+    static_assert(result[2] == Parity::Even);
+  }
+  {
+    // Consistency: sum of each parity matches compute_parity_list counts
+    constexpr auto result =
+        make_component_parity_array<tnsr::iaB<DataVector, 3>>();
+    const auto [plist, n_even, n_odd] =
+        compute_parity_list<tnsr::iaB<DataVector, 3>>();
+    size_t even_count = 0;
+    size_t odd_count = 0;
+    for (const auto& p : result) {
+      if (p == Parity::Even) {
+        ++even_count;
+      } else {
+        ++odd_count;
+      }
+    }
+    CHECK(even_count == n_even);
+    CHECK(odd_count == n_odd);
+  }
+}
+
+// Tests for IncludeZ=true (rotation by pi about y-axis: both x and z flip),
+// used by HalfFourier differentiation.
+void test_include_z_parity() {
+  // Spacetime covector (t,x,y,z): x (index 1) and z (index 3) flip.
+  const tnsr::a<double, 3> tensor_a{1};
+  const auto [tensor_a_list, a_even, a_odd] =
+      compute_parity_list<tnsr::a<double, 3>, true>();
+  const std::array<size_t, tensor_a.size() + 1> tensor_a_expected_list{1, 1, 1,
+                                                                       1, 0};
+  CHECK(tensor_a_list == tensor_a_expected_list);
+  CHECK(a_even == 2);
+  CHECK(a_odd == 2);
+
+  constexpr auto i_result =
+      make_component_parity_array<tnsr::i<DataVector, 3>, true>();
+  static_assert(i_result[0] == Parity::Odd);
+  static_assert(i_result[1] == Parity::Even);
+  static_assert(i_result[2] == Parity::Odd);
+
+  constexpr auto ii_result =
+      make_component_parity_array<tnsr::ii<DataVector, 3>, true>();
+  static_assert(ii_result[0] == Parity::Even);
+  static_assert(ii_result[1] == Parity::Odd);
+  static_assert(ii_result[2] == Parity::Even);
+  static_assert(ii_result[3] == Parity::Even);
+  static_assert(ii_result[4] == Parity::Odd);
+  static_assert(ii_result[5] == Parity::Even);
+}
+
+void test_gh_system() {
+  using gh_tags = gh::System<3>::gradients_tags;
+
+  // x-only parity (IncludeZ=false, default): only x (spacetime index 1,
+  // spatial index 0) flips.
+  {
+    const auto [gh_list, gh_even, gh_odd] = compute_parity_list<gh_tags>();
+    const std::array<size_t,
+                     Variables<gh_tags>::number_of_independent_components + 1>
+        expected_list{1, 1, 3, 2, 4, 1, 3, 2, 3, 1, 3, 3, 2, 1, 2, 1, 3,
+                      2, 1, 3, 2, 1, 2, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(gh_list == expected_list);
+    CHECK(gh_even == 31);
+    CHECK(gh_odd == 19);
+    CHECK(gh_even + gh_odd ==
+          Variables<gh_tags>::number_of_independent_components);
+  }
+
+  // x+z parity (IncludeZ=true): rotation by pi about y-axis, both x
+  // (spacetime index 1, spatial index 0) and z (spacetime index 3, spatial
+  // index 2) flip.
+  {
+    const auto [gh_list, gh_even, gh_odd] =
+        compute_parity_list<gh_tags, true>();
+    const std::array<size_t,
+                     Variables<gh_tags>::number_of_independent_components + 1>
+        expected_list{1, 1, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1, 1,
+                      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                      1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0};
+    CHECK(gh_list == expected_list);
+    CHECK(gh_even == 26);
+    CHECK(gh_odd == 24);
+    CHECK(gh_even + gh_odd ==
+          Variables<gh_tags>::number_of_independent_components);
+  }
+}
+}  // namespace
+
+SPECTRE_TEST_CASE("Unit.Numerical.Spectral.ParityFromSymmetry",
+                  "[NumericalAlgorithms][Spectral][Unit]") {
+  test_basic_functionality();
+  test_expected_properties();
+  test_constexpr();
+  test_include_z_parity();
+  test_gh_system();
+  test_make_component_parity_array();
+}
+}  // namespace Spectral

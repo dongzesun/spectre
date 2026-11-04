@@ -3,12 +3,12 @@
 
 #pragma once
 
-#include "DataStructures/SimpleSparseMatrix.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Tags.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/ApplyTensorYlmFilter.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/TensorYlm.hpp"
+#include "NumericalAlgorithms/TensorYlm/ApplyFilter.hpp"
+#include "NumericalAlgorithms/TensorYlm/Filter.hpp"
+#include "NumericalAlgorithms/TensorYlm/TensorYlm.hpp"
 #include "Utilities/Gsl.hpp"
 
 /// \cond
@@ -25,7 +25,7 @@ namespace ylm::TensorYlm {
 namespace filter_detail {
 
 template <typename Frame>
-using sw_vars_list =
+using csw_vars_list =
     tmpl::list<::CurvedScalarWave::Tags::Psi, ::CurvedScalarWave::Tags::Pi,
                ::CurvedScalarWave::Tags::Phi<3, Frame>>;
 
@@ -50,8 +50,8 @@ using sw_vars_list =
  */
 template <typename SrcFrame, typename DestFrame>
 void transform_spatial_tensors_to_different_frame_without_hessians(
-    gsl::not_null<Variables<sw_vars_list<DestFrame>>*> dest,
-    const Variables<sw_vars_list<SrcFrame>>& src,
+    gsl::not_null<Variables<csw_vars_list<DestFrame>>*> dest,
+    const Variables<csw_vars_list<SrcFrame>>& src,
     const InverseJacobian<DataVector, 3, SrcFrame, DestFrame>& jac);
 
 }  // namespace filter_detail
@@ -59,12 +59,12 @@ void transform_spatial_tensors_to_different_frame_without_hessians(
 /*!
  * \brief Applies TensorYlm filter in place to Curved Scalar Wave variables.
  *
- * When radial_extents is 1, sw_vars and temp_storage are assumed to
+ * When radial_extents is 1, csw_vars and temp_storage are assumed to
  * be defined on a spherical slice, with number of grid points
  * corresponding to a spherical-harmonic grid of ell_max, and the
  * filter happens only on that slice.
  *
- * When radial_extents is > 1, sw_vars and temp_storage are assumed to
+ * When radial_extents is > 1, csw_vars and temp_storage are assumed to
  * be defined on a spherical shell of topology I1 x S2. The filter
  * happens in the entire volume, internally iterating over each
  * spherical slice at a time.
@@ -81,27 +81,27 @@ void transform_spatial_tensors_to_different_frame_without_hessians(
  * number of spectral coefficients, and both are different than the
  * size of the Spherepack storage array.
  *
- * \param sw_vars Scalar wave variables at collocation points.
+ * \param csw_vars Scalar wave variables at collocation points.
  * \param temp_storage Temporary storage for scalar wave variables,
  *   allocated outside apply_tensor_ylm_filter. See above for size requirements.
  * \param jac_inertial_to_grid Jacobian taking V_x from inertial to grid.
  * \param jac_grid_to_inertial Jacobian taking V_x from grid to inertial.
- * \param filter_matrix_scalar The scalar filter matrix computed by fill_filter.
- * \param filter_matrix_i The Rank-1 matrix computed by fill_filter.
+ * \param filter_matrices The bundle of filter matrices computed by
+ *   fill_filter. Only the `scalar` and `i` members are used here.
  * \param ell_max The maximum ylm ell.
  * \param radial_extents The number of radial grid points, can be 1 for slices.
  */
+template <>
 void apply_tensor_ylm_filter(
-    gsl::not_null<Variables<filter_detail::sw_vars_list<Frame::Inertial>>*>
-        sw_vars,
-    gsl::not_null<Variables<filter_detail::sw_vars_list<Frame::Inertial>>*>
+    gsl::not_null<Variables<filter_detail::csw_vars_list<Frame::Inertial>>*>
+        csw_vars,
+    gsl::not_null<Variables<filter_detail::csw_vars_list<Frame::Inertial>>*>
         temp_storage,
     const InverseJacobian<DataVector, 3, Frame::Inertial, Frame::Grid>&
         jac_inertial_to_grid,
     const InverseJacobian<DataVector, 3, Frame::Grid, Frame::Inertial>&
         jac_grid_to_inertial,
-    const SimpleSparseMatrix& filter_matrix_scalar,
-    const SimpleSparseMatrix& filter_matrix_i, size_t ell_max,
+    const FilterMatrixHolder& filter_matrices, size_t ell_max,
     size_t radial_extents);
 
 }  // namespace ylm::TensorYlm

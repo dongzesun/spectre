@@ -8,11 +8,15 @@ add_spectre_library(${LIBRARY})
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  ApplyTensorYlmFilter.cpp
   Characteristics.cpp
   Constraints.cpp
   EnergyDensity.cpp
   Equations.cpp
+  FilledSpherePowerMonitor.cpp
   MomentumDensity.cpp
+  SpectralFilter.cpp
+  SphericalShellPowerMonitor.cpp
   TimeDerivative.cpp
   )
 
@@ -20,12 +24,15 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  ApplyTensorYlmFilter.hpp
   Characteristics.hpp
   Constraints.hpp
   EnergyDensity.hpp
   Equations.hpp
+  FilledSpherePowerMonitor.hpp
   Initialize.hpp
   MomentumDensity.hpp
+  SphericalShellPowerMonitor.hpp
   System.hpp
   Tags.hpp
   TagsDeclarations.hpp
@@ -42,8 +49,12 @@ target_link_libraries(
   ErrorHandling
   Events
   Evolution
+  InitialDataUtilities
   LinearOperators
   Options
+  Spectral
+  SphericalHarmonics
+  TensorYlm
   Utilities
   INTERFACE
   Initialization
@@ -56,3 +67,4 @@ target_link_libraries(
 add_subdirectory(BoundaryConditions)
 add_subdirectory(BoundaryCorrections)
 add_subdirectory(Instantiations)
+add_subdirectory(Python)

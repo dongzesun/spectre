@@ -15,13 +15,16 @@ spectre_target_sources(
   ExtrinsicCurvature.cpp
   GeodesicAcceleration.cpp
   GeodesicEquation.cpp
+  HamiltonianConstraint.cpp
   InterfaceNullNormal.cpp
   InverseSpacetimeMetric.cpp
   KerrHorizon.cpp
   KerrSchildCoords.cpp
   Lapse.cpp
+  MomentumConstraint.cpp
   ProjectionOperators.cpp
   Psi4.cpp
+  Psi4Imag.cpp
   Psi4Real.cpp
   QuadraticCurvatureScalars.cpp
   Ricci.cpp
@@ -52,14 +55,17 @@ spectre_target_headers(
   ExtrinsicCurvature.hpp
   GeodesicAcceleration.hpp
   GeodesicEquation.hpp
+  HamiltonianConstraint.hpp
   InterfaceNullNormal.hpp
   InverseSpacetimeMetric.hpp
   KerrHorizon.hpp
   KerrSchildCoords.hpp
   Lapse.hpp
+  MomentumConstraint.hpp
   ProjectionOperators.hpp
   Ricci.hpp
   Psi4.hpp
+  Psi4Imag.hpp
   Psi4Real.hpp
   QuadraticCurvatureScalars.hpp
   Shift.hpp

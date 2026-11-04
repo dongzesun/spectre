@@ -35,9 +35,19 @@ class Mesh;
  *
  * If the mesh uses a Cartoon basis, the passed integrand must already be
  * multiplied by the appropriate Jacobian determinants (i.e. both the
- * \f$\boldsymbol{x}(\boldsymbol{\xi})\f$ and the cartesian to spherical/polar
- * coordinates mappings, the latter being either
- * \f$x^2\f$ or \f$x\f$, respectively).
+ * $\boldsymbol{x}(\boldsymbol{\xi})$ and the cartesian to spherical/polar
+ * coordinates mappings, the latter being either $x^2$ or $x$, respectively). If
+ * the Mesh uses a Zernike basis, the passed integrand must already be
+ * multiplied by the appropriate cartesian to spherical/polar Jacobain
+ * determinant ($r$ for ZernikeB2 and $r^2$ for ZernikeB3).
+ *
+ * \note For Zernike bases the radial integral is over
+ * \f$r = (\xi + 1) / 2 \in [0, 1]\f$ rather than the logical coordinate
+ * \f$\xi \in [-1, 1]\f$, requiring a factor of \f$d\xi/dr = 2\f$. This term
+ * is applied internally by `definite_integral`, whereas the integrand still
+ * must be multiplied by the Jacobian determinant of a coordinate map that
+ * includes the polar or spherical coordinates (e.g. `PolarToCartesian` or
+ * `SphericalToCartesianPfaffian`).
  *
  * \param integrand the function to integrate.
  * \param mesh the Mesh defining the grid points on the manifold.

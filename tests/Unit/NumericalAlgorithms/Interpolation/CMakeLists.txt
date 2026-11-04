@@ -9,10 +9,10 @@ set(LIBRARY_SOURCES
   Test_BarycentricRational.cpp
   Test_CardinalInterpolator.cpp
   Test_CubicSpline.cpp
+  Test_InterpolateOnSphericalShell.cpp
   Test_IrregularInterpolant.cpp
   Test_LagrangePolynomial.cpp
   Test_MultiLinearSpanInterpolation.cpp
-  Test_LinearLeastSquares.cpp
   Test_LinearRegression.cpp
   Test_PolynomialInterpolation.cpp
   Test_PredictedZeroCrossing.cpp
@@ -21,6 +21,10 @@ set(LIBRARY_SOURCES
   Test_SpanInterpolators.cpp
   Test_ZeroCrossingPredictor.cpp
   )
+
+if(Boost_VERSION VERSION_GREATER_EQUAL 1.81.0)
+  list(APPEND LIBRARY_SOURCES Test_UniformCardinalBSpline.cpp)
+endif()
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 
@@ -35,6 +39,7 @@ target_link_libraries(
   DomainStructure
   GeneralRelativitySolutions
   Interpolation
+  LinearAlgebra
   Logging
   MathFunctions
   ParallelInterpolation

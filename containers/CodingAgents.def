@@ -1,0 +1,72 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+# Everything is installed in the `agents` image built from Dockerfile.buildenv.
+# This definition only installs the latest coding agents on top, so rebuild it
+# whenever they release a new version.
+Bootstrap: docker
+From: sxscollaboration/spectre:agents
+
+%labels
+    Author SXS Collaboration
+    Description SpECTRE development container that includes coding agents.
+    Version dev
+
+%environment
+    # Keep runtime environment variables from the Dockerfile
+    export DEVCONTAINER=true
+    export EDITOR=emacs
+    export VISUAL=emacs
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+    # Because the default writable filesystem is only 64MB,
+    # we make pip write to /tmp. This requires binding /tmp
+    # to something container-specific. E.g.,
+    #
+    # CONTAINER_TMP=$(mktemp -d /tmp/$USER-claude-anthropic-XXXXXX)
+    # mkdir -p "$CONTAINER_TMP"
+    # apptainer shell --contain \
+    #           -B "$CONTAINER_TMP":/tmp \
+    #           -B ~/spectre_claude${num}:$HOME/spectre \
+    #           -B ~/Claudes/Anthropic/.claude:$HOME/.claude \
+    #           -B ~/Claudes/Anthropic/.claude.json:$HOME/.claude.json \
+    #           -B ~/.config/gh:/home/claude/.config/gh:ro \
+    #           -B ~/SpECTRE_AGENTS.md:$HOME/spectre/AGENTS.md:ro \
+    #           --add-caps CAP_NET_RAW ~/SpectreAi.sif "$@"
+    # rm -rf "$CONTAINER_TMP"
+    #
+    export TMPDIR=/tmp
+    export PIP_CACHE_DIR=/tmp/pip-cache
+    export PIP_TEMP_DIR=/tmp/pip-tmp
+    # Point CMake to the serial HDF5 library.
+    export HDF5_ROOT=/usr/lib/x86_64-linux-gnu/hdf5/serial
+
+%post
+    # Install global npm packages (Claude Code and codex)
+    echo "=== Installing global npm packages ==="
+    # If you want a different CLAUDE_CODE_VERSION at build-time, set CLAUDE_CODE_VERSION in the environment when building
+    npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" || npm install -g @anthropic-ai/claude-code
+    npm install -g @openai/codex || true
+    npm install -g @github/copilot
+
+%runscript
+    # Default runtime: drop into bash by default, forwarding any arguments
+    exec /bin/bash "$@"
+
+%help
+    An extension to the SpECTRE development container that includes
+    Claude Code.
+    - To build, run:
+        apptainer build --fakeroot SpectreAi.sif ./CodingAgents.def
+    - To change CLAUDE_CODE_VERSION at build time, set the environment variable
+      CLAUDE_CODE_VERSION when building the container, for example:
+        CLAUDE_CODE_VERSION=1.2.3 singularity build spectre.sif Singularity.def
+    - NVIDIA nvcc 13.3 is pre-installed. To build SpECTRE with Kokkos + CUDA
+      (Kokkos is fetched automatically by SpECTRE's CMake — no separate Kokkos
+      install is needed):
+        cmake ... -D SPECTRE_KOKKOS=ON -D SPECTRE_FETCH_MISSING_DEPS=ON \
+                  -D Kokkos_ENABLE_CUDA=ON -D Kokkos_ARCH_AMPERE80=ON \
+                  -D BUILD_SHARED_LIBS=OFF
+      Adjust Kokkos_ARCH_* for your target GPU (e.g. AMPERE80 for A100,
+      HOPPER90 for H100, VOLTA70 for V100). BUILD_SHARED_LIBS=OFF is required
+      for CUDA builds.

@@ -24,8 +24,6 @@ template <typename ColdEos>
 class Barotropic2D;
 template <typename ColdEquilEos>
 class Barotropic3D;
-template <bool IsRelativistic>
-class DarkEnergyFluid;
 template <typename EquilEos>
 class Equilibrium3D;
 template <typename ColdEquationOfState>
@@ -53,59 +51,73 @@ struct DerivedClasses {};
 
 template <>
 struct DerivedClasses<true, 1> {
-  using type = tmpl::list<
-      Enthalpy<Enthalpy<Enthalpy<Spectral>>>, Enthalpy<Enthalpy<Spectral>>,
-      Enthalpy<Spectral>, Enthalpy<PolytropicFluid<true>>,
-      PiecewisePolytropicFluid<true>, PolytropicFluid<true>, Spectral>;
+  using type = tmpl::list<PolytropicFluid<true>, PiecewisePolytropicFluid<true>,
+                          Spectral, Enthalpy<PolytropicFluid<true>>,
+                          Enthalpy<Enthalpy<PolytropicFluid<true>>>,
+                          Enthalpy<Enthalpy<Enthalpy<PolytropicFluid<true>>>>,
+                          Enthalpy<Spectral>, Enthalpy<Enthalpy<Spectral>>,
+                          Enthalpy<Enthalpy<Enthalpy<Spectral>>>>;
 };
 
 template <>
 struct DerivedClasses<false, 1> {
   using type =
-      tmpl::list<PiecewisePolytropicFluid<false>, PolytropicFluid<false>>;
+      tmpl::list<PolytropicFluid<false>, PiecewisePolytropicFluid<false>>;
 };
 
 template <>
 struct DerivedClasses<true, 2> {
-  using type =
-      tmpl::list<Barotropic2D<PolytropicFluid<true>>, Barotropic2D<Spectral>,
-                 Barotropic2D<Enthalpy<Spectral>>,
-                 Barotropic2D<PiecewisePolytropicFluid<true>>,
-                 Barotropic2D<Enthalpy<Enthalpy<Spectral>>>,
-                 Barotropic2D<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>,
-                 DarkEnergyFluid<true>, IdealFluid<true>,
-                 HybridEos<PolytropicFluid<true>>, HybridEos<Spectral>,
-                 HybridEos<Enthalpy<Spectral>>>;
+  using type = tmpl::list<
+      IdealFluid<true>, Barotropic2D<PolytropicFluid<true>>,
+      Barotropic2D<PiecewisePolytropicFluid<true>>, Barotropic2D<Spectral>,
+      Barotropic2D<Enthalpy<PolytropicFluid<true>>>,
+      Barotropic2D<Enthalpy<Enthalpy<Enthalpy<PolytropicFluid<true>>>>>,
+      Barotropic2D<Enthalpy<Spectral>>,
+      Barotropic2D<Enthalpy<Enthalpy<Spectral>>>,
+      Barotropic2D<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>,
+      HybridEos<PolytropicFluid<true>>, HybridEos<Spectral>,
+      HybridEos<Enthalpy<PolytropicFluid<true>>>,
+      HybridEos<Enthalpy<Enthalpy<Enthalpy<PolytropicFluid<true>>>>>,
+      HybridEos<Enthalpy<Spectral>>, HybridEos<Enthalpy<Enthalpy<Spectral>>>,
+      HybridEos<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>>;
 };
 
 template <>
 struct DerivedClasses<false, 2> {
-  using type = tmpl::list<Barotropic2D<PolytropicFluid<false>>,
-                          Barotropic2D<PiecewisePolytropicFluid<false>>,
-                          IdealFluid<false>, HybridEos<PolytropicFluid<false>>>;
+  using type =
+      tmpl::list<IdealFluid<false>, Barotropic2D<PolytropicFluid<false>>,
+                 Barotropic2D<PiecewisePolytropicFluid<false>>,
+                 HybridEos<PolytropicFluid<false>>>;
 };
 
 template <>
 struct DerivedClasses<true, 3> {
-  using type =
-      tmpl::list<Tabulated3D<true>, Barotropic3D<PolytropicFluid<true>>,
-                 Barotropic3D<Spectral>, Barotropic3D<Enthalpy<Spectral>>,
-                 Barotropic3D<PiecewisePolytropicFluid<true>>,
-                 Barotropic3D<Enthalpy<Enthalpy<Spectral>>>,
-                 Barotropic3D<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>,
-                 Equilibrium3D<HybridEos<PolytropicFluid<true>>>,
-                 Equilibrium3D<HybridEos<Spectral>>,
-                 Equilibrium3D<HybridEos<Enthalpy<Spectral>>>,
-                 Equilibrium3D<DarkEnergyFluid<true>>,
-                 Equilibrium3D<IdealFluid<true>>>;
+  using type = tmpl::list<
+      Tabulated3D<true>, Barotropic3D<PolytropicFluid<true>>,
+      Barotropic3D<PiecewisePolytropicFluid<true>>, Barotropic3D<Spectral>,
+      Barotropic3D<Enthalpy<PolytropicFluid<true>>>,
+      Barotropic3D<Enthalpy<Enthalpy<Enthalpy<PolytropicFluid<true>>>>>,
+      Barotropic3D<Enthalpy<Spectral>>,
+      Barotropic3D<Enthalpy<Enthalpy<Spectral>>>,
+      Barotropic3D<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>,
+      Equilibrium3D<IdealFluid<true>>,
+      Equilibrium3D<HybridEos<PolytropicFluid<true>>>,
+      Equilibrium3D<HybridEos<Enthalpy<PolytropicFluid<true>>>>,
+      Equilibrium3D<
+          HybridEos<Enthalpy<Enthalpy<Enthalpy<PolytropicFluid<true>>>>>>,
+      Equilibrium3D<HybridEos<Enthalpy<Spectral>>>,
+      Equilibrium3D<HybridEos<Enthalpy<Enthalpy<Spectral>>>>,
+      Equilibrium3D<HybridEos<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>>,
+      Equilibrium3D<HybridEos<Spectral>>>;
 };
 
 template <>
 struct DerivedClasses<false, 3> {
-  using type = tmpl::list<Tabulated3D<false>, Equilibrium3D<IdealFluid<false>>,
-                          Barotropic3D<PiecewisePolytropicFluid<false>>,
-                          Equilibrium3D<HybridEos<PolytropicFluid<false>>>,
-                          Barotropic3D<PolytropicFluid<false>>>;
+  using type =
+      tmpl::list<Tabulated3D<false>, Barotropic3D<PolytropicFluid<false>>,
+                 Barotropic3D<PiecewisePolytropicFluid<false>>,
+                 Equilibrium3D<IdealFluid<false>>,
+                 Equilibrium3D<HybridEos<PolytropicFluid<false>>>>;
 };
 
 }  // namespace detail
@@ -219,6 +231,36 @@ class EquationOfState<IsRelativistic, 1> : public PUP::able {
       const Scalar<double>& /*specific_enthalpy*/) const = 0;
   virtual Scalar<DataVector> rest_mass_density_from_enthalpy(
       const Scalar<DataVector>& /*specific_enthalpy*/) const = 0;
+  /// @}
+
+  /// @{
+  /*!
+   * Computes the specific entropy \f$s\f$ from the rest mass density
+   * \f$\rho\f$.
+   */
+  virtual Scalar<double> specific_entropy_from_density(
+      const Scalar<double>& /*rest_mass_density*/) const {
+    return Scalar<double>{0.0};
+  }
+  virtual Scalar<DataVector> specific_entropy_from_density(
+      const Scalar<DataVector>& rest_mass_density) const {
+    return make_with_value<Scalar<DataVector>>(rest_mass_density, 0.0);
+  }
+  /// @}
+
+  /// @{
+  /*!
+   * Computes the specific entropy \f$s\f$ from the specific internal energy
+   * \f$\epsilon\f$.
+   */
+  virtual Scalar<double> specific_entropy_from_specific_internal_energy(
+      const Scalar<double>& /*specific_internal_energy*/) const {
+    return Scalar<double>{0.0};
+  }
+  virtual Scalar<DataVector> specific_entropy_from_specific_internal_energy(
+      const Scalar<DataVector>& specific_internal_energy) const {
+    return make_with_value<Scalar<DataVector>>(specific_internal_energy, 0.0);
+  }
   /// @}
 
   /// @{
@@ -371,9 +413,7 @@ class EquationOfState<IsRelativistic, 2> : public PUP::able {
   virtual bool is_barotropic() const = 0;
 
   /// \brief Returns `true` if the EOS is in beta-equilibrium
-  virtual bool is_equilibrium() const {
-    return true;
-  }
+  virtual bool is_equilibrium() const { return true; }
 
   /// @{
   /*!
@@ -418,6 +458,34 @@ class EquationOfState<IsRelativistic, 2> : public PUP::able {
   virtual Scalar<DataVector> pressure_from_density_and_enthalpy(
       const Scalar<DataVector>& /*rest_mass_density*/,
       const Scalar<DataVector>& /*specific_enthalpy*/) const = 0;
+  /// @}
+
+  /// @{
+  /*!
+   * Computes the specific entropy \f$s\f$ from the rest mass density \f$\rho\f$
+   * and the specific internal energy \f$\epsilon\f$.
+   */
+  virtual Scalar<double> specific_entropy_from_density_and_energy(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*specific_internal_energy*/) const = 0;
+
+  virtual Scalar<DataVector> specific_entropy_from_density_and_energy(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*specific_internal_energy*/) const = 0;
+  /// @}
+
+  /// @{
+  /*!
+   * Computes the specific entropy \f$s\f$ from the rest mass density \f$\rho\f$
+   * and the temperature \f$T\f$.
+   */
+  virtual Scalar<double> specific_entropy_from_density_and_temperature(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*temperature*/) const = 0;
+
+  virtual Scalar<DataVector> specific_entropy_from_density_and_temperature(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*temperature*/) const = 0;
   /// @}
 
   /// @{
@@ -625,6 +693,39 @@ class EquationOfState<IsRelativistic, 3> : public PUP::able {
 
   /// @{
   /*!
+   * Computes the specific entropy \f$s\f$ from the rest mass density \f$\rho\f$
+   * and the specific internal energy \f$\epsilon\f$ and electron fraction
+   * \f$Y_e\f$.
+   */
+  virtual Scalar<double> specific_entropy_from_density_and_energy(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*specific_internal_energy*/,
+      const Scalar<double>& /*electron_fraction*/) const = 0;
+
+  virtual Scalar<DataVector> specific_entropy_from_density_and_energy(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*specific_internal_energy*/,
+      const Scalar<DataVector>& /*electron_fraction*/) const = 0;
+  /// @}
+
+  /// @{
+  /*!
+   * Computes the specific entropy \f$s\f$ from the rest mass density \f$\rho\f$
+   * and the temperature \f$T\f$ and electron fraction \f$Y_e\f$.
+   */
+  virtual Scalar<double> specific_entropy_from_density_and_temperature(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*temperature*/,
+      const Scalar<double>& /*electron_fraction*/) const = 0;
+
+  virtual Scalar<DataVector> specific_entropy_from_density_and_temperature(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*temperature*/,
+      const Scalar<DataVector>& /*electron_fraction*/) const = 0;
+  /// @}
+
+  /// @{
+  /*!
    * Computes the temperature \f$T\f$ from the rest mass
    * density \f$\rho\f$, the specific internal energy \f$\epsilon\f$,
    * and electron fraction \f$Y_e\f$.
@@ -719,6 +820,46 @@ class EquationOfState<IsRelativistic, 3> : public PUP::able {
       const Scalar<DataVector>& /*electron_fraction*/) const = 0;
   /// @}
 
+  /// @{
+  /*!
+   * Computes
+   * \f[
+   * \kappa \equiv \left.\frac{\partial p}{\partial \epsilon}\right|_{\rho,Y_e},
+   * \f].
+   * Unlike the 1D and 2D interfaces which return
+   * \f$\kappa p/\rho^2\f$, the 3D interface returns \f$\kappa\f$ directly:
+   * 3D tables typically store \f$\kappa\f$ as an independent quantity, and
+   * callers that need \f$\kappa p/\rho^2\f$ can form it themselves.
+   */
+  virtual Scalar<double> kappa_from_density_and_temperature(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*temperature*/,
+      const Scalar<double>& /*electron_fraction*/) const = 0;
+
+  virtual Scalar<DataVector> kappa_from_density_and_temperature(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*temperature*/,
+      const Scalar<DataVector>& /*electron_fraction*/) const = 0;
+  /// @}
+
+  /// @{
+  /*!
+   * Computes
+   * \f[
+   * \zeta \equiv \left.\frac{\partial p}{\partial Y_e}\right|_{\rho,\epsilon},
+   * \f].
+   */
+  virtual Scalar<double> zeta_from_density_and_temperature(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*temperature*/,
+      const Scalar<double>& /*electron_fraction*/) const = 0;
+
+  virtual Scalar<DataVector> zeta_from_density_and_temperature(
+      const Scalar<DataVector>& /*rest_mass_density*/,
+      const Scalar<DataVector>& /*temperature*/,
+      const Scalar<DataVector>& /*electron_fraction*/) const = 0;
+  /// @}
+
   /// The lower bound of the electron fraction that is valid for this EOS
   virtual double electron_fraction_lower_bound() const = 0;
 
@@ -783,6 +924,8 @@ bool operator!=(const EquationOfState<IsRelLhs, ThermoDimLhs>& lhs,
 
 #define EQUATION_OF_STATE_FUNCTIONS_2D                                   \
   (pressure_from_density_and_energy, pressure_from_density_and_enthalpy, \
+   specific_entropy_from_density_and_energy,                             \
+   specific_entropy_from_density_and_temperature,                        \
    specific_internal_energy_from_density_and_pressure,                   \
    temperature_from_density_and_energy,                                  \
    specific_internal_energy_from_density_and_temperature,                \
@@ -791,9 +934,12 @@ bool operator!=(const EquationOfState<IsRelLhs, ThermoDimLhs>& lhs,
 
 #define EQUATION_OF_STATE_FUNCTIONS_3D                                      \
   (pressure_from_density_and_energy, pressure_from_density_and_temperature, \
+   specific_entropy_from_density_and_energy,                                \
+   specific_entropy_from_density_and_temperature,                           \
    temperature_from_density_and_energy,                                     \
    specific_internal_energy_from_density_and_temperature,                   \
-   sound_speed_squared_from_density_and_temperature)
+   sound_speed_squared_from_density_and_temperature,                        \
+   kappa_from_density_and_temperature, zeta_from_density_and_temperature)
 
 #define EQUATION_OF_STATE_ARGUMENTS_EXPAND(z, n, type) \
   BOOST_PP_COMMA_IF(n) const Scalar<type>&

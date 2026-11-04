@@ -451,6 +451,19 @@ struct GaugeAdjustedBoundaryValue<Tags::BondiW> {
  * the explicit \f$\hat x^{\hat A}\f$ arguments on the right-hand side imply
  * interpolation operations, and \f$K = \sqrt{1 + J \bar J}\f$,
  * \f$\hat K = \sqrt{1 + \hat J \hat{\bar J}}\f$.
+ *
+ * The interpolated source-gauge angular metric is
+ *
+ * \f{align*}{
+ * J(\hat x^{\hat A}) &=
+ *   \frac{\hat d^2\hat J+\hat c^2\hat{\bar J}
+ *         -2\hat c\hat d\hat K}{4\hat\omega^2}, &
+ * K(\hat x^{\hat A}) &=
+ *   \sqrt{1+J(\hat x^{\hat A})\bar J(\hat x^{\hat A})}.
+ * \f}
+ *
+ * These expressions follow by inverting Eqs. (32) and (33b) of
+ * \cite Moxon2020gha.
  */
 template <>
 struct GaugeAdjustedBoundaryValue<Tags::BondiH> {
@@ -697,8 +710,7 @@ void gauge_update_jacobian_from_coordinates_apply_impl(
         gauge_factor_spin_2,
     gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 0>>*>
         gauge_factor_spin_0,
-    gsl::not_null<
-        tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
+    const tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>&
         angular_source_coordinates,
     const tnsr::i<DataVector, 3>& cartesian_source_coordinates, size_t l_max);
 }  // namespace detail
@@ -732,17 +744,16 @@ void gauge_update_jacobian_from_coordinates_apply_impl(
 template <typename GaugeFactorSpin2, typename GaugeFactorSpin0,
           typename AngularCoordinateTag, typename CartesianCoordinateTag>
 struct GaugeUpdateJacobianFromCoordinates {
-  using return_tags =
-      tmpl::list<GaugeFactorSpin2, GaugeFactorSpin0, AngularCoordinateTag>;
-  using argument_tags = tmpl::list<CartesianCoordinateTag, Tags::LMax>;
+  using return_tags = tmpl::list<GaugeFactorSpin2, GaugeFactorSpin0>;
+  using argument_tags =
+      tmpl::list<AngularCoordinateTag, CartesianCoordinateTag, Tags::LMax>;
 
   static void apply(
       const gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 2>>*>
           gauge_factor_spin_2,
       const gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 0>>*>
           gauge_factor_spin_0,
-      const gsl::not_null<
-          tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
+      const tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>&
           angular_source_coordinates,
       const tnsr::i<DataVector, 3>& cartesian_source_coordinates,
       const size_t l_max) {

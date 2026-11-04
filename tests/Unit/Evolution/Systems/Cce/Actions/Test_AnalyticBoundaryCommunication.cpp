@@ -21,6 +21,7 @@
 #include "Evolution/Systems/Cce/Components/WorldtubeBoundary.hpp"
 #include "Evolution/Systems/Cce/IntegrandInputSteps.hpp"
 #include "Evolution/Systems/Cce/OptionTags.hpp"
+#include "Evolution/Systems/Cce/System.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Framework/TestHelpers.hpp"
@@ -32,6 +33,7 @@
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
 #include "Time/AdvanceTime.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/Tags/StepperErrorEstimatesEnabled.hpp"
 #include "Time/TimeSteppers/AdamsBashforth.hpp"
@@ -77,9 +79,7 @@ struct mock_characteristic_evolution {
 
   using initialize_action_list = tmpl::list<
       Actions::InitializeCharacteristicEvolutionVariables<Metavariables>,
-      Actions::InitializeCharacteristicEvolutionTime<
-          typename Metavariables::evolved_coordinates_variables_tag,
-          typename Metavariables::evolved_swsh_tags, false>,
+      Actions::InitializeCharacteristicEvolutionTime,
       // advance the time so that the current `TimeStepId` is valid without
       // having to perform self-start.
       ::Actions::MutateApply<AdvanceTime<Tags::CceEvolutionPrefix>>,
@@ -111,11 +111,9 @@ struct mock_characteristic_evolution {
 };
 
 struct test_metavariables {
-  using evolved_swsh_tags = tmpl::list<Tags::BondiJ>;
+  using system = System<false>;
   using evolved_swsh_dt_tags = tmpl::list<Tags::BondiH>;
   using cce_step_choosers = tmpl::list<>;
-  using evolved_coordinates_variables_tag = ::Tags::Variables<
-      tmpl::list<Tags::CauchyCartesianCoords, Tags::InertialRetardedTime>>;
   using cce_boundary_communication_tags =
       Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>;
   using cce_boundary_component = AnalyticWorldtubeBoundary<test_metavariables>;
@@ -192,12 +190,14 @@ SPECTRE_TEST_CASE(
           false, l_max, extraction_radius, end_time, start_time,
           number_of_radial_points,
           static_cast<std::unique_ptr<LtsTimeStepper>>(
-              std::make_unique<::TimeSteppers::AdamsBashforth>(3))}};
+              std::make_unique<::TimeSteppers::AdamsBashforth>(3)),
+          LtsMode::Conservative}};
 
   const AnalyticBoundaryDataManager analytic_manager{
       l_max, extraction_radius,
       std::make_unique<Cce::Solutions::RotatingSchwarzschild>(extraction_radius,
-                                                              1.0, frequency)};
+                                                              1.0, frequency),
+      0.05};
   runner.set_phase(Parallel::Phase::Initialization);
   ActionTesting::emplace_component<evolution_component>(
       &runner, 0, target_step_size, target_step_size,
@@ -236,8 +236,12 @@ SPECTRE_TEST_CASE(
   analytic_manager.populate_hypersurface_boundary_data(
       make_not_null(&expected_boundary_variables), target_time);
 
-  tmpl::for_each<
-      Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>>(
+  // `Du<Dr<BondiJ>>` is not populated by `create_bondi_boundary_data` (the
+  // "expected" side here), so it would compare NaN-vs-NaN; exclude it.
+  using tags_to_compare = tmpl::list_difference<
+      Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>,
+      tmpl::list<Tags::BoundaryValue<Tags::Du<Tags::Dr<Tags::BondiJ>>>>>;
+  tmpl::for_each<tags_to_compare>(
       [&expected_boundary_variables, &runner](auto tag_v) {
         using tag = typename decltype(tag_v)::type;
         INFO(db::tag_name<tag>());

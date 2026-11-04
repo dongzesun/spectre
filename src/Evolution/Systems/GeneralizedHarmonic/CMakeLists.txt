@@ -12,6 +12,10 @@ spectre_target_sources(
   Characteristics.cpp
   Constraints.cpp
   Equations.cpp
+  FilledSpherePowerMonitor.cpp
+  SpectralFilter.cpp
+  SphericalShellPowerMonitor.cpp
+  TensorYlmTransforms.cpp
   TimeDerivative.cpp
   )
 
@@ -24,10 +28,14 @@ spectre_target_headers(
   Constraints.hpp
   DuDtTempTags.hpp
   Equations.hpp
+  FilledSpherePowerMonitor.hpp
   Initialize.hpp
+  SpectralFilter.hpp
+  SphericalShellPowerMonitor.hpp
   System.hpp
   Tags.hpp
   TagsDeclarations.hpp
+  TensorYlmTransforms.hpp
   TimeDerivative.hpp
   TimeDerivative.tpp
   )
@@ -56,6 +64,9 @@ target_link_libraries(
   Options
   Serialization
   Spectral
+  SphericalHarmonics
+  Strahlkorper
+  TensorYlm
   Utilities
   INTERFACE
   Initialization
@@ -68,3 +79,4 @@ add_subdirectory(BoundaryConditions)
 add_subdirectory(BoundaryCorrections)
 add_subdirectory(GaugeSourceFunctions)
 add_subdirectory(Instantiations)
+add_subdirectory(Python)

@@ -196,6 +196,41 @@ struct InitializeJ {
       "The initialization for the first hypersurface for J"};
   using group = Cce;
 };
+
+/// Option for choosing the first-hypersurface initialization of J in an
+/// analytic-solution CCE run.
+///
+/// \details Set to `FromAnalyticSolution` to use the J initialization provided
+/// by the analytic solution itself (via
+/// `Cce::Solutions::WorldtubeData::get_initialize_j`). Otherwise, any
+/// option-creatable `Cce::InitializeJ::InitializeJ<false>` may be specified to
+/// override the solution-provided initialization, exactly as in a standard CCE
+/// run.
+struct AnalyticInitializeJ {
+  static std::string name() { return "InitializeJ"; }
+  struct FromAnalyticSolution {};
+  using type =
+      Options::Auto<std::unique_ptr<::Cce::InitializeJ::InitializeJ<false>>,
+                    FromAnalyticSolution>;
+  static constexpr Options::String help{
+      "The initialization for the first hypersurface for J. Set to "
+      "'FromAnalyticSolution' to use the initialization provided by the "
+      "analytic solution."};
+  using group = Cce;
+};
+
+/// Time spacing for differentiating analytic worldtube data.
+struct DuDrJStencilStep {
+  using type = double;
+  static constexpr Options::String help{
+      "Time spacing for the centered stencil used to compute Du(Dr(J)) from "
+      "analytic worldtube data. Choose a spacing that resolves the shortest "
+      "solution timescale; interpolation order cannot remove "
+      "aliasing from undersampling. Used only when InitializeJ requires "
+      "Du(Dr(J))."};
+  static double lower_bound() { return std::numeric_limits<double>::min(); }
+  using group = Cce;
+};
 }  // namespace OptionTags
 
 /// \brief Initialization tags for CCE
@@ -265,14 +300,25 @@ struct FilePrefix : db::SimpleTag {
 template <typename Tag>
 struct CceEvolutionPrefix;
 
+namespace CceEvolutionPrefix_detail {
+template <typename Tag>
+struct CopyBase : db::SimpleTag {};
+
+template <typename Tag>
+  requires requires { typename Tag::base; }
+struct CopyBase<Tag> : CceEvolutionPrefix<typename Tag::base> {
+  using base = CceEvolutionPrefix<typename Tag::base>;
+};
+}  // namespace CceEvolutionPrefix_detail
+
 template <db::simple_tag Tag>
-struct CceEvolutionPrefix<Tag> : db::SimpleTag {
+struct CceEvolutionPrefix<Tag> : CceEvolutionPrefix_detail::CopyBase<Tag> {
   using type = typename Tag::type;
   static std::string name() { return db::tag_name<Tag>(); }
 };
 
 template <Parallel::untemplated_initialization_tag Tag>
-struct CceEvolutionPrefix<Tag> : db::SimpleTag {
+struct CceEvolutionPrefix<Tag> : CceEvolutionPrefix_detail::CopyBase<Tag> {
   using type = typename Tag::type;
   using option_tags = db::wrap_tags_in<OptionTags::CceEvolutionPrefix,
                                        typename Tag::option_tags>;
@@ -286,7 +332,7 @@ struct CceEvolutionPrefix<Tag> : db::SimpleTag {
 };
 
 template <Parallel::templated_initialization_tag Tag>
-struct CceEvolutionPrefix<Tag> : db::SimpleTag {
+struct CceEvolutionPrefix<Tag> : CceEvolutionPrefix_detail::CopyBase<Tag> {
   using type = typename Tag::type;
   template <typename Metavariables>
   using option_tags =
@@ -547,17 +593,25 @@ struct InitializeJ : db::SimpleTag {
   }
 };
 
-// Tags that generates an `Cce::InitializeJ::InitializeJ` derived class from an
-// analytic solution.
+// Tag that generates an `Cce::InitializeJ::InitializeJ` derived class for an
+// analytic-solution run. By default the initialization is provided by the
+// analytic solution itself, but it may be overridden from the input file via
+// `OptionTags::AnalyticInitializeJ`.
 struct AnalyticInitializeJ : InitializeJ<false> {
   using base = InitializeJ<false>;
   using option_tags =
-      tmpl::list<OptionTags::AnalyticSolution, OptionTags::StartTime>;
+      tmpl::list<OptionTags::AnalyticInitializeJ, OptionTags::AnalyticSolution,
+                 OptionTags::StartTime>;
   static constexpr bool pass_metavariables = false;
   static std::unique_ptr<::Cce::InitializeJ::InitializeJ<false>>
   create_from_options(
+      const std::optional<std::unique_ptr<
+          ::Cce::InitializeJ::InitializeJ<false>>>& initialize_j,
       const std::unique_ptr<Cce::Solutions::WorldtubeData>& worldtube_data,
       const std::optional<double> start_time) {
+    if (initialize_j.has_value()) {
+      return initialize_j.value()->get_clone();
+    }
     return worldtube_data->get_initialize_j(*start_time);
   }
 };
@@ -567,14 +621,16 @@ struct AnalyticBoundaryDataManager : db::SimpleTag {
   using type = ::Cce::AnalyticBoundaryDataManager;
   using option_tags =
       tmpl::list<OptionTags::ExtractionRadius, Spectral::Swsh::OptionTags::LMax,
-                 OptionTags::AnalyticSolution>;
+                 OptionTags::AnalyticSolution, OptionTags::DuDrJStencilStep>;
 
   static constexpr bool pass_metavariables = false;
   static Cce::AnalyticBoundaryDataManager create_from_options(
       const double extraction_radius, const size_t l_max,
-      const std::unique_ptr<Cce::Solutions::WorldtubeData>& worldtube_data) {
+      const std::unique_ptr<Cce::Solutions::WorldtubeData>& worldtube_data,
+      const double du_dr_j_stencil_step) {
     return ::Cce::AnalyticBoundaryDataManager(l_max, extraction_radius,
-                                              worldtube_data->get_clone());
+                                              worldtube_data->get_clone(),
+                                              du_dr_j_stencil_step);
   }
 };
 

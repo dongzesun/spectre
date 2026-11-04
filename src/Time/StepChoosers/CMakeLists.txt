@@ -6,9 +6,10 @@ spectre_target_sources(
   PRIVATE
   ByBlock.cpp
   Constant.cpp
-  FixedLtsRatio.cpp
+  ErrorControl.cpp
   LimitIncrease.cpp
   Maximum.cpp
+  PreventRapidIncrease.cpp
   Random.cpp
   StepToTimes.cpp
   )
@@ -23,7 +24,6 @@ spectre_target_headers(
   ElementSizeCfl.hpp
   ErrorControl.hpp
   Factory.hpp
-  FixedLtsRatio.hpp
   LimitIncrease.hpp
   Maximum.hpp
   PreventRapidIncrease.hpp

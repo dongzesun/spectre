@@ -9,6 +9,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Evolution/DiscontinuousGalerkin/InboxTags.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarTags.hpp"
 #include "Parallel/ArrayCollection/IsDgElementCollection.hpp"
@@ -19,7 +20,6 @@
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStep.hpp"
 #include "Time/Tags/TimeStepId.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /*!
  * \brief Namespace for actions related to debugging deadlocks in communication.
@@ -122,15 +122,13 @@ struct PrintElementInfo {
            << "\n";
       }
 
-      if constexpr (Metavariables::local_time_stepping) {
-        const auto& mortar_data_history =
-            db::get<evolution::dg::Tags::MortarDataHistory<3>>(box);
-        ss << "  MortarDataHistory:\n";
+      const auto& mortar_data_history =
+          db::get<evolution::dg::Tags::MortarDataHistory<3>>(box);
+      ss << "  MortarDataHistory:\n";
 
-        for (const auto& [key, history] : mortar_data_history) {
-          ss << "   Key: " << key << ", history:\n";
-          history.template print<false>(ss, 4_st);
-        }
+      for (const auto& [key, history] : mortar_data_history) {
+        ss << "   Key: " << key << ", history:\n";
+        history.template print<false>(ss, 4_st);
       }
     } else {
       ss << "\n";

@@ -15,7 +15,7 @@ spectre_target_sources(
   Destination.cpp
   FastFlow.cpp
   InterpolateVolumeVars.cpp
-  InterpolationTarget.cpp
+  KerrSchild.cpp
   OptionTags.cpp
   Storage.cpp
   )
@@ -28,10 +28,6 @@ spectre_target_headers(
   CleanUp.hpp
   Component.hpp
   ComputeCoords.hpp
-  ComputeExcisionBoundaryVolumeQuantities.hpp
-  ComputeExcisionBoundaryVolumeQuantities.tpp
-  ComputeHorizonVolumeQuantities.hpp
-  ComputeHorizonVolumeQuantities.tpp
   ComputeVarsToInterpolateToTarget.hpp
   CurrentTime.hpp
   Destination.hpp
@@ -40,7 +36,7 @@ spectre_target_headers(
   HorizonAliases.hpp
   Initialization.hpp
   InterpolateVolumeVars.hpp
-  InterpolationTarget.hpp
+  KerrSchild.hpp
   OptionTags.hpp
   PrintDeadlockAnalysis.hpp
   Storage.hpp
@@ -59,16 +55,17 @@ target_link_libraries(
   LinearOperators
   Logging
   Options
+  Parallel
   Printf
   SphericalHarmonics
+  Strahlkorper
+  StrahlkorperIO
   PRIVATE
   CoordinateMaps
   Domain
   INTERFACE
   Initialization
   Observer
-  Parallel
-  ParallelInterpolation
   )
 
 add_subdirectory(Callbacks)

@@ -15,6 +15,7 @@
 #include "Evolution/Systems/Cce/Events/ObserveFields.hpp"
 #include "Evolution/Systems/Cce/Events/ObserveTimeStep.hpp"
 #include "Evolution/Systems/Cce/Initialize/ConformalFactor.hpp"
+#include "Evolution/Systems/Cce/KleinGordonSystem.hpp"
 #include "IO/Observer/ObserverComponent.hpp"
 #include "Parallel/Algorithms/AlgorithmSingleton.hpp"
 #include "ParallelAlgorithms/Events/Factory.hpp"
@@ -22,7 +23,6 @@
 #include "ParallelAlgorithms/EventsAndTriggers/EventsAndTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/LogicalTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Trigger.hpp"
-#include "Time/StepChoosers/Factory.hpp"
 #include "Time/TimeSteppers/Factory.hpp"
 #include "Time/Triggers/TimeTriggers.hpp"
 
@@ -33,14 +33,11 @@ class er;
 /// \endcond
 
 template <template <typename> class BoundaryComponent>
-struct EvolutionMetavars : CharacteristicExtractDefaults<false> {
-  using system = Cce::System<evolve_ccm>;
-  static constexpr bool local_time_stepping = true;
+struct EvolutionMetavars
+    : CharacteristicExtractDefaults<Cce::KleinGordonSystem<false>> {
   using cce_boundary_component = BoundaryComponent<EvolutionMetavars>;
-  using cce_base = CharacteristicExtractDefaults<false>;
+  using cce_base = CharacteristicExtractDefaults<Cce::KleinGordonSystem<false>>;
 
-  using evolved_swsh_tags = tmpl::append<cce_base::evolved_swsh_tags,
-                                         tmpl::list<Cce::Tags::KleinGordonPsi>>;
   using evolved_swsh_dt_tags =
       tmpl::append<cce_base::evolved_swsh_dt_tags,
                    tmpl::list<Cce::Tags::KleinGordonPi>>;
@@ -54,15 +51,6 @@ struct EvolutionMetavars : CharacteristicExtractDefaults<false> {
 
   using klein_gordon_scri_tags =
       tmpl::list<Cce::Tags::ScriPlus<Cce::Tags::KleinGordonPi>>;
-
-  using cce_step_choosers =
-      tmpl::list<StepChoosers::Constant, StepChoosers::LimitIncrease,
-                 StepChoosers::ErrorControl<StepChooserUse::LtsStep,
-                                            Tags::Variables<evolved_swsh_tags>,
-                                            swsh_vars_selector>,
-                 StepChoosers::ErrorControl<StepChooserUse::LtsStep,
-                                            evolved_coordinates_variables_tag,
-                                            coord_vars_selector>>;
 
   using klein_gordon_pre_swsh_derivative_tags =
       tmpl::list<Cce::Tags::Dy<Cce::Tags::Dy<Cce::Tags::KleinGordonPsi>>,
@@ -125,9 +113,7 @@ struct EvolutionMetavars : CharacteristicExtractDefaults<false> {
     using factory_classes = tmpl::map<
         tmpl::pair<LtsTimeStepper, TimeSteppers::lts_time_steppers>,
         tmpl::pair<StepChooser<StepChooserUse::LtsStep>, cce_step_choosers>,
-        tmpl::pair<StepChooser<StepChooserUse::Slab>,
-                   StepChoosers::standard_slab_choosers<
-                       system, local_time_stepping, false>>,
+        tmpl::pair<StepChooser<StepChooserUse::Slab>, cce_slab_choosers>,
         tmpl::pair<TimeSequence<double>,
                    TimeSequences::all_time_sequences<double>>,
         tmpl::pair<TimeSequence<std::uint64_t>,

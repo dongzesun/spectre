@@ -296,10 +296,12 @@ void GaugeAdjustedBoundaryValue<Tags::BondiH>::apply_impl(
                                    std::integral_constant<int, 2>>>(
           computation_buffers));
   interpolated_j =
-      0.25 * (square(gauge_d) * evolution_gauge_j +
-              square(gauge_c) * conj(evolution_gauge_j) -
-              2.0 * gauge_c * gauge_d *
-                  sqrt(1.0 + evolution_gauge_j * conj(evolution_gauge_j)));
+      0.25 *
+      (square(gauge_d) * evolution_gauge_j +
+       square(gauge_c) * conj(evolution_gauge_j) -
+       2.0 * gauge_c * gauge_d *
+           sqrt(1.0 + evolution_gauge_j * conj(evolution_gauge_j))) /
+      square(omega);
 
   auto& interpolated_k =
       get(get<::Tags::SpinWeighted<::Tags::TempScalar<1, ComplexDataVector>,
@@ -638,8 +640,7 @@ void gauge_update_jacobian_from_coordinates_apply_impl(
         gauge_factor_spin_2,
     const gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 0>>*>
         gauge_factor_spin_0,
-    const gsl::not_null<
-        tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
+    const tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>&
         angular_source_coordinates,
     const tnsr::i<DataVector, 3>& cartesian_source_coordinates,
     const size_t l_max) {
@@ -722,18 +723,18 @@ void gauge_update_jacobian_from_coordinates_apply_impl(
 
   for (size_t i = 0; i < 2; ++i) {
     angular_derivative_angular_source_coordinates.get(i, 0) =
-        cos(get<1>(*angular_source_coordinates)) *
-            cos(get<0>(*angular_source_coordinates)) *
+        cos(get<1>(angular_source_coordinates)) *
+            cos(get<0>(angular_source_coordinates)) *
             angular_derivative_cartesian_source_coordinates.get(i, 0) +
-        cos(get<0>(*angular_source_coordinates)) *
-            sin(get<1>(*angular_source_coordinates)) *
+        cos(get<0>(angular_source_coordinates)) *
+            sin(get<1>(angular_source_coordinates)) *
             angular_derivative_cartesian_source_coordinates.get(i, 1) -
-        sin(get<0>(*angular_source_coordinates)) *
+        sin(get<0>(angular_source_coordinates)) *
             angular_derivative_cartesian_source_coordinates.get(i, 2);
     angular_derivative_angular_source_coordinates.get(i, 1) =
-        -sin(get<1>(*angular_source_coordinates)) *
+        -sin(get<1>(angular_source_coordinates)) *
             angular_derivative_cartesian_source_coordinates.get(i, 0) +
-        cos(get<1>(*angular_source_coordinates)) *
+        cos(get<1>(angular_source_coordinates)) *
             angular_derivative_cartesian_source_coordinates.get(i, 1);
   }
 

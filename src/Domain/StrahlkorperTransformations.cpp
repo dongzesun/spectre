@@ -24,9 +24,9 @@
 #include "NumericalAlgorithms/RootFinding/RootBracketing.hpp"
 #include "NumericalAlgorithms/RootFinding/TOMS748.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/StrahlkorperFunctions.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Tags.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/StrahlkorperFunctions.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Tags.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
@@ -371,6 +371,15 @@ template void strahlkorper_in_different_frame(
         functions_of_time,
     const double time);
 template void strahlkorper_in_different_frame(
+    const gsl::not_null<ylm::Strahlkorper<::Frame::Grid>*> dest_strahlkorper,
+    const ylm::Strahlkorper<::Frame::Inertial>& src_strahlkorper,
+    const Domain<3>& domain,
+    const std::unordered_map<
+        std::string, std::unique_ptr<domain::FunctionsOfTime::FunctionOfTime>>&
+        functions_of_time,
+    const double time);
+
+template void strahlkorper_in_different_frame_aligned(
     const gsl::not_null<ylm::Strahlkorper<::Frame::Grid>*> dest_strahlkorper,
     const ylm::Strahlkorper<::Frame::Inertial>& src_strahlkorper,
     const Domain<3>& domain,

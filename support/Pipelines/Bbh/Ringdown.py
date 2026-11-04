@@ -10,16 +10,19 @@ import numpy as np
 import yaml
 from rich.pretty import pretty_repr
 
+import spectre.Evolution.Ringdown as Ringdown
 import spectre.IO.H5 as spectre_h5
-from spectre.Evolution.Ringdown.ComputeAhCCoefsInRingdownDistortedFrame import (
-    compute_ahc_coefs_in_ringdown_distorted_frame,
+from spectre.Evolution.Ringdown.ComputeRingdownShapeAndTranslationFoT import (
+    compute_ringdown_shape_and_translation_fot,
 )
 
 # next import out of order to avoid Unrecognized PUP::able::PUP_ID error
 from spectre.IO.H5.FunctionsOfTimeFromVolume import (
     functions_of_time_from_volume,
 )
-from spectre.support.DirectoryStructure import PipelineStep, list_pipeline_steps
+from spectre.Pipelines.EccentricityControl.DirectoryStructure import (
+    EccIteration,
+)
 from spectre.support.Schedule import schedule, scheduler_options
 
 logger = logging.getLogger(__name__)
@@ -64,21 +67,23 @@ def ringdown_parameters(
         ),
         "IdFileGlobSubgroup": fot_vol_subfile,
         # Store target parameters in the input file
-        "TargetParams": yaml.safe_dump(
-            {"TargetParams": inspiral_metadata["TargetParams"]}
-        ).strip(),
+        "TargetParams": (
+            yaml.safe_dump(
+                {"TargetParams": inspiral_metadata["TargetParams"]}
+            ).strip()
+        ),
     }
 
 
 def start_ringdown(
     inspiral_run_dir: Union[str, Path],
-    number_of_ahc_finds_for_fit: int,
-    match_time: float,
-    settling_timescale: float,
-    zero_coefs_eps: float,
-    lev: Optional[int],
-    refinement_level: Optional[int],
-    polynomial_order: Optional[int],
+    lev: Optional[int] = None,
+    refinement_level: Optional[int] = None,
+    polynomial_order: Optional[int] = None,
+    number_of_ahc_finds_for_fit: int = 10,
+    match_time: float = None,
+    settling_timescale: float = 10.0,
+    zero_coefs_eps: float = None,
     inspiral_input_file: Optional[Union[str, Path]] = None,
     ahc_reductions_path: Optional[Union[str, Path]] = None,
     ahc_subfile: str = "ObservationAhC_Ylm",
@@ -141,12 +146,12 @@ def start_ringdown(
     logger.warning(
         "The BBH pipeline is still experimental. Please review the"
         " generated input files. In particular, the ringdown BBH pipline has"
-        " been tested for a q=1, spin=0 quasicircular inspiral but does not"
-        " yet support accounting for a nonzero translation map in the inspiral"
-        " (necessary for unequal-mass mergers.)"
+        " been tested for q=1, q=2, spin=0 inspirals but does not"
+        " yet support choosing an excision radius automatically."
     )
     # Determine ringdown parameters from inspiral
     # Resolve and set correct files/paths.
+    inspiral_run_dir = Path(inspiral_run_dir).resolve()
     if inspiral_input_file is None:
         inspiral_input_file = inspiral_run_dir / "Inspiral.yaml"
 
@@ -165,20 +170,19 @@ def start_ringdown(
     if pipeline_dir:
         pipeline_dir = Path(pipeline_dir).resolve()
     if pipeline_dir and not segments_dir and not run_dir:
-        pipeline_steps = list_pipeline_steps(pipeline_dir)
-        if pipeline_steps:
-            segments_dir = pipeline_steps[-1].next(label="Ringdown").path
-        else:
-            segments_dir = PipelineStep.first(
-                directory=pipeline_dir, label="Ringdown"
-            ).path
+        assert lev is not None, (
+            "Specify a '--lev' when running in a '--pipeline-dir' / '-d',"
+            " because it determines the directory that the ringdown runs in."
+            " Specify a '--run-dir' / '-o' or '--segments-dir' / '-O' to choose"
+            " the directory yourself."
+        )
+        # Continue in the same directory as the inspiral
+        segments_dir = EccIteration.current(pipeline_dir).lev_dir(lev)
 
     if path_to_output_h5 == None:
-        ringdown_dir = Path(segments_dir or run_dir)
-        ringdown_dir.mkdir(parents=True, exist_ok=True)
-        path_to_output_h5 = (
-            Path(ringdown_dir).resolve() / "RingdownShapeCoefs.h5"
-        )
+        output_dir = Path(segments_dir or run_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path_to_output_h5 = Path(output_dir).resolve() / "RingdownShapeCoefs.h5"
     else:
         path_to_output_h5 = Path(path_to_output_h5).resolve()
 
@@ -214,7 +218,9 @@ def start_ringdown(
     )
 
     evaluated_fot_dict = functions_of_time_from_volume(
-        str(fot_vol_h5_path), fot_vol_subfile, match_time
+        fot_vol_h5_path=str(fot_vol_h5_path),
+        fot_vol_subfile=fot_vol_subfile,
+        match_time=match_time,
     )
     match_time = evaluated_fot_dict["MatchTime"]
 
@@ -237,22 +243,25 @@ def start_ringdown(
             [0.0, 0.0, 0.0, 0.0],
         ]
     evaluated_fot_dict["Expansion"] = [1.0, 0.0, 0.0]
-    evaluated_fot_dict["Translation"] = [
-        [0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0],
-    ]
+    # This was added so we don't try to read in translation function of time
+    # history if there was no translation map in the inspiral.
+    if "Translation" not in evaluated_fot_dict:
+        evaluated_fot_dict["Translation"] = None
 
-    ringdown_ylm_coefs, ringdown_ylm_legend = (
-        compute_ahc_coefs_in_ringdown_distorted_frame(
-            str(ahc_reductions_path),
-            ahc_subfile,
-            evaluated_fot_dict,
-            number_of_ahc_finds_for_fit,
-            match_time,
-            settling_timescale,
-            zero_coefs_eps,
-        )
+    (
+        ringdown_ylm_coefs,
+        ringdown_ylm_legend,
+        ahc_translation_fot,
+    ) = compute_ringdown_shape_and_translation_fot(
+        path_to_volume_data=fot_vol_h5_path,
+        volume_subfile_name=fot_vol_subfile,
+        ahc_reductions_path=str(ahc_reductions_path),
+        ahc_subfile=ahc_subfile,
+        evaluated_fot_dict=evaluated_fot_dict,
+        number_of_ahc_finds_for_fit=number_of_ahc_finds_for_fit,
+        match_time=match_time,
+        settling_timescale=settling_timescale,
+        zero_coefs_eps=zero_coefs_eps,
     )
 
     # Setting up and writing the distorted coefficients output file.
@@ -281,6 +290,57 @@ def start_ringdown(
             version=0,
         )
         ahc_dt2_datfile.append(ringdown_ylm_coefs[2])
+
+    # Section for finding the excision radius
+    inspiral_domain = inspiral_input_file["DomainCreator"][
+        "BinaryCompactObject"
+    ]
+    object_a = inspiral_domain["ObjectA"]
+    object_b = inspiral_domain["ObjectB"]
+    excision_radius_A = object_a["InnerRadius"]
+    excision_A_x_coord = object_a["XCoord"]
+    excision_radius_B = object_b["InnerRadius"]
+    excision_B_x_coord = object_b["XCoord"]
+    center_of_mass_offset_y = inspiral_domain["CenterOfMassOffset"][0]
+    center_of_mass_offset_z = inspiral_domain["CenterOfMassOffset"][1]
+
+    excision_center_A = [
+        excision_A_x_coord,
+        center_of_mass_offset_y,
+        center_of_mass_offset_z,
+    ]
+    excision_center_B = [
+        excision_B_x_coord,
+        center_of_mass_offset_y,
+        center_of_mass_offset_z,
+    ]
+
+    ringdown_excision_radius = Ringdown.minimum_ahc_excision_radius(
+        path_to_volume_data=str(fot_vol_h5_path),
+        volume_subfile_name=fot_vol_subfile,
+        path_to_horizons_h5=str(ahc_reductions_path),
+        surface_subfile_name=ahc_subfile,
+        path_to_ahc_distorted_h5=str(path_to_output_h5),
+        ahc_distorted_subfile_names=[
+            output_subfile_ahc,
+            output_subfile_dt_ahc,
+            output_subfile_dt2_ahc,
+        ],
+        match_time=match_time,
+        settling_timescale=settling_timescale,
+        excision_a_radius=excision_radius_A,
+        excision_b_radius=excision_radius_B,
+        excision_a_center=excision_center_A,
+        excision_b_center=excision_center_B,
+        exp_func_and_2_derivs=evaluated_fot_dict["Expansion"],
+        exp_outer_bdry_func_and_2_derivs=evaluated_fot_dict[
+            "ExpansionOuterBoundary"
+        ],
+        rot_func_and_2_derivs=evaluated_fot_dict["Rotation"],
+        trans_func_and_2_derivs=ahc_translation_fot,
+        match_time_tol=1e-12,
+    )
+
     logger.debug("Obtained ringdown coefs")
     # Print out coefficients for insertion into BBH domain
     logger.debug("Expansion: " + str(evaluated_fot_dict["Expansion"]))
@@ -308,10 +368,12 @@ def start_ringdown(
         width=float("inf"),
     ).strip()
     ringdown_params["Translation"] = yaml.safe_dump(
-        evaluated_fot_dict["Translation"],
+        ahc_translation_fot,
         default_flow_style=True,
         width=float("inf"),
     ).strip()
+
+    ringdown_params["ExcisionRadius"] = ringdown_excision_radius
 
     ringdown_params["OuterBdryRadius"] = inspiral_input_file["DomainCreator"][
         "BinaryCompactObject"
@@ -508,7 +570,7 @@ def start_ringdown(
         writable=True,
         path_type=Path,
     ),
-    help="Directory where steps in the pipeline are created.",
+    help="Directory of the simulation, in which the pipeline creates its runs.",
 )
 @scheduler_options
 def start_ringdown_command(**kwargs):

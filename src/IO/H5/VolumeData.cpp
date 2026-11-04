@@ -8,6 +8,8 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/iterator/transform_iterator.hpp>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <hdf5.h>
 #include <limits>
 #include <memory>
@@ -19,6 +21,7 @@
 #include <vector>
 
 #include "DataStructures/DataVector.hpp"
+#include "Domain/Structure/ElementId.hpp"
 #include "IO/Connectivity.hpp"
 #include "IO/H5/AccessType.hpp"
 #include "IO/H5/ExtendConnectivityHelpers.hpp"
@@ -28,6 +31,7 @@
 #include "IO/H5/TensorData.hpp"
 #include "IO/H5/Type.hpp"
 #include "IO/H5/Version.hpp"
+#include "IO/H5/Wrappers.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
@@ -53,14 +57,101 @@ namespace {
 constexpr const char* global_functions_of_time_observation_value_attr =
     "global_functions_of_time_observation_value";
 
-void append_element_extents_and_connectivity(
+// Fill a ring of points with a recursive-halving fan of Triangle cells.
+// Used for 2D disk and sphere-surface pole caps.
+//
+// Each pass scans `ring` in steps of 2, emitting one Triangle per triple
+// (ring[i], ring[i+1], ring[i+2]) and keeping only the even-indexed points
+// (ring[0], ring[2], ...) as `new_ring` for the next pass.  If the ring has
+// an even number of points, a final wrap-around triangle closes the loop.
+// Replacing `ring` with `new_ring` halves the point count each iteration
+// until fewer than 3 points remain, at which point the interior is fully
+// triangulated.
+void recursive_triangle_fan(const gsl::not_null<std::vector<int>*> connectivity,
+                            const gsl::not_null<size_t*> cell_count,
+                            std::vector<int> ring) {
+  std::vector<int> new_ring;
+  new_ring.reserve(ring.size() / 2 - ring.size() % 2);
+  while (ring.size() >= 3) {
+    new_ring.clear();
+    new_ring.push_back(ring[0]);
+    for (size_t i = 0; i < ring.size() - 2; i += 2) {
+      connectivity->push_back(
+          vis::detail::xdmf_topology_type(vis::detail::Topology::Triangle));
+      ++(*cell_count);
+      connectivity->push_back(ring[i]);
+      connectivity->push_back(ring[i + 1]);
+      connectivity->push_back(ring[i + 2]);
+      new_ring.push_back(ring[i + 2]);
+    }
+    if (ring.size() % 2 == 0) {
+      const size_t sz = ring.size();
+      connectivity->push_back(
+          vis::detail::xdmf_topology_type(vis::detail::Topology::Triangle));
+      ++(*cell_count);
+      connectivity->push_back(ring[sz - 2]);
+      connectivity->push_back(ring[sz - 1]);
+      connectivity->push_back(ring[0]);
+    }
+    ring = std::move(new_ring);
+  }
+}
+
+// Fill between two parallel rings of points with a recursive-halving fan of
+// Wedge (triangular prism) cells.  Used for 3D cylinder centers, shell pole
+// caps, and the B3 ball inner-sphere filling.
+//
+// Identical in structure to recursive_triangle_fan, but operates on a matched
+// pair of rings (`bottom` and `top`) simultaneously.  Each pass emits one Wedge
+// per triple of paired points and retains only the even-indexed points in
+// `new_bottom`/`new_top` for the next pass, halving the ring size each
+// iteration until fewer than 3 point-pairs remain.
+void recursive_wedge_fan(const gsl::not_null<std::vector<int>*> connectivity,
+                         const gsl::not_null<size_t*> cell_count,
+                         std::vector<int> bottom, std::vector<int> top) {
+  std::vector<int> new_bottom;
+  std::vector<int> new_top;
+  while (bottom.size() >= 3) {
+    new_bottom.clear();
+    new_top.clear();
+    new_bottom.push_back(bottom[0]);
+    new_top.push_back(top[0]);
+    for (size_t i = 0; i < bottom.size() - 2; i += 2) {
+      connectivity->push_back(
+          vis::detail::xdmf_topology_type(vis::detail::Topology::Wedge));
+      ++(*cell_count);
+      connectivity->push_back(bottom[i]);
+      connectivity->push_back(bottom[i + 1]);
+      connectivity->push_back(bottom[i + 2]);
+      connectivity->push_back(top[i]);
+      connectivity->push_back(top[i + 1]);
+      connectivity->push_back(top[i + 2]);
+      new_bottom.push_back(bottom[i + 2]);
+      new_top.push_back(top[i + 2]);
+    }
+    if (bottom.size() % 2 == 0) {
+      const size_t sz = bottom.size();
+      connectivity->push_back(
+          vis::detail::xdmf_topology_type(vis::detail::Topology::Wedge));
+      ++(*cell_count);
+      connectivity->push_back(bottom[sz - 2]);
+      connectivity->push_back(bottom[sz - 1]);
+      connectivity->push_back(bottom[0]);
+      connectivity->push_back(top[sz - 2]);
+      connectivity->push_back(top[sz - 1]);
+      connectivity->push_back(top[0]);
+    }
+    bottom = std::move(new_bottom);
+    top = std::move(new_top);
+  }
+}
+
+size_t append_element_extents_and_connectivity(
     const gsl::not_null<std::vector<size_t>*> total_extents,
     const gsl::not_null<std::vector<int>*> total_connectivity,
-    const gsl::not_null<std::vector<int>*> pole_connectivity,
-    const gsl::not_null<std::vector<int>*> disk_connectivity,
-    const gsl::not_null<std::vector<int>*> cylinder_connectivity,
     const gsl::not_null<int*> total_points_so_far, const size_t dim,
     const ElementVolumeData& element) {
+  size_t cell_count = 0;
   // Process the element extents
   // `dim` is the dimension of the computation except when we are doing Cartoon
   // method with a 2D computational domain. In such a case, the true dimension
@@ -100,9 +191,13 @@ void append_element_extents_and_connectivity(
   // Generate the connectivity data for the element
   // Possible optimization: local_connectivity.reserve(BLAH) if we can figure
   // out size without computing all the connectivities.
-  const std::vector<int> connectivity = [&extents, &total_points_so_far]() {
+  const std::vector<int> connectivity = [&extents, &total_points_so_far,
+                                         &cell_count]() {
     std::vector<int> local_connectivity;
     for (const auto& cell : vis::detail::compute_cells(extents)) {
+      local_connectivity.emplace_back(
+          vis::detail::xdmf_topology_type(cell.topology));
+      ++cell_count;
       for (const auto& bounding_indices : cell.bounding_indices) {
         local_connectivity.emplace_back(*total_points_so_far +
                                         static_cast<int>(bounding_indices));
@@ -110,6 +205,9 @@ void append_element_extents_and_connectivity(
     }
     return local_connectivity;
   }();
+  // Capture the point offset for this element before incrementing. All
+  // extra connectivity added below (for special element types) must add
+  // this offset to convert local point indices to global ones.
   const int element_start = *total_points_so_far;
   *total_points_so_far += element_num_points;
   total_connectivity->insert(total_connectivity->end(), connectivity.begin(),
@@ -127,10 +225,13 @@ void append_element_extents_and_connectivity(
       // Connect max(phi) and min(phi) by adding more quads
       // to total_connectivity
       for (int j = 0; j < l; ++j) {
-        total_connectivity->push_back(j);
-        total_connectivity->push_back(j + 1);
-        total_connectivity->push_back(2 * l * (l + 1) + j + 1);
-        total_connectivity->push_back((2 * l) * (l + 1) + j);
+        total_connectivity->push_back(
+            vis::detail::xdmf_topology_type(vis::detail::Topology::Quad));
+        ++cell_count;
+        total_connectivity->push_back(element_start + j);
+        total_connectivity->push_back(element_start + j + 1);
+        total_connectivity->push_back(element_start + 2 * l * (l + 1) + j + 1);
+        total_connectivity->push_back(element_start + (2 * l) * (l + 1) + j);
       }
 
       // Add a new connectivity output for filling the poles
@@ -142,8 +243,8 @@ void append_element_extents_and_connectivity(
       std::vector<int> top_pole_points{};
       std::vector<int> bottom_pole_points{};
       for (int k = 0; k < (2 * l + 1); ++k) {
-        top_pole_points.push_back(k * (l + 1));
-        bottom_pole_points.push_back(k * (l + 1) + l);
+        top_pole_points.push_back(element_start + k * (l + 1));
+        bottom_pole_points.push_back(element_start + k * (l + 1) + l);
       }
 
       const size_t number_of_pole_points = top_pole_points.size();
@@ -166,12 +267,18 @@ void append_element_extents_and_connectivity(
         const int bottom_second_point = gsl::at(bottom_pole_points, i);
         const int bottom_third_point = gsl::at(bottom_pole_points, i + 1);
 
-        pole_connectivity->push_back(top_root_point);
-        pole_connectivity->push_back(top_second_point);
-        pole_connectivity->push_back(top_third_point);
-        pole_connectivity->push_back(bottom_root_point);
-        pole_connectivity->push_back(bottom_second_point);
-        pole_connectivity->push_back(bottom_third_point);
+        total_connectivity->push_back(
+            vis::detail::xdmf_topology_type(vis::detail::Topology::Triangle));
+        ++cell_count;
+        total_connectivity->push_back(top_root_point);
+        total_connectivity->push_back(top_second_point);
+        total_connectivity->push_back(top_third_point);
+        total_connectivity->push_back(
+            vis::detail::xdmf_topology_type(vis::detail::Topology::Triangle));
+        ++cell_count;
+        total_connectivity->push_back(bottom_root_point);
+        total_connectivity->push_back(bottom_second_point);
+        total_connectivity->push_back(bottom_third_point);
       }
     } else if ((element.basis[0] == Spectral::Basis::ZernikeB2 and
                 element.basis[1] == Spectral::Basis::ZernikeB2) or
@@ -183,50 +290,35 @@ void append_element_extents_and_connectivity(
              "the first dimension to be Legendre or Chebychev, got "
                  << element.basis[0]);
       const auto n_r = static_cast<int>(extents[0]);
-      const auto n_ph = static_cast<int>(extents[1]);
+      const auto n_phi = static_cast<int>(extents[1]);
 
       // Connect max(phi) and min(phi) by adding more quads
       // to total_connectivity
       for (int j = 0; j < n_r - 1; ++j) {
+        total_connectivity->push_back(
+            vis::detail::xdmf_topology_type(vis::detail::Topology::Quad));
+        ++cell_count;
         total_connectivity->push_back(element_start + j);
         total_connectivity->push_back(element_start + j + 1);
-        total_connectivity->push_back(element_start + (n_ph - 1) * n_r + j + 1);
-        total_connectivity->push_back(element_start + (n_ph - 1) * n_r + j);
+        total_connectivity->push_back(element_start + (n_phi - 1) * n_r + j +
+                                      1);
+        total_connectivity->push_back(element_start + (n_phi - 1) * n_r + j);
       }
 
       // For a filled disk (ZernikeB2), also fill the central hole with
       // triangles using a recursive fan pattern over the minimum r ring points.
       if (element.basis[0] == Spectral::Basis::ZernikeB2) {
         std::vector<int> inner_ring_points{};
-        inner_ring_points.reserve(static_cast<size_t>(n_ph));
-        for (int k = 0; k < n_ph; ++k) {
+        inner_ring_points.reserve(static_cast<size_t>(n_phi));
+        for (int k = 0; k < n_phi; ++k) {
           // minimum r for each phi slice
           inner_ring_points.push_back(element_start + k * n_r);
         }
-
-        std::vector<int> new_points;
-        while (inner_ring_points.size() >= 3) {
-          new_points.clear();
-          new_points.push_back(inner_ring_points[0]);
-          for (size_t i = 0; i < inner_ring_points.size() - 2; i += 2) {
-            disk_connectivity->push_back(inner_ring_points[i]);
-            disk_connectivity->push_back(inner_ring_points[i + 1]);
-            disk_connectivity->push_back(inner_ring_points[i + 2]);
-            new_points.push_back(inner_ring_points[i + 2]);
-          }
-          if (inner_ring_points.size() % 2 == 0) {
-            // Add triangle closing the ring: connects last two points back to
-            // first
-            disk_connectivity->push_back(
-                inner_ring_points[inner_ring_points.size() - 2]);
-            disk_connectivity->push_back(
-                inner_ring_points[inner_ring_points.size() - 1]);
-            disk_connectivity->push_back(inner_ring_points[0]);
-          }
-          inner_ring_points = std::move(new_points);
-        }
+        recursive_triangle_fan(total_connectivity, &cell_count,
+                               std::move(inner_ring_points));
       }
     }
+    // generically do nothing if not a sphere, disk, or annulus
   } else if (dim == 3) {
     if ((element.basis[0] == Spectral::Basis::ZernikeB2 and
          element.basis[1] == Spectral::Basis::ZernikeB2) or
@@ -237,23 +329,26 @@ void append_element_extents_and_connectivity(
                   (element.basis[2] == Spectral::Basis::Legendre or
                    element.basis[2] == Spectral::Basis::Chebyshev)),
              "Adding connectivity for Fourier in the second dimension requires "
-             "the first and third dimensions to be Legendre or Chebychev, got "
+             "the first and third dimensions to be Legendre or Chebyshev, got "
                  << element.basis[0] << ", " << element.basis[2]);
       const auto n_r = static_cast<int>(extents[0]);
       const auto n_ph = static_cast<int>(extents[1]);
       const auto n_z = static_cast<int>(extents[2]);
 
-      // Helper: global point index for (i_r, i_phi, i_z)
-      const auto global_index = [&](int index_radius, int index_phi,
-                                    int index_z) {
+      // Helper: global point index for (index_r, index_phi, index_z)
+      const auto global_index = [&](const int index_radius, const int index_phi,
+                                    const int index_z) -> int {
         return element_start + index_radius + n_r * index_phi +
                n_r * n_ph * index_z;
       };
 
-      // Close the phi seam: connect last phi strip (i_ph = n_ph-1) back to
-      // first (i_ph = 0) with hexahedra.
+      // Close the phi seam: connect last phi strip (index_ph = n_ph-1) back to
+      // first (index_ph = 0) with hexahedra.
       for (int j_r = 0; j_r < n_r - 1; ++j_r) {
         for (int j_z = 0; j_z < n_z - 1; ++j_z) {
+          total_connectivity->push_back(vis::detail::xdmf_topology_type(
+              vis::detail::Topology::Hexahedron));
+          ++cell_count;
           total_connectivity->push_back(global_index(j_r, n_ph - 1, j_z));
           total_connectivity->push_back(global_index(j_r + 1, n_ph - 1, j_z));
           total_connectivity->push_back(global_index(j_r + 1, 0, j_z));
@@ -269,56 +364,159 @@ void append_element_extents_and_connectivity(
       // For a filled cylinder (ZernikeB2), fill the central hole with
       // wedges between consecutive z layers.
       if (element.basis[0] == Spectral::Basis::ZernikeB2) {
-        std::vector<int> ring_lo{};
-        std::vector<int> ring_hi{};
-        ring_lo.reserve(static_cast<size_t>(n_ph));
-        ring_hi.reserve(static_cast<size_t>(n_ph));
-        std::vector<int> new_lo{};
-        std::vector<int> new_hi{};
         for (int j_z = 0; j_z < n_z - 1; ++j_z) {
-          ring_lo.clear();
-          ring_hi.clear();
-          // Collect the minimum r ring points in this z layer and the next
+          std::vector<int> ring_lo;
+          std::vector<int> ring_hi;
+          ring_lo.reserve(static_cast<size_t>(n_ph));
+          ring_hi.reserve(static_cast<size_t>(n_ph));
           for (int k = 0; k < n_ph; ++k) {
             ring_lo.push_back(global_index(0, k, j_z));
             ring_hi.push_back(global_index(0, k, j_z + 1));
           }
+          recursive_wedge_fan(total_connectivity, &cell_count,
+                              std::move(ring_lo), std::move(ring_hi));
+        }
+      }
+    }
+    // If element is a 3D spherical shell (SphericalHarmonic in theta and phi
+    // directions) or filled sphere, add phi-wrapping hexahedra and pole-cap
+    // wedges.
+    if ((element.basis[1] == Spectral::Basis::SphericalHarmonic and
+         element.basis[2] == Spectral::Basis::SphericalHarmonic) or
+        (element.basis[1] == Spectral::Basis::ZernikeB3 and
+         element.basis[2] == Spectral::Basis::ZernikeB3)) {
+      const auto n_r = static_cast<int>(element.extents[0]);
+      const auto n_theta = static_cast<int>(element.extents[1]);
+      const auto n_phi = static_cast<int>(element.extents[2]);
+      // Global point index: local index (r fastest, then theta, then phi)
+      // plus the offset for this element's first point.
+      const auto idx = [&n_r, &n_theta, &element_start](
+                           const int ir, const int it, const int ip) -> int {
+        return element_start + ir + n_r * it + n_r * n_theta * ip;
+      };
 
-          // Build wedge prisms using the same recursive fan as the 2D case,
-          // extruded between ring_lo and ring_hi.
-          while (ring_lo.size() >= 3) {
-            new_lo.clear();
-            new_hi.clear();
-            new_lo.push_back(ring_lo[0]);
-            new_hi.push_back(ring_hi[0]);
-            for (size_t i = 0; i < ring_lo.size() - 2; i += 2) {
-              // Wedge (triangular prism): bottom triangle (ring_lo) + top
-              // triangle (ring_hi), each 3 vertices = 6 total.
-              cylinder_connectivity->push_back(ring_lo[i]);
-              cylinder_connectivity->push_back(ring_lo[i + 1]);
-              cylinder_connectivity->push_back(ring_lo[i + 2]);
-              cylinder_connectivity->push_back(ring_hi[i]);
-              cylinder_connectivity->push_back(ring_hi[i + 1]);
-              cylinder_connectivity->push_back(ring_hi[i + 2]);
-              new_lo.push_back(ring_lo[i + 2]);
-              new_hi.push_back(ring_hi[i + 2]);
+      // Step 1: Add phi-wrapping hexahedra to close the phi=2*pi boundary
+      for (int it = 0; it < n_theta - 1; ++it) {
+        for (int ir = 0; ir < n_r - 1; ++ir) {
+          total_connectivity->push_back(vis::detail::xdmf_topology_type(
+              vis::detail::Topology::Hexahedron));
+          ++cell_count;
+          total_connectivity->push_back(idx(ir, it, n_phi - 1));
+          total_connectivity->push_back(idx(ir + 1, it, n_phi - 1));
+          total_connectivity->push_back(idx(ir + 1, it + 1, n_phi - 1));
+          total_connectivity->push_back(idx(ir, it + 1, n_phi - 1));
+          total_connectivity->push_back(idx(ir, it, 0));
+          total_connectivity->push_back(idx(ir + 1, it, 0));
+          total_connectivity->push_back(idx(ir + 1, it + 1, 0));
+          total_connectivity->push_back(idx(ir, it + 1, 0));
+        }
+      }
+
+      // Step 2: Add pole-cap wedges using recursive halving of the pole ring.
+      // For each pole (theta=0 and theta=n_theta-1) and each radial layer, the
+      // ring of n_phi points at fixed (ir, it_pole) is recursively halved to
+      // produce Wedge cells (bottom tri at ir, top tri at ir+1).
+      //
+      // Winding order: phi increases CCW when viewed from the north (+z). For
+      // the top pole (it_pole=0) the forward ring order gives an
+      // outward-pointing bottom-triangle normal (positive signed volume). For
+      // the bottom pole (it_pole=n_theta-1) the same phi order produces an
+      // inward-pointing normal, so we reverse the ring to keep consistent
+      // winding and positive signed volume for all wedges.
+      for (const int it_pole : {0, n_theta - 1}) {
+        const bool reverse_ring = (it_pole == n_theta - 1);
+        for (int ir = 0; ir < n_r - 1; ++ir) {
+          std::vector<int> bottom_ring;
+          std::vector<int> top_ring;
+          bottom_ring.reserve(static_cast<size_t>(n_phi));
+          top_ring.reserve(static_cast<size_t>(n_phi));
+          for (int ip = 0; ip < n_phi; ++ip) {
+            bottom_ring.push_back(idx(ir, it_pole, ip));
+            top_ring.push_back(idx(ir + 1, it_pole, ip));
+          }
+          if (reverse_ring) {
+            std::reverse(bottom_ring.begin(), bottom_ring.end());
+            std::reverse(top_ring.begin(), top_ring.end());
+          }
+          recursive_wedge_fan(total_connectivity, &cell_count,
+                              std::move(bottom_ring), std::move(top_ring));
+        }
+      }
+
+      // Step 3: For ZernikeB3 (filled ball), seal the inner hollow by
+      // connecting points across the equatorial plane at ir=0.
+      //
+      //  (a) Pole cylinder: the north pole ring (theta=0) is connected
+      //      directly to the south pole ring (theta=n_theta-1) using the same
+      //      recursive-halving wedge algorithm as Step 2, forming a cylinder.
+      //
+      //  (b) Body: for each northern hemisphere band [it, it+1]
+      //      (it = 0 .. (n_theta-3)/2), pair with its z-mirror band
+      //      [n_theta-2-it, n_theta-1-it].  When the two bands share the
+      //      equatorial theta (it+1 == n_theta-2-it), emit a 6-vertex Wedge;
+      //      otherwise emit an 8-vertex Hexahedron.
+      if (element.basis[0] == Spectral::Basis::ZernikeB3 and n_theta >= 3) {
+        // (a) Pole cylinder: connect north pole ring (theta=0) directly to
+        // south pole ring (theta=n_theta-1). The resulting wedges form a
+        // cylinder.
+        {
+          std::vector<int> bot;
+          std::vector<int> top;
+          bot.reserve(static_cast<size_t>(n_phi));
+          top.reserve(static_cast<size_t>(n_phi));
+          for (int ip = 0; ip < n_phi; ++ip) {
+            bot.push_back(idx(0, 0, ip));
+            top.push_back(idx(0, n_theta - 1, ip));
+          }
+          recursive_wedge_fan(total_connectivity, &cell_count, std::move(bot),
+                              std::move(top));
+        }
+
+        // (b) Body: northern band [it, it+1] paired with its z-mirror band
+        // [n_theta-2-it, n_theta-1-it], for it = 0 .. (n_theta-3)/2.
+        // it=0 produces hexahedra spanning theta={0,1,...,n_theta-2,n_theta-1},
+        // connecting the extremal theta rings to their neighbors.
+        for (int it = 0; 2 * it <= n_theta - 3; ++it) {
+          const int it_nlo = it;
+          const int it_nhi = it + 1;
+          const int it_slo = n_theta - 2 - it;  // mirror of it_nhi
+          const int it_shi = n_theta - 1 - it;  // mirror of it_nlo
+
+          for (int ip = 0; ip < n_phi; ++ip) {
+            const int ip1 = (ip + 1) % n_phi;
+
+            if (it_nhi < it_slo) {
+              // Bands don't share equatorial theta: 8-vertex Hexahedron.
+              total_connectivity->push_back(vis::detail::xdmf_topology_type(
+                  vis::detail::Topology::Hexahedron));
+              ++cell_count;
+              total_connectivity->push_back(idx(0, it_nlo, ip));
+              total_connectivity->push_back(idx(0, it_nhi, ip));
+              total_connectivity->push_back(idx(0, it_slo, ip));
+              total_connectivity->push_back(idx(0, it_shi, ip));
+              total_connectivity->push_back(idx(0, it_nlo, ip1));
+              total_connectivity->push_back(idx(0, it_nhi, ip1));
+              total_connectivity->push_back(idx(0, it_slo, ip1));
+              total_connectivity->push_back(idx(0, it_shi, ip1));
+            } else {
+              // it_nhi == it_slo: share equatorial theta -> 6-vertex Wedge.
+              total_connectivity->push_back(vis::detail::xdmf_topology_type(
+                  vis::detail::Topology::Wedge));
+              ++cell_count;
+              total_connectivity->push_back(idx(0, it_nlo, ip));
+              total_connectivity->push_back(idx(0, it_nhi, ip));
+              total_connectivity->push_back(idx(0, it_shi, ip));
+              total_connectivity->push_back(idx(0, it_nlo, ip1));
+              total_connectivity->push_back(idx(0, it_nhi, ip1));
+              total_connectivity->push_back(idx(0, it_shi, ip1));
             }
-            if (ring_lo.size() % 2 == 0) {
-              // Closing wedge connecting last two points back to first
-              cylinder_connectivity->push_back(ring_lo[ring_lo.size() - 2]);
-              cylinder_connectivity->push_back(ring_lo[ring_lo.size() - 1]);
-              cylinder_connectivity->push_back(ring_lo[0]);
-              cylinder_connectivity->push_back(ring_hi[ring_hi.size() - 2]);
-              cylinder_connectivity->push_back(ring_hi[ring_hi.size() - 1]);
-              cylinder_connectivity->push_back(ring_hi[0]);
-            }
-            ring_lo = std::move(new_lo);
-            ring_hi = std::move(new_hi);
           }
         }
       }
     }
+    // generically do nothing if not a cylinder, spherical shell, or ball
   }
+  return cell_count;
 }
 }  // namespace
 
@@ -418,11 +616,10 @@ void VolumeData::write_volume_data(
   std::vector<size_t> total_extents;
   std::string grid_names;
   std::vector<int> total_connectivity;
-  std::vector<int> pole_connectivity{};
-  std::vector<int> disk_connectivity{};
-  std::vector<int> cylinder_connectivity{};
   std::vector<int> quadratures;
   std::vector<int> bases;
+  std::vector<uint64_t> element_ids;
+  std::vector<uint64_t> block_ids;
   // Keep a running count of the number of points so far to use as a global
   // index for the connectivity
   int total_points_so_far = 0;
@@ -439,9 +636,8 @@ void VolumeData::write_volume_data(
     }
 
     const auto fill_and_write_contiguous_tensor_data =
-        [&bases, &component_name, &dim, &elements, &grid_names, i,
-         &observation_group, &quadratures, &total_connectivity,
-         &pole_connectivity, &disk_connectivity, &cylinder_connectivity,
+        [&bases, &block_ids, &component_name, &dim, &element_ids, &elements,
+         &grid_names, i, &observation_group, &quadratures, &total_connectivity,
          &total_extents,
          &total_points_so_far](const auto contiguous_tensor_data_ptr) {
           for (const auto& element : elements) {
@@ -475,10 +671,48 @@ void VolumeData::write_volume_data(
                     return static_cast<int>(t);
                   });
 
-              append_element_extents_and_connectivity(
-                  &total_extents, &total_connectivity, &pole_connectivity,
-                  &disk_connectivity, &cylinder_connectivity,
-                  &total_points_so_far, dim, element);
+              const size_t number_of_cells =
+                  append_element_extents_and_connectivity(
+                      &total_extents, &total_connectivity, &total_points_so_far,
+                      dim, element);
+
+              // Element ID: hash of the element name string
+              if (element.element_name.size() >= 3 and
+                  element.element_name[0] == '[' and
+                  element.element_name[1] == 'B') {
+                // numerical dimension != computational dimension when using
+                // cartoon bases
+                const size_t num_dim = elements.front().basis.size();
+                if (num_dim == 1) {
+                  const ElementId<1> element_id{element.element_name};
+                  element_ids.insert(element_ids.end(), number_of_cells,
+                                     element_id.to_short_id());
+                  block_ids.insert(block_ids.end(), number_of_cells,
+                                   element_id.block_id());
+                } else if (num_dim == 2) {
+                  const ElementId<2> element_id{element.element_name};
+                  element_ids.insert(element_ids.end(), number_of_cells,
+                                     element_id.to_short_id());
+                  block_ids.insert(block_ids.end(), number_of_cells,
+                                   element_id.block_id());
+                } else if (num_dim == 3) {
+                  const ElementId<3> element_id{element.element_name};
+                  element_ids.insert(element_ids.end(), number_of_cells,
+                                     element_id.to_short_id());
+                  block_ids.insert(block_ids.end(), number_of_cells,
+                                   element_id.block_id());
+                } else {
+                  ERROR(
+                      "Can only encode ElementID when simulation dim is 1, 2, "
+                      "or 3, got "
+                      << dim);
+                }
+              } else {
+                element_ids.insert(
+                    element_ids.end(), number_of_cells,
+                    std::hash<std::string>{}(element.element_name));
+                block_ids.insert(block_ids.end(), number_of_cells, 0);
+              }
             }
             using type_from_variant = tmpl::conditional_t<
                 std::is_same_v<
@@ -549,22 +783,16 @@ void VolumeData::write_volume_data(
     h5::write_data(observation_group.id(), total_connectivity,
                    {total_connectivity.size()}, "connectivity");
   }
-  // Note: pole_connectivity stores extra connections that define triangles to
-  // fill in the poles on a Strahlkorper and is empty if not outputting
-  // Strahlkorper surface data. Because these connections define triangles
-  // and not quadrilaterals, they are stored separately instead of just being
-  // included in total_connectivity.
-  if (not pole_connectivity.empty()) {
-    h5::write_data(observation_group.id(), pole_connectivity,
-                   {pole_connectivity.size()}, "pole_connectivity");
+  // Write cell-centered element_id and block_id datasets for the mixed
+  // topology format. element_id is the hash of the element name; block_id is
+  // parsed from the "[B<N>,..." element name pattern.
+  if (not element_ids.empty()) {
+    h5::write_data(observation_group.id(), element_ids, {element_ids.size()},
+                   "ElementId");
   }
-  if (not disk_connectivity.empty()) {
-    h5::write_data(observation_group.id(), disk_connectivity,
-                   {disk_connectivity.size()}, "disk_connectivity");
-  }
-  if (not cylinder_connectivity.empty()) {
-    h5::write_data(observation_group.id(), cylinder_connectivity,
-                   {cylinder_connectivity.size()}, "cylinder_connectivity");
+  if (not block_ids.empty()) {
+    h5::write_data(observation_group.id(), block_ids, {block_ids.size()},
+                   "BlockId");
   }
   // Store the serialized domain and functions of time at the subfile level
   if (serialized_domain.has_value() and
@@ -737,14 +965,15 @@ std::vector<std::string> VolumeData::list_tensor_components(
   const std::unordered_set<std::string> non_tensor_components{
       "connectivity",
       "pole_connectivity",
-      "disk_connectivity",
-      "cylinder_connectivity",
+      "tetrahedral_connectivity",
       "total_extents",
       "grid_names",
       "quadratures",
       "bases",
       "domain",
-      "functions_of_time"};
+      "functions_of_time",
+      "ElementId",
+      "BlockId"};
   tensor_components.erase(
       alg::remove_if(tensor_components,
                      [&non_tensor_components](const std::string& name) {
@@ -781,8 +1010,18 @@ TensorComponent VolumeData::get_tensor_component(
   const auto rank =
       static_cast<size_t>(H5Sget_simple_extent_ndims(dataspace_id));
   h5::close_dataspace(dataspace_id);
-  const bool use_float =
-      h5::types_equal(H5Dget_type(dataset_id), h5::h5_type<float>());
+  const hid_t h5_data_type = H5Dget_type(dataset_id);
+  CHECK_H5(h5_data_type,
+           "Failed to get datatype of dataset '" << tensor_component << "'");
+  const bool is_float = h5::types_equal(h5_data_type, h5::h5_type<float>());
+  const bool is_double = h5::types_equal(h5_data_type, h5::h5_type<double>());
+  const bool is_int = h5::types_equal(h5_data_type, h5::h5_type<int>());
+  const bool is_unsigned_int =
+      h5::types_equal(h5_data_type, h5::h5_type<unsigned int>());
+  const bool is_unsigned_long =
+      h5::types_equal(h5_data_type, h5::h5_type<unsigned long>());
+  CHECK_H5(H5Tclose(h5_data_type),
+           "Failed to close datatype of dataset '" << tensor_component << "'");
   h5::close_dataset(dataset_id);
 
   const auto get_data = [&observation_group, &rank,
@@ -803,11 +1042,125 @@ TensorComponent VolumeData::get_tensor_component(
     }
   };
 
-  if (use_float) {
+  if (is_float) {
     return {tensor_component, get_data(tmpl::type_<std::vector<float>>{})};
-  } else {
+  } else if (is_double) {
     return {tensor_component, get_data(tmpl::type_<DataVector>{})};
+  } else if (is_int) {
+    const std::vector<int> stored = get_data(tmpl::type_<std::vector<int>>{});
+    DataVector result{stored.size()};
+    std::ranges::copy(stored.begin(), stored.end(), result.begin());
+    return {tensor_component, result};
+  } else if (is_unsigned_int) {
+    const std::vector<unsigned int> stored =
+        get_data(tmpl::type_<std::vector<unsigned int>>{});
+    DataVector result{stored.size()};
+    std::ranges::copy(stored.begin(), stored.end(), result.begin());
+    return {tensor_component, result};
+  } else if (is_unsigned_long) {
+    const std::vector<unsigned long> stored =
+        get_data(tmpl::type_<std::vector<unsigned long>>{});
+    DataVector result{stored.size()};
+    std::ranges::copy(stored.begin(), stored.end(), result.begin());
+    return {tensor_component, result};
+  } else {
+    ERROR("Unsupported HDF5 datatype of dataset '"
+          << tensor_component
+          << "'. Expected float, double, int, unsigned int, or unsigned long.");
   }
+}
+
+TensorComponent VolumeData::get_tensor_component(
+    const size_t observation_id, const std::string& tensor_component,
+    const size_t offset, const size_t length) const {
+  const std::string path = "ObservationId" + std::to_string(observation_id);
+  const detail::OpenGroup observation_group(volume_data_group_.id(), path,
+                                            AccessType::ReadOnly);
+
+  const hid_t dataset_id =
+      h5::open_dataset(observation_group.id(), tensor_component);
+  const hid_t dataspace_id = h5::open_dataspace(dataset_id);
+  const int rank = H5Sget_simple_extent_ndims(dataspace_id);
+  CHECK_H5(rank,
+           "Failed to get the rank of dataset '" << tensor_component << "'");
+  if (rank != 1) {
+    h5::close_dataspace(dataspace_id);
+    h5::close_dataset(dataset_id);
+    ERROR(
+        "Reading a subset of a tensor component requires a rank-1 dataset, "
+        "but dataset '"
+        << tensor_component << "' has rank " << rank << ".");
+  }
+  hsize_t dataset_length = 0;
+  CHECK_H5(H5Sget_simple_extent_dims(dataspace_id, &dataset_length, nullptr),
+           "Failed to get the size of dataset '" << tensor_component << "'");
+  const auto h5_offset = static_cast<hsize_t>(offset);
+  const auto h5_length = static_cast<hsize_t>(length);
+  if (length == 0 or h5_offset > dataset_length or
+      h5_length > dataset_length - h5_offset) {
+    h5::close_dataspace(dataspace_id);
+    h5::close_dataset(dataset_id);
+    ERROR("Requested offset "
+          << offset << " and length " << length << " from dataset '"
+          << tensor_component << "' of length " << dataset_length
+          << ". The requested subset must be non-empty and lie within the "
+             "dataset.");
+  }
+  CHECK_H5(H5Sselect_hyperslab(dataspace_id, H5S_SELECT_SET, &h5_offset,
+                               nullptr, &h5_length, nullptr),
+           "Failed to select a subset of dataset '" << tensor_component << "'");
+  const hid_t memory_space_id = H5Screate_simple(1, &h5_length, &h5_length);
+  CHECK_H5(memory_space_id,
+           "Failed to create a memory space for reading dataset '"
+               << tensor_component << "'");
+  const hid_t h5_data_type = H5Dget_type(dataset_id);
+  CHECK_H5(h5_data_type,
+           "Failed to get the type of dataset '" << tensor_component << "'");
+
+  const auto read_subset = [&dataset_id, &dataspace_id, &memory_space_id,
+                            &length, &tensor_component]<typename DataType>(
+                               tmpl::type_<DataType> /*meta*/) {
+    DataType data(length);
+    CHECK_H5(
+        H5Dread(dataset_id, h5::h5_type<tt::get_fundamental_type_t<DataType>>(),
+                memory_space_id, dataspace_id, h5::h5p_default(), data.data()),
+        "Failed to read a subset of dataset '" << tensor_component << "'");
+    return data;
+  };
+
+  TensorComponent result{};
+  if (h5::types_equal(h5_data_type, h5::h5_type<float>())) {
+    result = {tensor_component, read_subset(tmpl::type_<std::vector<float>>{})};
+  } else if (h5::types_equal(h5_data_type, h5::h5_type<double>())) {
+    result = {tensor_component, read_subset(tmpl::type_<DataVector>{})};
+  } else if (h5::types_equal(h5_data_type, h5::h5_type<int>())) {
+    const auto stored = read_subset(tmpl::type_<std::vector<int>>{});
+    DataVector data(stored.size());
+    std::ranges::copy(stored.begin(), stored.end(), data.begin());
+    result = {tensor_component, std::move(data)};
+  } else if (h5::types_equal(h5_data_type, h5::h5_type<unsigned int>())) {
+    const auto stored = read_subset(tmpl::type_<std::vector<unsigned int>>{});
+    DataVector data(stored.size());
+    std::ranges::copy(stored.begin(), stored.end(), data.begin());
+    result = {tensor_component, std::move(data)};
+  } else if (h5::types_equal(h5_data_type, h5::h5_type<unsigned long>())) {
+    const auto stored = read_subset(tmpl::type_<std::vector<unsigned long>>{});
+    DataVector data(stored.size());
+    std::ranges::copy(stored.begin(), stored.end(), data.begin());
+    result = {tensor_component, std::move(data)};
+  } else {
+    const hid_t unknown_type = h5_data_type;
+    CHECK_H5(H5Tclose(h5_data_type), "Failed to close a datatype");
+    CHECK_H5(H5Sclose(memory_space_id), "Failed to close a memory space");
+    h5::close_dataspace(dataspace_id);
+    h5::close_dataset(dataset_id);
+    ERROR("Unknown H5 type " << unknown_type);
+  }
+  CHECK_H5(H5Tclose(h5_data_type), "Failed to close a datatype");
+  CHECK_H5(H5Sclose(memory_space_id), "Failed to close a memory space");
+  h5::close_dataspace(dataspace_id);
+  h5::close_dataset(dataset_id);
+  return result;
 }
 
 std::vector<std::vector<size_t>> VolumeData::get_extents(

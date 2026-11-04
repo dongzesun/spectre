@@ -20,6 +20,7 @@
 
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataBox/TagTraits.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Parallel/ArrayComponentId.hpp"
 #include "Parallel/Callback.hpp"
 #include "Parallel/CharmRegistration.hpp"
@@ -40,7 +41,6 @@
 #include "Utilities/StdHelpers/RetrieveUniquePtr.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 #include "Utilities/TypeTraits/CreateGetTypeAliasOrDefault.hpp"
 #include "Utilities/TypeTraits/IsA.hpp"
 
@@ -267,7 +267,7 @@ class GlobalCache
   explicit GlobalCache(CkMigrateMessage* msg) : Base(msg) {}
 
   ~GlobalCache() override {
-    (void)Parallel::charmxx::RegisterChare<
+    (void)&Parallel::charmxx::RegisterChare<
         GlobalCache<Metavariables>,
         CkIndex_GlobalCache<Metavariables>>::registrar;
   }
@@ -364,8 +364,8 @@ class GlobalCache
   ///
   /// This is used when reparsing an input file to update option values during
   /// a restart from a checkpoint.
-  void overlay_cache_data(const tuples::tagged_tuple_from_typelist<
-                          Parallel::get_overlayable_option_list<Metavariables>>&
+  void overlay_cache_data(tuples::tagged_tuple_from_typelist<
+                          Parallel::get_overlayable_tag_list<Metavariables>>
                               data_to_overlay);
 
   /// Retrieve the proxy to the global cache
@@ -604,7 +604,7 @@ bool GlobalCache<Metavariables>::mutable_cache_item_is_ready(
 template <typename Metavariables>
 template <typename GlobalCacheTag, typename Function, typename... Args>
 void GlobalCache<Metavariables>::mutate(const std::tuple<Args...>& args) {
-  (void)Parallel::charmxx::RegisterGlobalCacheMutate<
+  (void)&Parallel::charmxx::RegisterGlobalCacheMutate<
       Metavariables, GlobalCacheTag, Function, Args...>::registrar;
   using tag = MutableCacheTag<GlobalCache_detail::get_matching_mutable_tag<
       GlobalCacheTag, Metavariables>>;
@@ -653,21 +653,13 @@ void GlobalCache<Metavariables>::mutate(const std::tuple<Args...>& args) {
 
 template <typename Metavariables>
 void GlobalCache<Metavariables>::overlay_cache_data(
-    const tuples::tagged_tuple_from_typelist<
-        Parallel::get_overlayable_option_list<Metavariables>>&
+    tuples::tagged_tuple_from_typelist<
+        Parallel::get_overlayable_tag_list<Metavariables>>
         data_to_overlay) {
-  // Entries in `get_overlayable_tag_list` and `get_overlayable_option_list`
-  // have a 1-to-1 mapping: one is the option tag for the other. We loop
-  // over the tag because it's easy to call tag::option_tag but not vice versa.
   tmpl::for_each<Parallel::get_overlayable_tag_list<Metavariables>>(
-      [this, &data_to_overlay](auto tag) {
-        using Tag = typename decltype(tag)::type;
-        static_assert(tmpl::size<typename Tag::option_tags>::value == 1,
-                      "The current implementation can only update tags "
-                      "constructed from a single option tag.");
-        using OptionTag = tmpl::front<typename Tag::option_tags>;
+      [this, &data_to_overlay]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
         tuples::get<Tag>(const_global_cache_) =
-            Tag::create_from_options(tuples::get<OptionTag>(data_to_overlay));
+            std::move(tuples::get<Tag>(data_to_overlay));
       });
 }
 

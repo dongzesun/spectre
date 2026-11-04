@@ -7,6 +7,7 @@
 #include "Evolution/Systems/Cce/Actions/BoundaryComputeAndSendToEvolution.hpp"
 #include "Evolution/Systems/Cce/Components/KleinGordonCharacteristicEvolution.hpp"
 #include "Evolution/Systems/Cce/IntegrandInputSteps.hpp"
+#include "Evolution/Systems/Cce/KleinGordonSystem.hpp"
 #include "Evolution/Systems/Cce/OptionTags.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Framework/TestHelpers.hpp"
@@ -17,6 +18,7 @@
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "Time/AdvanceTime.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Tags/StepperErrorEstimatesEnabled.hpp"
 #include "Time/TimeSteppers/AdamsBashforth.hpp"
 #include "Utilities/FileSystem.hpp"
@@ -85,9 +87,7 @@ struct mock_klein_gordon_characteristic_evolution {
   using initialize_action_list = tmpl::list<
       Actions::InitializeKleinGordonVariables<Metavariables>,
       Actions::InitializeCharacteristicEvolutionVariables<Metavariables>,
-      Actions::InitializeCharacteristicEvolutionTime<
-          typename Metavariables::evolved_coordinates_variables_tag,
-          typename Metavariables::evolved_swsh_tags, false>,
+      Actions::InitializeCharacteristicEvolutionTime,
       // advance the time so that the current `TimeStepId` is valid without
       // having to perform self-start.
       ::Actions::MutateApply<AdvanceTime<Tags::CceEvolutionPrefix>>,
@@ -120,10 +120,9 @@ struct mock_klein_gordon_characteristic_evolution {
                   mock_klein_gordon_characteristic_evolution<Metavariables>>>>>;
 };
 
-struct test_metavariables : CharacteristicExtractDefaults<false> {
-  using cce_base = CharacteristicExtractDefaults<false>;
-  using evolved_swsh_tags = tmpl::append<cce_base::evolved_swsh_tags,
-                                         tmpl::list<Cce::Tags::KleinGordonPsi>>;
+struct test_metavariables
+    : CharacteristicExtractDefaults<Cce::KleinGordonSystem<false>> {
+  using cce_base = CharacteristicExtractDefaults<Cce::KleinGordonSystem<false>>;
   using evolved_swsh_dt_tags =
       tmpl::append<cce_base::evolved_swsh_dt_tags,
                    tmpl::list<Cce::Tags::KleinGordonPi>>;
@@ -218,7 +217,8 @@ void test_klein_gordon_h5_boundary_communication(
                                                   false),
        start_time, number_of_radial_points,
        static_cast<std::unique_ptr<LtsTimeStepper>>(
-           std::make_unique<::TimeSteppers::AdamsBashforth>(3))}};
+           std::make_unique<::TimeSteppers::AdamsBashforth>(3)),
+       LtsMode::Conservative}};
 
   const size_t buffer_size = 5;
   ActionTesting::set_phase(make_not_null(&runner),
@@ -308,18 +308,20 @@ void test_klein_gordon_h5_boundary_communication(
           .epsilon(std::numeric_limits<double>::epsilon() * 1.0e4)
           .scale(1.0);
 
-  tmpl::for_each<
-      Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>>(
-      [&expected_boundary_variables, &runner,
-       &angular_derivative_approx](auto tag_v) {
-        using tag = typename decltype(tag_v)::type;
-        INFO(db::tag_name<tag>());
-        const auto& test_lhs =
-            ActionTesting::get_databox_tag<evolution_component, tag>(runner, 0);
-        const auto& test_rhs = get<tag>(expected_boundary_variables);
-        CHECK_ITERABLE_CUSTOM_APPROX(test_lhs, test_rhs,
-                                     angular_derivative_approx);
-      });
+  // `Du<Dr<BondiJ>>` is not populated by `create_bondi_boundary_data` (the
+  // "expected" side here), so it would compare NaN-vs-NaN; exclude it.
+  using tags_to_compare = tmpl::list_difference<
+      Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>,
+      tmpl::list<Tags::BoundaryValue<Tags::Du<Tags::Dr<Tags::BondiJ>>>>>;
+  tmpl::for_each<tags_to_compare>([&expected_boundary_variables, &runner,
+                                   &angular_derivative_approx](auto tag_v) {
+    using tag = typename decltype(tag_v)::type;
+    INFO(db::tag_name<tag>());
+    const auto& test_lhs =
+        ActionTesting::get_databox_tag<evolution_component, tag>(runner, 0);
+    const auto& test_rhs = get<tag>(expected_boundary_variables);
+    CHECK_ITERABLE_CUSTOM_APPROX(test_lhs, test_rhs, angular_derivative_approx);
+  });
 
   // then the scalar variables
   Scalar<ComplexModalVector> expected_kg_psi_modal;

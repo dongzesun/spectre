@@ -9,10 +9,13 @@
 #include <utility>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/DataBox/TagName.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Domain/CoordinateMaps/Tags.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/TagsTimeDependent.hpp"
+#include "Evolution/DiscontinuousGalerkin/BoundaryEvolvedVariables.hpp"
 #include "Evolution/Initialization/InitialData.hpp"
 #include "Evolution/Initialization/Tags.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -24,12 +27,13 @@
 #include "PointwiseFunctions/AnalyticSolutions/Tags.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/InitialData.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/Tags/InitialData.hpp"
+#include "PointwiseFunctions/InitialDataUtilities/WithNoise.hpp"
 #include "Time/Tags/Time.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace Parallel {
@@ -42,9 +46,18 @@ namespace evolution::Initialization::Actions {
 /// \ingroup InitializationGroup
 /// \brief Sets variables needed for evolution of hyperbolic systems
 ///
+/// Supports analytic solutions, analytic data, and
+/// `evolution::initial_data::WithNoise` wrappers. For `WithNoise`, the inner
+/// analytic solution sets variables normally, then uniform random noise is
+/// added to the requested evolution variables.
+///
 /// Uses:
 /// - DataBox:
 ///   * `CoordinatesTag`
+///   * `domain::CoordinateMaps::Tags::CoordinateMap` (for `WithNoise`)
+///   * `domain::Tags::ElementMap` (for `WithNoise`)
+///   * `domain::Tags::FunctionsOfTime` (for `WithNoise`)
+///   * `::Tags::Time`
 /// - GlobalCache:
 ///   * `evolution::initial_data::Tags::InitialData`
 ///
@@ -53,7 +66,12 @@ namespace evolution::Initialization::Actions {
 /// - Removes: nothing
 /// - Modifies:
 ///   * System::variables_tag (if system has no primitive variables)
-///   * System::primitive_variables_tag (if system has primitive variables)
+///   * System::primitive_variables_tag and the
+///     System::non_conservative_variables in System::variables_tag (if system
+///     has primitive variables)
+///
+/// For a system with boundary-evolved variables, only the first entry of
+/// System::variables_tag, which holds the volume variables, is modified.
 template <typename LogicalCoordinatesTag>
 struct SetVariables {
   using simple_tags_from_options = tmpl::list<::Tags::Time>;
@@ -78,6 +96,91 @@ struct SetVariables {
           if constexpr (is_analytic_data_v<initial_data_subclass> or
                         is_analytic_solution_v<initial_data_subclass>) {
             impl<Metavariables>(make_not_null(&box), *data_or_solution);
+          } else if constexpr (std::is_same_v<
+                                   initial_data_subclass,
+                                   evolution::initial_data::WithNoise>) {
+            // For these systems the noise would be added to the conservative
+            // variables, which are later recomputed from the (unperturbed)
+            // primitives by `UpdateConservatives`, silently erasing it.
+            static_assert(
+                not Metavariables::system::has_primitive_and_conservative_vars,
+                "WithNoise does not yet support systems with primitive "
+                "variables: noise would be added to the conservative "
+                "variables, which are overwritten when they are recomputed "
+                "from the primitives.");
+            // Dispatch on the inner solution to set variables normally.
+            call_with_dynamic_type<void, derived_classes>(
+                &data_or_solution->solution(), [&box](const auto* const inner) {
+                  using inner_type = std::decay_t<decltype(*inner)>;
+                  if constexpr (is_analytic_data_v<inner_type> or
+                                is_analytic_solution_v<inner_type>) {
+                    impl<Metavariables>(make_not_null(&box), *inner);
+                  } else {
+                    ERROR(
+                        "WithNoise: the inner Solution must be an analytic "
+                        "solution or analytic data. Numeric initial data "
+                        "cannot be wrapped by WithNoise.");
+                  }
+                });
+            // Compute inertial coordinates for per-element seed mixing.
+            const double initial_time = db::get<::Tags::Time>(box);
+            const auto inertial_coords =
+                db::get<::domain::CoordinateMaps::Tags::CoordinateMap<
+                    Metavariables::volume_dim, Frame::Grid, Frame::Inertial>>(
+                    box)(db::get<::domain::Tags::ElementMap<
+                             Metavariables::volume_dim, Frame::Grid>>(box)(
+                             db::get<LogicalCoordinatesTag>(box)),
+                         initial_time,
+                         db::get<::domain::Tags::FunctionsOfTime>(box));
+            const size_t element_seed =
+                evolution::initial_data::make_element_seed(
+                    data_or_solution->seed(), inertial_coords);
+            // Apply noise to each requested volume variable. For systems with
+            // boundary-evolved variables, only the volume variables (the first
+            // entry of variables_tag) receive noise.
+            using system = typename Metavariables::system;
+            using variables_tag = tmpl::conditional_t<
+                evolution::dg::system_has_boundary_variables_v<system>,
+                tmpl::front<typename system::variables_tag>,
+                typename system::variables_tag>;
+            const auto& targets = data_or_solution->variables();
+            const bool noise_all = alg::found(targets, std::string{"All"});
+            // Validate variable names against the actual tags list.
+            if (not noise_all) {
+              std::vector<std::string> valid_names{};
+              tmpl::for_each<typename variables_tag::tags_list>(
+                  [&valid_names]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+                    valid_names.push_back(db::tag_name<Tag>());
+                  });
+              for (const auto& target : targets) {
+                if (not alg::found(valid_names, target)) {
+                  ERROR("WithNoise: unknown variable name '"
+                        << target
+                        << "'. Valid names for this system are: " << valid_names
+                        << ". Use [\"All\"] to noise every variable.");
+                }
+              }
+            }
+            size_t component_offset = 0;
+            db::mutate<variables_tag>(
+                [&targets, noise_all, &data_or_solution, element_seed,
+                 &component_offset](
+                    const gsl::not_null<typename variables_tag::type*> vars) {
+                  tmpl::for_each<typename variables_tag::tags_list>(
+                      [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+                        if (noise_all or
+                            alg::found(targets, db::tag_name<Tag>())) {
+                          evolution::initial_data::add_noise_to_tensor(
+                              make_not_null(&get<Tag>(*vars)),
+                              data_or_solution->amplitude(),
+                              data_or_solution->amplitude_type(), element_seed,
+                              component_offset);
+                        }
+                        component_offset +=
+                            std::decay_t<typename Tag::type>::size();
+                      });
+                },
+                make_not_null(&box));
           } else {
             ERROR(
                 "Trying to use "
@@ -104,6 +207,10 @@ struct SetVariables {
             initial_time, db::get<::domain::Tags::FunctionsOfTime>(*box));
 
     using system = typename Metavariables::system;
+    using variables_tag = tmpl::conditional_t<
+        evolution::dg::system_has_boundary_variables_v<system>,
+        tmpl::front<typename system::variables_tag>,
+        typename system::variables_tag>;
 
     if constexpr (Metavariables::system::has_primitive_and_conservative_vars) {
       using primitives_tag = typename system::primitive_variables_tag;
@@ -120,7 +227,6 @@ struct SetVariables {
           box);
       using non_conservative_variables =
           typename system::non_conservative_variables;
-      using variables_tag = typename system::variables_tag;
       if constexpr (not std::is_same_v<non_conservative_variables,
                                        tmpl::list<>>) {
         db::mutate<variables_tag>(
@@ -135,8 +241,6 @@ struct SetVariables {
             box);
       }
     } else {
-      using variables_tag = typename system::variables_tag;
-
       // Set initial data from analytic solution
       if constexpr (not std::is_same_v<typename variables_tag::tags_list,
                                        tmpl::list<>>) {

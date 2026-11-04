@@ -10,9 +10,9 @@
 #include <vector>
 
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// Implementations of \link set_number_of_grid_points \endlink
 ///
@@ -44,10 +44,14 @@ struct SetNumberOfGridPointsImpl;
 /// be used as the number of points, otherwise it will be interpreted
 /// as data on a collection of grid points.
 ///
+/// This can be called in Kokkos kernels for types that don't need resizing,
+/// such as `double`s and tensors of `double`s, for which it does nothing.
+///
 /// \see SetNumberOfGridPointsImpls, make_with_value
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <typename T, typename U>
-void set_number_of_grid_points(const gsl::not_null<T*> result,
-                               const U& pattern) {
+KOKKOS_FUNCTION void set_number_of_grid_points(const gsl::not_null<T*> result,
+                                               const U& pattern) {
   (void)result;
   (void)pattern;
   if constexpr (not SetNumberOfGridPointsImpls::SetNumberOfGridPointsImpl<
@@ -94,15 +98,3 @@ struct SetNumberOfGridPointsImpls::SetNumberOfGridPointsImpl<std::vector<T>> {
   }
 };
 
-template <typename... Tags>
-struct SetNumberOfGridPointsImpls::SetNumberOfGridPointsImpl<
-    tuples::TaggedTuple<Tags...>> {
-  static constexpr bool is_trivial =
-      (... and SetNumberOfGridPointsImpl<typename Tags::type>::is_trivial);
-  static void apply(const gsl::not_null<tuples::TaggedTuple<Tags...>*> result,
-                    const size_t size) {
-    expand_pack((set_number_of_grid_points(
-                     make_not_null(&tuples::get<Tags>(*result)), size),
-                 0)...);
-  }
-};

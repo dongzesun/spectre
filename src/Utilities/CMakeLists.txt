@@ -72,6 +72,7 @@ spectre_target_headers(
   Rational.hpp
   Registration.hpp
   Requires.hpp
+  RuntimeCache.hpp
   SetNumberOfGridPoints.hpp
   SnakeCase.hpp
   Spherepack.hpp
@@ -82,7 +83,6 @@ spectre_target_headers(
   StlBoilerplate.hpp
   StlStreamDeclarations.hpp
   TMPL.hpp
-  TaggedTuple.hpp
   TmplDebugging.hpp
   TmplDigraph.hpp
   Tuple.hpp

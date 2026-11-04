@@ -9,8 +9,11 @@
 #include "DataStructures/CachedTempBuffer.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Elliptic/Systems/Elasticity/Tags.hpp"
+#include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Options/String.hpp"
 #include "PointwiseFunctions/Elasticity/ConstitutiveRelations/IsotropicHomogeneous.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/AnalyticSolution.hpp"
@@ -18,7 +21,6 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace Elasticity::Solutions {
 
@@ -222,6 +224,15 @@ class HalfSpaceMirror : public elliptic::analytic_data::AnalyticSolution {
                                 absolute_tolerance_,
                                 relative_tolerance_};
     return {cache.get_var(computer, RequestedTags{})...};
+  }
+
+  template <typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataVector, 3>& x, const Mesh<3>& /*mesh*/,
+      const InverseJacobian<DataVector, 3, Frame::ElementLogical,
+                            Frame::Inertial>& /*inv_jacobian*/,
+      tmpl::list<RequestedTags...> meta) const {
+    return variables(x, meta);
   }
 
   /// NOLINTNEXTLINE(google-runtime-references)

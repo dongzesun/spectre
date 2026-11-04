@@ -13,6 +13,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
@@ -38,7 +39,6 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/RegisterDerivedWithCharm.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace grmhd::ValenciaDivClean::Actions {
 namespace {
@@ -199,12 +199,23 @@ void test_numeric_initial_data(const NumericInitialData& initial_data,
   for (size_t d = 0; d < 3; ++d) {
     u_i.get(d) *= get(W);
   }
+  get<hydro::Tags::Temperature<DataVector>>(inbox) =
+      get<hydro::Tags::Temperature<DataVector>>(tov_vars);
   get<hydro::Tags::ElectronFraction<DataVector>>(inbox) =
       get<hydro::Tags::ElectronFraction<DataVector>>(tov_vars);
   get<hydro::Tags::MagneticField<DataVector, 3>>(inbox) =
       get<hydro::Tags::MagneticField<DataVector, 3>>(tov_vars);
 
   // Override variables if constant value is specified in options
+  const auto selected_temperature =
+      get<NumericInitialData::VarName<hydro::Tags::Temperature<DataVector>,
+                                      std::bool_constant<false>>>(
+          selected_vars);
+  if (std::holds_alternative<double>(selected_temperature)) {
+    get<hydro::Tags::Temperature<DataVector>>(tov_vars) =
+        make_with_value<Scalar<DataVector>>(
+            W, std::get<double>(selected_temperature));
+  }
   const auto selected_electron_fraction =
       get<NumericInitialData::VarName<hydro::Tags::ElectronFraction<DataVector>,
                                       std::bool_constant<false>>>(
@@ -242,42 +253,50 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.ValenciaDivClean.NumericInitialData",
   register_factory_classes_with_charm<Metavariables>();
   EquationsOfState::register_derived_with_charm();
   test_numeric_initial_data(
-      NumericInitialData{"TestInitialData.h5",
-                         "VolumeData",
-                         0.,
-                         {1.0e-9},
-                         false,
-                         {"CustomRho", "CustomUi", "CustomYe", "CustomB"},
-                         1.e-14},
+      NumericInitialData{
+          importers::ImporterOptions{"TestInitialData.h5", "VolumeData", 0.,
+                                     Options::Auto<double>{1.0e-9}, false,
+                                     false, Options::Auto<size_t>{1}},
+          NumericInitialData::PrimitiveVars{"CustomRho", "CustomUi", "CustomT",
+                                            "CustomYe", "CustomB"},
+          1.e-14},
       "NumericInitialData:\n"
-      "  FileGlob: TestInitialData.h5\n"
-      "  Subgroup: VolumeData\n"
-      "  ObservationValue: 0.\n"
-      "  ObservationValueEpsilon: 1e-9\n"
-      "  ElementsAreIdentical: False\n"
+      "  VolumeData:\n"
+      "    FileGlob: TestInitialData.h5\n"
+      "    Subgroup: VolumeData\n"
+      "    ObservationValue: 0.\n"
+      "    ObservationValueEpsilon: 1e-9\n"
+      "    ElementsAreIdentical: False\n"
+      "    ExtrapolateIntoExcisions: False\n"
+      "    NumThreads: 1\n"
       "  Variables:\n"
       "    RestMassDensity: CustomRho\n"
       "    LowerSpatialFourVelocity: CustomUi\n"
+      "    Temperature: CustomT\n"
       "    ElectronFraction: CustomYe\n"
       "    MagneticField: CustomB\n"
       "  DensityCutoff: 1.e-14");
   test_numeric_initial_data(
-      NumericInitialData{"TestInitialData.h5",
-                         "VolumeData",
-                         0.,
-                         std::nullopt,
-                         false,
-                         {"CustomRho", "CustomUi", 0.15, 0.},
-                         1.e-14},
+      NumericInitialData{
+          importers::ImporterOptions{"TestInitialData.h5", "VolumeData", 0.,
+                                     Options::Auto<double>{}, false, false,
+                                     Options::Auto<size_t>{1}},
+          NumericInitialData::PrimitiveVars{"CustomRho", "CustomUi", 0., 0.15,
+                                            0.},
+          1.e-14},
       "NumericInitialData:\n"
-      "  FileGlob: TestInitialData.h5\n"
-      "  Subgroup: VolumeData\n"
-      "  ObservationValue: 0.\n"
-      "  ObservationValueEpsilon: Auto\n"
-      "  ElementsAreIdentical: False\n"
+      "  VolumeData:\n"
+      "    FileGlob: TestInitialData.h5\n"
+      "    Subgroup: VolumeData\n"
+      "    ObservationValue: 0.\n"
+      "    ObservationValueEpsilon: Auto\n"
+      "    ElementsAreIdentical: False\n"
+      "    ExtrapolateIntoExcisions: False\n"
+      "    NumThreads: 1\n"
       "  Variables:\n"
       "    RestMassDensity: CustomRho\n"
       "    LowerSpatialFourVelocity: CustomUi\n"
+      "    Temperature: 0.\n"
       "    ElectronFraction: 0.15\n"
       "    MagneticField: 0.\n"
       "  DensityCutoff: 1.e-14");

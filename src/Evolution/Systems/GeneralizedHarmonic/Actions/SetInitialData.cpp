@@ -29,19 +29,22 @@ void initial_gh_variables_from_adm(
     const Scalar<DataVector>& lapse, const tnsr::I<DataVector, Dim>& shift,
     const tnsr::ii<DataVector, Dim>& extrinsic_curvature, const Mesh<Dim>& mesh,
     const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
-                          Frame::Inertial>& inv_jacobian) {
+                          Frame::Inertial>& inv_jacobian,
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords) {
   // Assemble spacetime metric from 3+1 vars
   gr::spacetime_metric(spacetime_metric, lapse, shift, spatial_metric);
 
   // Compute Phi from numerical derivative of the spacetime metric so it
   // satisfies the 3-index constraint
-  partial_derivative(phi, *spacetime_metric, mesh, inv_jacobian);
+  partial_derivative(phi, *spacetime_metric, mesh, inv_jacobian,
+                     inertial_coords);
 
   // Compute Pi by choosing dt_lapse = 0 and dt_shift = 0 (for now).
   // The mutator `SetPiAndPhiFromConstraints` should be combined with this.
   const auto deriv_spatial_metric =
       tenex::evaluate<ti::i, ti::j, ti::k>((*phi)(ti::i, ti::j, ti::k));
-  const auto deriv_shift = partial_derivative(shift, mesh, inv_jacobian);
+  const auto deriv_shift =
+      partial_derivative(shift, mesh, inv_jacobian, inertial_coords);
   const auto dt_lapse = make_with_value<Scalar<DataVector>>(lapse, 0.);
   const auto dt_shift = make_with_value<tnsr::I<DataVector, Dim>>(shift, 0.);
   const auto dt_spatial_metric = gr::time_derivative_of_spatial_metric(
@@ -52,14 +55,9 @@ void initial_gh_variables_from_adm(
 }
 
 NumericInitialData::NumericInitialData(
-    std::string file_glob, std::string subfile_name,
-    std::variant<double, importers::ObservationSelector> observation_value,
-    std::optional<double> observation_value_epsilon,
-    const bool enable_interpolation,
+    importers::ImporterOptions importer_options,
     std::variant<AdmVars, GhVars> selected_variables)
-    : importer_options_(
-          std::move(file_glob), std::move(subfile_name), observation_value,
-          observation_value_epsilon.value_or(1.0e-12), enable_interpolation),
+    : importer_options_(std::move(importer_options)),
       selected_variables_(std::move(selected_variables)) {}
 
 NumericInitialData::NumericInitialData(CkMigrateMessage* msg)
@@ -100,7 +98,8 @@ bool operator==(const NumericInitialData& lhs, const NumericInitialData& rhs) {
       const tnsr::ii<DataVector, DIM(data)>& extrinsic_curvature,             \
       const Mesh<DIM(data)>& mesh,                                            \
       const InverseJacobian<DataVector, DIM(data), Frame::ElementLogical,     \
-                            Frame::Inertial>& inv_jacobian);
+                            Frame::Inertial>& inv_jacobian,                   \
+      const tnsr::I<DataVector, DIM(data), Frame::Inertial>& inertial_coords);
 
 GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3))
 

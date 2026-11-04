@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <pup.h>
@@ -12,10 +13,15 @@
 #include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/DataBox/MetavariablesTag.hpp"
 #include "DataStructures/DataBox/ObservationBox.hpp"
 #include "DataStructures/DataBox/TagName.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Domain/Block.hpp"
+#include "Domain/Creators/Tags/Domain.hpp"
+#include "Domain/Domain.hpp"
+#include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Tags.hpp"
 #include "IO/Observer/GetSectionObservationKey.hpp"
@@ -25,8 +31,10 @@
 #include "IO/Observer/ReductionActions.hpp"
 #include "IO/Observer/TypeOfObservation.hpp"
 #include "NumericalAlgorithms/LinearOperators/DefiniteIntegral.hpp"
+#include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
+#include "Options/Auto.hpp"
 #include "Options/String.hpp"
 #include "Parallel/ArrayIndex.hpp"
 #include "Parallel/GlobalCache.hpp"
@@ -34,6 +42,7 @@
 #include "Parallel/Local.hpp"
 #include "Parallel/Reduction.hpp"
 #include "Parallel/TypeTraits.hpp"
+#include "ParallelAlgorithms/Events/ReductionScope.hpp"
 #include "ParallelAlgorithms/Events/Tags.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
@@ -42,6 +51,7 @@
 #include "Utilities/OptionalHelpers.hpp"
 #include "Utilities/PrettyType.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
+#include "Utilities/Serialization/PupStlCpp17.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace Events {
@@ -49,22 +59,42 @@ namespace Events {
 /*!
  * \brief Compute norms of tensors in the DataBox and write them to disk.
  *
- * The L2 norm is computed as the RMS, so
+ * The L1 norm is computed as the mean absolute value, so
  *
  * \f{align*}{
- * L_2(u)=\sqrt{\frac{1}{N}\sum_{i=0}^{N} u_i^2}
+ * L_1(u)=\frac{1}{N}\sum_{i=0}^{N-1} |u_i|
  * \f}
  *
  * where \f$N\f$ is the number of grid points.
  *
- * The norm can be taken for each individual component, or summed over
- * components. For the max/min it is then the max/min over all components, while
- * for the L2 norm we have (for a 3d vector, 2d and 1d are similar)
+ * The L2 norm is computed as the RMS, so
  *
  * \f{align*}{
- * L_2(v^k)=\sqrt{\frac{1}{N}\sum_{i=0}^{N} \left[(v^x_i)^2 + (v^y_i)^2
+ * L_2(u)=\sqrt{\frac{1}{N}\sum_{i=0}^{N-1} u_i^2}
+ * \f}
+ *
+ * The norm can be taken for each individual component, or summed over
+ * components. For the max/min it is then the max/min over all components, while
+ * for the L1 norm we have (for a 3d vector, 2d and 1d are similar)
+ *
+ * \f{align*}{
+ * L_1(v^k)=\frac{1}{N}\sum_{i=0}^{N-1} \left[|v^x_i| + |v^y_i|
+ *          + |v^z_i|\right]
+ * \f}
+ *
+ * and for the L2 norm
+ *
+ * \f{align*}{
+ * L_2(v^k)=\sqrt{\frac{1}{N}\sum_{i=0}^{N-1} \left[(v^x_i)^2 + (v^y_i)^2
  *          + (v^z_i)^2\right]}
  * \f}
+ *
+ * The L1 integral norm is:
+ *
+ * \begin{equation}
+ * L_{1,\mathrm{int}}(v^k) = \frac{1}{V}\int_\Omega \left[
+ *   |v^x_i| + |v^y_i| + |v^z_i|\right] \mathrm{d}V
+ * \end{equation}
  *
  * The L2 integral norm is:
  *
@@ -73,7 +103,7 @@ namespace Events {
  *   (v^x_i)^2 + (v^y_i)^2 + (v^z_i)^2\right] \mathrm{d}V}
  * \end{equation}
  *
- * where $V=\int_\Omega$ is the volume of the entire domain in inertial
+ * where $V=\int_\Omega$ is the volume of all observed elements in inertial
  * coordinates.
  *
  * VolumeIntegral only computes the volume integral without any normalization.
@@ -85,12 +115,38 @@ namespace Events {
  * \note The `NonTensorComputeTags` are intended to be used for `Variables`
  * compute tags like `Tags::DerivCompute`
  *
+ * \par Observing a subset of blocks
+ * The `BlocksToObserve` option restricts the observation to the listed blocks
+ * and block groups. Set it to `All` to observe the whole domain. The number of
+ * points, volume, and all norms are then computed over the observed elements
+ * only.
+ *
+ * \par Reduction scope
+ * The `ReductionScope` option (see `Events::ReductionScope`) controls whether
+ * the observed elements are reduced together or split up by block:
+ * - `WholeDomain`: a single reduction over all observed elements, written to
+ *   the subfile `<SubfileName>.dat`.
+ * - `ByBlock`: a separate reduction for each observed block, written to
+ *   `<SubfileName>/<BlockName>.dat`. Block groups listed in `BlocksToObserve`
+ *   are expanded to their blocks.
+ * - `ByBlockOrGroup`: a separate reduction for each entry of `BlocksToObserve`,
+ *   written to `<SubfileName>/<BlockOrGroupName>.dat`. A block group is reduced
+ *   as a whole. Since each element contributes to only one reduction, the
+ *   entries must not overlap (e.g. a group and one of its blocks). When
+ *   `BlocksToObserve` is `All` this is the same as `ByBlock`.
+ *
+ * To observe norms both over the whole domain and per block, add two
+ * `ObserveNorms` events with different `SubfileName`s, one with
+ * `ReductionScope: WholeDomain` and one with `ReductionScope: ByBlock`.
+ *
  * \par Array sections
  * This event supports sections (see `Parallel::Section`). Set the
  * `ArraySectionIdTag` template parameter to split up observations into subsets
  * of elements. The `observers::Tags::ObservationKey<ArraySectionIdTag>` must be
  * available in the DataBox. It identifies the section and is used as a suffix
- * for the path in the output file.
+ * for the path in the output file. When combined with a `ReductionScope` other
+ * than `WholeDomain`, the per-block subfiles are placed in the group
+ * `<SubfileName><SectionSuffix>/`.
  *
  * \par Option name
  * The `OptionName` template parameter is used to give the event a name in the
@@ -122,8 +178,8 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
     struct NormType {
       using type = std::string;
       static constexpr Options::String help = {
-          "The type of norm to use. Must be one of Max, Min, L2Norm, "
-          "L2IntegralNorm, or VolumeIntegral."};
+          "The type of norm to use. Must be one of Max, Min, L1Norm, "
+          "L1IntegralNorm, L2Norm, L2IntegralNorm, or VolumeIntegral."};
     };
     struct Components {
       using type = std::string;
@@ -157,6 +213,14 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
       // Min
       Parallel::ReductionDatum<std::vector<double>,
                                funcl::ElementWise<funcl::Min<>>>,
+      // L1Norm
+      Parallel::ReductionDatum<
+          std::vector<double>, funcl::ElementWise<funcl::Plus<>>,
+          funcl::ElementWise<funcl::Divides<>>, std::index_sequence<1>>,
+      // L1IntegralNorm
+      Parallel::ReductionDatum<
+          std::vector<double>, funcl::ElementWise<funcl::Plus<>>,
+          funcl::ElementWise<funcl::Divides<>>, std::index_sequence<2>>,
       // L2Norm
       Parallel::ReductionDatum<
           std::vector<double>, funcl::ElementWise<funcl::Plus<>>,
@@ -169,7 +233,7 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
           std::index_sequence<2>>,
       // VolumeIntegral
       Parallel::ReductionDatum<std::vector<double>,
-                             funcl::ElementWise<funcl::Plus<>>>>;
+                               funcl::ElementWise<funcl::Plus<>>>>;
 
  public:
   static std::string name() {
@@ -193,28 +257,50 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
     static constexpr Options::String help = {
         "List specifying each tensor to observe and how it is reduced."};
   };
+  /// \brief A list of block or group names on which to observe.
+  ///
+  /// Set to `All` to observe everywhere.
+  struct BlocksToObserve {
+    using type =
+        Options::Auto<std::vector<std::string>, Options::AutoLabel::All>;
+    static constexpr Options::String help = {
+        "A list of block and group names on which to observe."};
+  };
+  /// \brief Whether to reduce over all observed elements or separately for
+  /// each block or group.
+  struct ReductionScope {
+    using type = ::Events::ReductionScope;
+    static constexpr Options::String help = {
+        "How to group the observed elements into reductions: WholeDomain, "
+        "ByBlock, or ByBlockOrGroup."};
+  };
 
   explicit ObserveNorms(CkMigrateMessage* msg);
   using PUP::able::register_constructor;
   WRAPPED_PUPable_decl_template(ObserveNorms);  // NOLINT
 
-  using options = tmpl::list<SubfileName, TensorsToObserve>;
+  using options = tmpl::list<SubfileName, TensorsToObserve, BlocksToObserve,
+                             ReductionScope>;
 
   static constexpr Options::String help =
       "Observe norms of tensors in the DataBox.\n"
       "\n"
-      "You can choose the norm type for each observation. Note that the\n"
-      "'L2Norm' (root mean square) emphasizes regions of the domain with many\n"
-      "grid points, whereas the 'L2IntegralNorm' emphasizes regions of the\n"
-      "domain with large volume. Choose wisely! When in doubt, try the\n"
-      "'L2Norm' first.\n"
+      "You can choose the norm type for each observation. Note that 'L1Norm'\n"
+      "(mean absolute value) and 'L2Norm' (root mean square) emphasize "
+      "regions\n"
+      "of the domain with many grid points, whereas 'L1IntegralNorm' and\n"
+      "'L2IntegralNorm' emphasize regions of the domain with large volume.\n"
+      "Choose wisely! When in doubt, try the 'L2Norm' first.\n"
       "\n"
       "Writes reduction quantities:\n"
       " * Observation value (e.g. Time or IterationId)\n"
-      " * NumberOfPoints = total number of points in the domain\n"
-      " * Volume = total volume of the domain in inertial coordinates\n"
+      " * NumberOfPoints = total number of points in the observed elements\n"
+      " * Volume = total volume of the observed elements in inertial "
+      "coordinates\n"
       " * Max values\n"
       " * Min values\n"
+      " * L1-norm values\n"
+      " * L1 integral norm values\n"
       " * L2-norm values\n"
       " * L2 integral norm values\n"
       " * Volume integral values\n";
@@ -222,7 +308,10 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
   ObserveNorms() = default;
 
   ObserveNorms(const std::string& subfile_name,
-               const std::vector<ObserveTensor>& observe_tensors);
+               const std::vector<ObserveTensor>& observe_tensors,
+               std::optional<std::vector<std::string>> blocks_to_observe = {},
+               ::Events::ReductionScope reduction_scope =
+                   ::Events::ReductionScope::WholeDomain);
 
   using observed_reduction_data_tags =
       observers::make_reduction_data_tags<tmpl::list<ReductionData>>;
@@ -260,14 +349,18 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
       std::pair<observers::TypeOfObservation, observers::ObservationKey>>
   get_observation_type_and_key_for_registration(
       const db::DataBox<DbTagsList>& box) const {
-    const std::optional<std::string> section_observation_key =
-        observers::get_section_observation_key<ArraySectionIdTag>(box);
-    if (not section_observation_key.has_value()) {
+    using metavariables =
+        std::decay_t<decltype(db::get<Parallel::Tags::Metavariables>(box))>;
+    constexpr size_t volume_dim = metavariables::volume_dim;
+    const std::optional<std::string> subfile_path = subfile_path_for_element(
+        observers::get_section_observation_key<ArraySectionIdTag>(box),
+        db::get<domain::Tags::Domain<volume_dim>>(box),
+        db::get<domain::Tags::Element<volume_dim>>(box).id());
+    if (not subfile_path.has_value()) {
       return std::nullopt;
     }
     return {{observers::TypeOfObservation::Reduction,
-             observers::ObservationKey(
-                 subfile_path_ + section_observation_key.value() + ".dat")}};
+             observers::ObservationKey(subfile_path.value() + ".dat")}};
   }
 
   using is_ready_argument_tags = tmpl::list<>;
@@ -285,10 +378,20 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
   void pup(PUP::er& p) override;
 
  private:
+  // The path of the subfile (without extension) that the element contributes
+  // to, or `std::nullopt` if the element is not observed.
+  template <size_t Dim>
+  std::optional<std::string> subfile_path_for_element(
+      const std::optional<std::string>& section_observation_key,
+      const Domain<Dim>& domain, const ElementId<Dim>& element_id) const;
+
   std::string subfile_path_;
   std::vector<std::string> tensor_names_{};
   std::vector<std::string> tensor_norm_types_{};
   std::vector<std::string> tensor_components_{};
+  std::optional<std::vector<std::string>> blocks_to_observe_{};
+  ::Events::ReductionScope reduction_scope_{
+      ::Events::ReductionScope::WholeDomain};
 };
 /// @}
 
@@ -304,10 +407,14 @@ template <typename... ObservableTensorTags, typename... NonTensorComputeTags,
           typename ArraySectionIdTag, typename OptionName>
 ObserveNorms<tmpl::list<ObservableTensorTags...>,
              tmpl::list<NonTensorComputeTags...>, ArraySectionIdTag,
-             OptionName>::ObserveNorms(const std::string& subfile_name,
-                                       const std::vector<ObserveTensor>&
-                                           observe_tensors)
-    : subfile_path_("/" + subfile_name) {
+             OptionName>::
+    ObserveNorms(const std::string& subfile_name,
+                 const std::vector<ObserveTensor>& observe_tensors,
+                 std::optional<std::vector<std::string>> blocks_to_observe,
+                 const ::Events::ReductionScope reduction_scope)
+    : subfile_path_("/" + subfile_name),
+      blocks_to_observe_(std::move(blocks_to_observe)),
+      reduction_scope_(reduction_scope) {
   tensor_names_.reserve(observe_tensors.size());
   tensor_norm_types_.reserve(observe_tensors.size());
   tensor_components_.reserve(observe_tensors.size());
@@ -336,12 +443,14 @@ ObserveNorms<
                      << tensor << "' is not known. Known tensors are: "
                      << ((db::tag_name<ObservableTensorTags>() + ",") + ...));
   }
-  if (norm_type != "Max" and norm_type != "Min" and norm_type != "L2Norm" and
+  if (norm_type != "Max" and norm_type != "Min" and norm_type != "L1Norm" and
+      norm_type != "L1IntegralNorm" and norm_type != "L2Norm" and
       norm_type != "L2IntegralNorm" and norm_type != "VolumeIntegral") {
     PARSE_ERROR(
         context,
-        "NormType must be one of Max, Min, L2Norm, L2IntegralNorm, or "
-            "VolumeIntegral not " << norm_type);
+        "NormType must be one of Max, Min, L1Norm, L1IntegralNorm, L2Norm, "
+        "L2IntegralNorm, or VolumeIntegral not "
+            << norm_type);
   }
   if (components != "Individual" and components != "Sum") {
     PARSE_ERROR(context,
@@ -409,6 +518,30 @@ void ObserveNorms<tmpl::list<ObservableTensorTags...>,
 
 template <typename... ObservableTensorTags, typename... NonTensorComputeTags,
           typename ArraySectionIdTag, typename OptionName>
+template <size_t Dim>
+std::optional<std::string> ObserveNorms<tmpl::list<ObservableTensorTags...>,
+                                        tmpl::list<NonTensorComputeTags...>,
+                                        ArraySectionIdTag, OptionName>::
+    subfile_path_for_element(
+        const std::optional<std::string>& section_observation_key,
+        const Domain<Dim>& domain, const ElementId<Dim>& element_id) const {
+  // Skip observation on elements that are not part of a section
+  if (not section_observation_key.has_value()) {
+    return std::nullopt;
+  }
+  const std::optional<std::string> block_suffix =
+      ::Events::reduction_subfile_suffix(
+          reduction_scope_, blocks_to_observe_,
+          domain.blocks().at(element_id.block_id()).name(),
+          domain.block_names(), domain.block_groups());
+  if (not block_suffix.has_value()) {
+    return std::nullopt;
+  }
+  return subfile_path_ + section_observation_key.value() + block_suffix.value();
+}
+
+template <typename... ObservableTensorTags, typename... NonTensorComputeTags,
+          typename ArraySectionIdTag, typename OptionName>
 template <typename ComputeTagsList, typename DataBoxType,
           typename Metavariables, size_t VolumeDim, typename ParallelComponent>
 void ObserveNorms<tmpl::list<ObservableTensorTags...>,
@@ -419,25 +552,26 @@ operator()(const ObservationBox<ComputeTagsList, DataBoxType>& box,
            const ElementId<VolumeDim>& array_index,
            const ParallelComponent* const /*meta*/,
            const ObservationValue& observation_value) const {
-  // Skip observation on elements that are not part of a section
-  const std::optional<std::string> section_observation_key =
-      observers::get_section_observation_key<ArraySectionIdTag>(box);
-  if (not section_observation_key.has_value()) {
+  // Skip observation on elements that are not part of a section or not in an
+  // observed block
+  const std::optional<std::string> subfile_path = subfile_path_for_element(
+      observers::get_section_observation_key<ArraySectionIdTag>(box),
+      get<domain::Tags::Domain<VolumeDim>>(box), array_index);
+  if (not subfile_path.has_value()) {
     return;
   }
 
   const auto& mesh = get<::Events::Tags::ObserverMesh<VolumeDim>>(box);
   const auto det_jacobian = [&box, &mesh]() -> DataVector {
     if constexpr (VolumeDim == 3 and
-                  db::tag_is_retrievable_v<
-                      domain::Tags::Coordinates<VolumeDim, Frame::Inertial>,
-                      std::decay_t<decltype(box)>>) {
+                  db::tag_is_retrievable_v<::Events::Tags::ObserverCoordinates<
+                                               VolumeDim, Frame::Inertial>,
+                                           std::decay_t<decltype(box)>>) {
       if (mesh.basis(2) == Spectral::Basis::Cartoon) {
         if (mesh.quadrature(2) == Spectral::Quadrature::SphericalSymmetry) {
           // Spherical Symmetry, needs x^2 cartesian to spherical jacobian
-          return square(get<0>(
-                     get<domain::Tags::Coordinates<VolumeDim, Frame::Inertial>>(
-                         box))) /
+          return square(get<0>(get<::Events::Tags::ObserverCoordinates<
+                                   VolumeDim, Frame::Inertial>>(box))) /
                  get(get<::Events::Tags::ObserverDetInvJacobian<
                          Frame::ElementLogical, Frame::Inertial>>(box));
         } else {
@@ -445,21 +579,17 @@ operator()(const ObservationBox<ComputeTagsList, DataBoxType>& box,
           ASSERT(mesh.quadrature(2) == Spectral::Quadrature::AxialSymmetry,
                  "Unexpected quadrature " << mesh.quadrature(2)
                                           << " (expected AxialSymmetry)");
-          return get<0>(
-                     get<domain::Tags::Coordinates<VolumeDim, Frame::Inertial>>(
-                         box)) /
+          return get<0>(get<::Events::Tags::ObserverCoordinates<
+                            VolumeDim, Frame::Inertial>>(box)) /
                  get(get<::Events::Tags::ObserverDetInvJacobian<
                          Frame::ElementLogical, Frame::Inertial>>(box));
         }
-      } else {
-        return 1. / get(get<::Events::Tags::ObserverDetInvJacobian<
-                            Frame::ElementLogical, Frame::Inertial>>(box));
       }
     } else {
       (void)mesh;
-      return 1. / get(get<::Events::Tags::ObserverDetInvJacobian<
-                          Frame::ElementLogical, Frame::Inertial>>(box));
     }
+    return 1. / get(get<::Events::Tags::ObserverDetInvJacobian<
+                        Frame::ElementLogical, Frame::Inertial>>(box));
   }();
   const size_t number_of_points = mesh.number_of_grid_points();
   const double local_volume = definite_integral(det_jacobian, mesh);
@@ -482,6 +612,11 @@ operator()(const ObservationBox<ComputeTagsList, DataBoxType>& box,
                 norm_values_and_names["Max"].second.end());
   legend.insert(legend.end(), norm_values_and_names["Min"].second.begin(),
                 norm_values_and_names["Min"].second.end());
+  legend.insert(legend.end(), norm_values_and_names["L1Norm"].second.begin(),
+                norm_values_and_names["L1Norm"].second.end());
+  legend.insert(legend.end(),
+                norm_values_and_names["L1IntegralNorm"].second.begin(),
+                norm_values_and_names["L1IntegralNorm"].second.end());
   legend.insert(legend.end(), norm_values_and_names["L2Norm"].second.begin(),
                 norm_values_and_names["L2Norm"].second.end());
   legend.insert(legend.end(),
@@ -491,8 +626,7 @@ operator()(const ObservationBox<ComputeTagsList, DataBoxType>& box,
                 norm_values_and_names["VolumeIntegral"].second.begin(),
                 norm_values_and_names["VolumeIntegral"].second.end());
 
-  const std::string subfile_path_with_suffix =
-      subfile_path_ + section_observation_key.value();
+  const std::string& subfile_path_with_suffix = subfile_path.value();
   // Send data to reduction observer
   auto& local_observer = *Parallel::local_branch(
       Parallel::get_parallel_component<
@@ -510,6 +644,8 @@ operator()(const ObservationBox<ComputeTagsList, DataBoxType>& box,
       local_volume,
       std::move(norm_values_and_names["Max"].first),
       std::move(norm_values_and_names["Min"].first),
+      std::move(norm_values_and_names["L1Norm"].first),
+      std::move(norm_values_and_names["L1IntegralNorm"].first),
       std::move(norm_values_and_names["L2Norm"].first),
       std::move(norm_values_and_names["L2IntegralNorm"].first),
       std::move(norm_values_and_names["VolumeIntegral"].first)};
@@ -538,6 +674,8 @@ void ObserveNorms<tmpl::list<ObservableTensorTags...>,
   p | tensor_names_;
   p | tensor_norm_types_;
   p | tensor_components_;
+  p | blocks_to_observe_;
+  p | reduction_scope_;
 }
 
 // NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)

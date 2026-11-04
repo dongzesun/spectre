@@ -3,27 +3,38 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
-#include <string>
+#include <vector>
 
+#include "DataStructures/ComplexDataVector.hpp"
+#include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/DataVector.hpp"
 #include "DataStructures/SpinWeighted.hpp"
 #include "DataStructures/Tags.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/Cce/GaugeTransformBoundaryData.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
+#include "NumericalAlgorithms/Interpolation/SpanInterpolator.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshCollocation.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshDerivatives.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshInterpolation.hpp"
+#include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshTags.hpp"
 #include "Options/String.hpp"
 #include "Parallel/NodeLock.hpp"
-#include "Parallel/Printf/Printf.hpp"
+#include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
-class ComplexDataVector;
+namespace Cce::Solutions::LinearizedBondiSachs_detail::InitializeJ {
+struct LinearizedBondiSachs;
+}  // namespace Cce::Solutions::LinearizedBondiSachs_detail::InitializeJ
 /// \endcond
 
 namespace Cce {
@@ -40,8 +51,82 @@ struct NoOpFinalize {
       const Scalar<SpinWeighted<ComplexDataVector, 0>>& /*gauge_d*/,
       const tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>&
       /*angular_cauchy_coordinates*/,
-      const Spectral::Swsh::SwshInterpolator& /*interpolator*/) const {
+      const Spectral::Swsh::SwshInterpolator& /*interpolator*/) const {}
+};
+
+// eth of the Cartesian coordinates x^i on the identity grid. The angular solves
+// interpolate these onto the current map at each iteration, rather than
+// differentiating the displaced coordinates, which aliases and raises the
+// residual floor.
+void unit_sphere_eth_cartesian_coordinates(
+    gsl::not_null<SpinWeighted<ComplexDataVector, 1>*> eth_x,
+    gsl::not_null<SpinWeighted<ComplexDataVector, 1>*> eth_y,
+    gsl::not_null<SpinWeighted<ComplexDataVector, 1>*> eth_z, size_t l_max);
+
+// Normalize the Cartesian coordinates of the current map, and update its
+// angular coordinates, interpolator and Jacobians to match.
+void update_angular_coordinates_and_jacobians(
+    gsl::not_null<tnsr::i<DataVector, 3>*> cartesian_cauchy_coordinates,
+    gsl::not_null<
+        tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
+        angular_cauchy_coordinates,
+    gsl::not_null<Spectral::Swsh::SwshInterpolator*> interpolator,
+    gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 2>>*> gauge_c,
+    gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 0>>*> gauge_d,
+    size_t l_max);
+
+// What an angular solve does when it stops above its tolerance.
+// `Uninitialized` catches a default-constructed value and is an error to pass.
+enum class UnconvergedAngularSolve : uint8_t {
+  Uninitialized,
+  Error,
+  Warn,
+  Silent
+};
+
+// The residual of the map an angular solve hands back, and the number of
+// coordinate updates it performed.
+struct AngularSolveResult {
+  double max_error = std::numeric_limits<double>::signaling_NaN();
+  size_t number_of_coordinate_updates = 0;
+};
+
+// Abort if `max_error` exceeds `error_threshold` or is not a number.
+void check_angular_solve_error_threshold(double max_error,
+                                         double error_threshold);
+
+// Report an angular solve that stopped above its tolerance as an error, a
+// warning or not at all. The messages describe `tolerance` as a target for
+// `max_error`, the role it has in the default convergence test.
+void report_unconverged_angular_solve(UnconvergedAngularSolve if_unconverged,
+                                      double tolerance,
+                                      size_t number_of_iterations,
+                                      double max_error);
+
+// used to provide a default for the convergence test in
+// `iteratively_adapt_angular_coordinates`
+struct ResidualBelowTolerance {
+  bool operator()(const double max_error, const double tolerance) const {
+    return max_error < tolerance;
   }
+};
+
+// Records the running minimum of the residuals of an angular solve, and tells
+// when it has improved by less than a relative `tolerance` over the last
+// `window` iterations. Unlike the change between iterations, this is not held
+// open by round-off noise on a slow descent.
+class ResidualPlateau {
+ public:
+  explicit ResidualPlateau(size_t window);
+
+  void record(double residual);
+
+  // False until `window + 1` residuals are recorded.
+  bool stopped_improving(double tolerance) const;
+
+ private:
+  size_t window_;
+  std::vector<double> smallest_residual_;
 };
 
 // perform an iterative solve for the set of angular coordinates. The iteration
@@ -75,27 +160,38 @@ struct NoOpFinalize {
 // is not currently an optimization priority. If this function becomes a
 // bottleneck, the numerical procedure of the iterative method or the choice of
 // approximation used for `iteration_function` should be revisited.
-template <typename IterationFunctor, typename FinalizeFunctor = NoOpFinalize>
-double iteratively_adapt_angular_coordinates(
+//
+// The solve stops once `has_converged(max_error, tolerance)` holds (by default
+// `max_error < tolerance`) or after `max_steps` steps, and hands back the best
+// map it evaluated. `has_converged` is called once after each evaluation of
+// `iteration_function` in the loop, but not after the final re-evaluation of
+// the best map. A caller with another convergence test passes
+// `UnconvergedAngularSolve::Silent` and reports a failure itself, since the
+// other modes describe `tolerance` as a target for `max_error`. With
+// `initialize_coordinates = false` it continues from the map the caller
+// supplies.
+template <typename IterationFunctor, typename FinalizeFunctor = NoOpFinalize,
+          typename ConvergenceTest = ResidualBelowTolerance>
+AngularSolveResult iteratively_adapt_angular_coordinates(
     const gsl::not_null<tnsr::i<DataVector, 3>*> cartesian_cauchy_coordinates,
     const gsl::not_null<
         tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
         angular_cauchy_coordinates,
     const size_t l_max, const double tolerance, const size_t max_steps,
     const double error_threshold, const IterationFunctor& iteration_function,
-    const bool require_convergence,
-    const FinalizeFunctor finalize_function = NoOpFinalize{}) {
+    const UnconvergedAngularSolve if_unconverged,
+    const FinalizeFunctor finalize_function = NoOpFinalize{},
+    const bool initialize_coordinates = true,
+    const ConvergenceTest& has_converged = ResidualBelowTolerance{}) {
   const size_t number_of_angular_points =
       Spectral::Swsh::number_of_swsh_collocation_points(l_max);
 
-  Spectral::Swsh::create_angular_and_cartesian_coordinates(
-      cartesian_cauchy_coordinates, angular_cauchy_coordinates, l_max);
+  if (initialize_coordinates) {
+    Spectral::Swsh::create_angular_and_cartesian_coordinates(
+        cartesian_cauchy_coordinates, angular_cauchy_coordinates, l_max);
+  }
 
   Variables<tmpl::list<
-      // cartesian coordinates
-      ::Tags::TempSpinWeightedScalar<0, 0>,
-      ::Tags::TempSpinWeightedScalar<1, 0>,
-      ::Tags::TempSpinWeightedScalar<2, 0>,
       // eth of cartesian coordinates
       ::Tags::TempSpinWeightedScalar<3, 1>,
       ::Tags::TempSpinWeightedScalar<4, 1>,
@@ -116,29 +212,15 @@ double iteratively_adapt_angular_coordinates(
       ::Tags::TempSpinWeightedScalar<15, 0>>>
       computation_buffers{number_of_angular_points};
 
-  auto& x = get(get<::Tags::TempSpinWeightedScalar<0, 0>>(computation_buffers));
-  auto& y = get(get<::Tags::TempSpinWeightedScalar<1, 0>>(computation_buffers));
-  auto& z = get(get<::Tags::TempSpinWeightedScalar<2, 0>>(computation_buffers));
-
-  x.data() =
-      std::complex<double>(1.0, 0.0) * get<0>(*cartesian_cauchy_coordinates);
-  y.data() =
-      std::complex<double>(1.0, 0.0) * get<1>(*cartesian_cauchy_coordinates);
-  z.data() =
-      std::complex<double>(1.0, 0.0) * get<2>(*cartesian_cauchy_coordinates);
-
   auto& eth_x =
       get(get<::Tags::TempSpinWeightedScalar<3, 1>>(computation_buffers));
   auto& eth_y =
       get(get<::Tags::TempSpinWeightedScalar<4, 1>>(computation_buffers));
   auto& eth_z =
       get(get<::Tags::TempSpinWeightedScalar<5, 1>>(computation_buffers));
-
-  Spectral::Swsh::angular_derivatives<
-      tmpl::list<Spectral::Swsh::Tags::Eth, Spectral::Swsh::Tags::Eth,
-                 Spectral::Swsh::Tags::Eth>>(l_max, 1, make_not_null(&eth_x),
-                                             make_not_null(&eth_y),
-                                             make_not_null(&eth_z), x, y, z);
+  unit_sphere_eth_cartesian_coordinates(make_not_null(&eth_x),
+                                        make_not_null(&eth_y),
+                                        make_not_null(&eth_z), l_max);
 
   auto& evolution_gauge_eth_x_step =
       get(get<::Tags::TempSpinWeightedScalar<6, 1>>(computation_buffers));
@@ -166,44 +248,38 @@ double iteratively_adapt_angular_coordinates(
 
   double max_error = 1.0;
   size_t number_of_steps = 0;
+  bool converged = false;
   Spectral::Swsh::SwshInterpolator iteration_interpolator;
+
+  const auto evaluate_current_map = [&]() {
+    update_angular_coordinates_and_jacobians(
+        cartesian_cauchy_coordinates, angular_cauchy_coordinates,
+        make_not_null(&iteration_interpolator), make_not_null(&gauge_c),
+        make_not_null(&gauge_d), l_max);
+    return iteration_function(make_not_null(&gauge_c_step),
+                              make_not_null(&gauge_d_step), gauge_c, gauge_d,
+                              iteration_interpolator);
+  };
+
+  // The best map is copied before `evaluate_current_map` normalizes it, so that
+  // evaluating it again on the rewind reproduces its residual bit for bit.
+  auto unevaluated_cartesian_cauchy_coordinates = *cartesian_cauchy_coordinates;
+  auto best_cartesian_cauchy_coordinates = *cartesian_cauchy_coordinates;
+  double best_max_error = std::numeric_limits<double>::max();
+
   while (true) {
-    GaugeUpdateAngularFromCartesian<
-        Tags::CauchyAngularCoords,
-        Tags::CauchyCartesianCoords>::apply(angular_cauchy_coordinates,
-                                            cartesian_cauchy_coordinates);
-
-    iteration_interpolator = Spectral::Swsh::SwshInterpolator{
-        get<0>(*angular_cauchy_coordinates),
-        get<1>(*angular_cauchy_coordinates), l_max};
-
-    GaugeUpdateJacobianFromCoordinates<
-        Tags::PartiallyFlatGaugeC, Tags::PartiallyFlatGaugeD,
-        Tags::CauchyAngularCoords,
-        Tags::CauchyCartesianCoords>::apply(make_not_null(&gauge_c),
-                                            make_not_null(&gauge_d),
-                                            angular_cauchy_coordinates,
-                                            *cartesian_cauchy_coordinates,
-                                            l_max);
-
-    max_error = iteration_function(make_not_null(&gauge_c_step),
-                                   make_not_null(&gauge_d_step), gauge_c,
-                                   gauge_d, iteration_interpolator);
-
-    if (max_error > error_threshold) {
-      ERROR(
-          "Iterative solve for surface coordinates of initial data failed. The "
-          "strain is too large to be fully eliminated by a well-behaved "
-          "alteration of the spherical mesh. This could be an indication that "
-          "there is an issue with the worldtube data. If you are confident "
-          "the worldtube data is correct, then please use an alternative "
-          "initial data generator such as `InverseCubic`. If that fails, "
-          "please double check that your spherical harmonic modes are decaying "
-          "correctly with increasing (l,m).\nError: "
-          << max_error << "\nError threshold: " << error_threshold);
+    unevaluated_cartesian_cauchy_coordinates = *cartesian_cauchy_coordinates;
+    max_error = evaluate_current_map();
+    if (max_error < best_max_error) {
+      best_max_error = max_error;
+      best_cartesian_cauchy_coordinates =
+          unevaluated_cartesian_cauchy_coordinates;
     }
+
+    check_angular_solve_error_threshold(max_error, error_threshold);
     ++number_of_steps;
-    if (max_error < tolerance or number_of_steps > max_steps) {
+    converged = has_converged(max_error, tolerance);
+    if (converged or number_of_steps > max_steps) {
       break;
     }
     // using the evolution_gauge_.._step as temporary buffers for the
@@ -237,31 +313,184 @@ double iteratively_adapt_angular_coordinates(
     get<2>(*cartesian_cauchy_coordinates) += real(z_step.data());
   }
 
+  if (best_max_error < max_error) {
+    *cartesian_cauchy_coordinates = best_cartesian_cauchy_coordinates;
+    max_error = evaluate_current_map();
+  }
+
   finalize_function(gauge_c, gauge_d, *angular_cauchy_coordinates,
                     iteration_interpolator);
 
-  if (tolerance < max_error) {
-    if (require_convergence) {
-      ERROR(
-          "Initial data iterative angular solve did not reach "
-          "target tolerance "
-          << tolerance << ".\n"
-          << "Exited after " << max_steps
-          << " iterations, achieving final\n"
-             "maximum over collocation points deviation of J from target of "
-          << max_error);
-    } else {
-      Parallel::printf(
-          "Warning: iterative angular solve did not reach "
-          "target tolerance %e.\n"
-          "Exited after %zu iterations, achieving final maximum over "
-          "collocation points for deviation from target of %e\n"
-          "Proceeding with evolution using the partial result from partial "
-          "angular solve.\n",
-          tolerance, max_steps, max_error);
-    }
+  // The loop evaluates once more than it updates.
+  const size_t number_of_coordinate_updates = number_of_steps - 1;
+  if (not converged) {
+    report_unconverged_angular_solve(if_unconverged, tolerance,
+                                     number_of_coordinate_updates, max_error);
   }
-  return max_error;
+  return {.max_error = max_error,
+          .number_of_coordinate_updates = number_of_coordinate_updates};
+}
+
+// Solve for the partially flat angular coordinates with a displacement
+// generated by a single spin-weight-1 potential \eta,
+//
+//     \delta \hat x^i = Re(\eta conj(\eth x^i)|_{\hat x}),
+//
+// where \eth x^i, the eth of the Cartesian coordinates on the identity grid, is
+// evaluated at the current map \hat x.
+// `iteratively_adapt_angular_coordinates` prescribes both Jacobian variations,
+// four real functions for a map that has two, so only part of each requested
+// step is realized. Here the variation of \hat c at the identity is \eth \eta,
+// so the step to the target Jacobian \hat c_* is one application of \eth^{-1},
+//
+//     \eta = \eth^{-1}(\hat c_* - \hat c),
+//
+// and \hat d follows from the map. \eth^{-1} leaves the l = 1 part of \eta at
+// zero: \eth annihilates it, and it is the residual conformal freedom of the
+// problem. Since \hat c_* is the exact root of the gauge condition, a few
+// iterations do the work of many linearized sweeps.
+//
+// `target_function` must have the signature
+//
+// double target_function(
+//     const gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 2>>*>
+//         gauge_c_target,
+//     const Scalar<SpinWeighted<ComplexDataVector, 2>>& gauge_c,
+//     const Scalar<SpinWeighted<ComplexDataVector, 0>>& gauge_d,
+//     const Spectral::Swsh::SwshInterpolator& iteration_interpolator);
+//
+// setting `gauge_c_target` to \hat c_* and returning the current residual.
+//
+// The residual first falls by orders of magnitude and then creeps back up, so
+// the solve stops at the first iteration from the third on with
+// e_n > 0.9 e_{n-1}, and hands back the best map it evaluated. The returned
+// `number_of_coordinate_updates` counts every update the solve performed,
+// including those discarded by returning to the best map, so that it measures
+// the work done. `CauchySecondOrder` subtracts it from `J0MaxIterations` to
+// get the number of linearized sweeps still allowed.
+template <typename TargetFunctor, typename FinalizeFunctor = NoOpFinalize>
+AngularSolveResult adapt_angular_coordinates_via_potential(
+    const gsl::not_null<tnsr::i<DataVector, 3>*> cartesian_cauchy_coordinates,
+    const gsl::not_null<
+        tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
+        angular_cauchy_coordinates,
+    const size_t l_max, const double tolerance, const size_t max_steps,
+    const double error_threshold, const TargetFunctor& target_function,
+    const UnconvergedAngularSolve if_unconverged,
+    const FinalizeFunctor finalize_function = NoOpFinalize{},
+    const bool initialize_coordinates = true) {
+  constexpr double plateau_factor = 0.9;
+  const size_t number_of_angular_points =
+      Spectral::Swsh::number_of_swsh_collocation_points(l_max);
+
+  if (initialize_coordinates) {
+    Spectral::Swsh::create_angular_and_cartesian_coordinates(
+        cartesian_cauchy_coordinates, angular_cauchy_coordinates, l_max);
+  }
+
+  Variables<tmpl::list<
+      // eth of the cartesian coordinates
+      ::Tags::TempSpinWeightedScalar<0, 1>,
+      ::Tags::TempSpinWeightedScalar<1, 1>,
+      ::Tags::TempSpinWeightedScalar<2, 1>,
+      // ... interpolated onto the current map
+      ::Tags::TempSpinWeightedScalar<3, 1>,
+      ::Tags::TempSpinWeightedScalar<4, 1>,
+      ::Tags::TempSpinWeightedScalar<5, 1>,
+      // gauge Jacobians
+      ::Tags::TempSpinWeightedScalar<6, 2>,
+      ::Tags::TempSpinWeightedScalar<7, 0>,
+      // the target Jacobian, then the step to it
+      ::Tags::TempSpinWeightedScalar<8, 2>,
+      // the potential eta
+      ::Tags::TempSpinWeightedScalar<9, 1>>>
+      computation_buffers{number_of_angular_points};
+  auto& [eth_x, eth_y, eth_z, interpolated_eth_x, interpolated_eth_y,
+         interpolated_eth_z, gauge_c, gauge_d, gauge_c_target, eta] =
+      computation_buffers;
+
+  unit_sphere_eth_cartesian_coordinates(make_not_null(&get(eth_x)),
+                                        make_not_null(&get(eth_y)),
+                                        make_not_null(&get(eth_z)), l_max);
+
+  double max_error = 1.0;
+  double previous_max_error = std::numeric_limits<double>::max();
+  size_t number_of_steps = 0;
+  Spectral::Swsh::SwshInterpolator iteration_interpolator;
+
+  const auto evaluate_current_map = [&]() {
+    update_angular_coordinates_and_jacobians(
+        cartesian_cauchy_coordinates, angular_cauchy_coordinates,
+        make_not_null(&iteration_interpolator), make_not_null(&gauge_c),
+        make_not_null(&gauge_d), l_max);
+    return target_function(make_not_null(&gauge_c_target), gauge_c, gauge_d,
+                           iteration_interpolator);
+  };
+
+  // As in `iteratively_adapt_angular_coordinates`, the best map is copied
+  // before it is normalized, so that the rewind reproduces it bit for bit.
+  auto unevaluated_cartesian_cauchy_coordinates = *cartesian_cauchy_coordinates;
+  auto best_cartesian_cauchy_coordinates = *cartesian_cauchy_coordinates;
+  double best_max_error = std::numeric_limits<double>::max();
+
+  while (true) {
+    unevaluated_cartesian_cauchy_coordinates = *cartesian_cauchy_coordinates;
+    max_error = evaluate_current_map();
+    if (max_error < best_max_error) {
+      best_max_error = max_error;
+      best_cartesian_cauchy_coordinates =
+          unevaluated_cartesian_cauchy_coordinates;
+    }
+
+    check_angular_solve_error_threshold(max_error, error_threshold);
+    ++number_of_steps;
+    if (max_error < tolerance or number_of_steps > max_steps or
+        (number_of_steps > 2 and
+         max_error > plateau_factor * previous_max_error)) {
+      break;
+    }
+    previous_max_error = max_error;
+
+    // the step to the target Jacobian, then the potential that generates it
+    get(gauge_c_target).data() -= get(gauge_c).data();
+    Spectral::Swsh::angular_derivatives<
+        tmpl::list<Spectral::Swsh::Tags::InverseEth>>(
+        l_max, 1, make_not_null(&get(eta)), get(gauge_c_target));
+
+    iteration_interpolator.interpolate(make_not_null(&get(interpolated_eth_x)),
+                                       get(eth_x));
+    iteration_interpolator.interpolate(make_not_null(&get(interpolated_eth_y)),
+                                       get(eth_y));
+    iteration_interpolator.interpolate(make_not_null(&get(interpolated_eth_z)),
+                                       get(eth_z));
+
+    // dx^i = Re(eta conj(eth x^i)) = v^A \partial_A x^i is tangent to the
+    // sphere, since x^i eth x^i = 0; the radial part of its eth is removed when
+    // the next iteration normalizes the coordinates.
+    get<0>(*cartesian_cauchy_coordinates) +=
+        real(get(eta).data() * conj(get(interpolated_eth_x).data()));
+    get<1>(*cartesian_cauchy_coordinates) +=
+        real(get(eta).data() * conj(get(interpolated_eth_y).data()));
+    get<2>(*cartesian_cauchy_coordinates) +=
+        real(get(eta).data() * conj(get(interpolated_eth_z).data()));
+  }
+
+  if (best_max_error < max_error) {
+    *cartesian_cauchy_coordinates = best_cartesian_cauchy_coordinates;
+    max_error = evaluate_current_map();
+  }
+
+  finalize_function(gauge_c, gauge_d, *angular_cauchy_coordinates,
+                    iteration_interpolator);
+
+  // The loop evaluates once more than it updates.
+  const size_t number_of_coordinate_updates = number_of_steps - 1;
+  if (std::isnan(max_error) or max_error >= tolerance) {
+    report_unconverged_angular_solve(if_unconverged, tolerance,
+                                     number_of_coordinate_updates, max_error);
+  }
+  return {.max_error = max_error,
+          .number_of_coordinate_updates = number_of_coordinate_updates};
 }
 
 double adjust_angular_coordinates_for_j(
@@ -318,6 +547,7 @@ struct InverseCubic;
 template <bool evolve_ccm>
 struct InitializeJ;
 struct ConformalFactor;
+struct CauchySecondOrder;
 /// \endcond
 
 /*!
@@ -348,6 +578,7 @@ struct InitializeJ<true> : public PUP::able {
       tmpl::list<Tags::BondiJ, Tags::CauchyCartesianCoords,
                  Tags::CauchyAngularCoords, Tags::PartiallyFlatCartesianCoords,
                  Tags::PartiallyFlatAngularCoords>;
+  using return_tags = mutate_tags;
   using argument_tags =
       tmpl::push_back<boundary_tags, Tags::LMax, Tags::NumberOfRadialPoints>;
 
@@ -362,22 +593,29 @@ struct InitializeJ<true> : public PUP::able {
 
   virtual std::unique_ptr<InitializeJ<true>> get_clone() const = 0;
 
-  virtual void operator()(
-      gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 2>>*> j,
-      gsl::not_null<tnsr::i<DataVector, 3>*> cartesian_cauchy_coordinates,
-      gsl::not_null<
-          tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
-          angular_cauchy_coordinates,
-      gsl::not_null<tnsr::i<DataVector, 3>*> cartesian_inertial_coordinates,
-      gsl::not_null<
-          tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
-          angular_inertial_coordinates,
-      const Scalar<SpinWeighted<ComplexDataVector, 2>>& boundary_j,
-      const Scalar<SpinWeighted<ComplexDataVector, 2>>& boundary_dr_j,
-      const Scalar<SpinWeighted<ComplexDataVector, 0>>& r,
-      const Scalar<SpinWeighted<ComplexDataVector, 0>>& beta, size_t l_max,
-      size_t number_of_radial_points,
-      gsl::not_null<Parallel::NodeLock*> hdf5_lock) const = 0;
+  /// \brief The interpolator this generator wants used to build the worldtube
+  /// boundary value of \f$\partial_u \partial_r J\f$, or `nullptr` to use the
+  /// evolution's `H5Interpolator`.
+  ///
+  /// \details That boundary value is consumed by the initial data alone, so a
+  /// generator is free to choose its own time-interpolation order for it
+  /// without affecting the evolution.
+  virtual std::unique_ptr<intrp::SpanInterpolator> du_dr_j_interpolator()
+      const {
+    return nullptr;
+  }
+
+  // Each derived class declares its own `return_tags` and `argument_tags` and
+  // implements a non-virtual `operator()`; the dispatch below picks the
+  // correct dynamic type and forwards through `db::mutate_apply`.
+  template <typename DbTags>
+  void operator()(const gsl::not_null<db::DataBox<DbTags>*> box,
+                  const gsl::not_null<Parallel::NodeLock*> hdf5_lock) const {
+    call_with_dynamic_type<void, creatable_classes>(
+        this, [&](auto* const derived) {
+          db::mutate_apply(*derived, box, hdf5_lock);
+        });
+  }
 };
 
 /*!
@@ -398,6 +636,10 @@ struct InitializeJ<true> : public PUP::able {
  */
 template <>
 struct InitializeJ<false> : public PUP::able {
+  // Default boundary/mutate/argument tags used by the simple derived classes
+  // (ConformalFactor, InverseCubic<false>, NoIncomingRadiation, ZeroNonSmooth).
+  // A derived class can shadow these with its own list (see CauchySecondOrder),
+  // in which case the per-class list is used during dispatch.
   using boundary_tags = tmpl::list<Tags::BoundaryValue<Tags::BondiJ>,
                                    Tags::BoundaryValue<Tags::Dr<Tags::BondiJ>>,
                                    Tags::BoundaryValue<Tags::BondiR>,
@@ -405,11 +647,15 @@ struct InitializeJ<false> : public PUP::able {
 
   using mutate_tags = tmpl::list<Tags::BondiJ, Tags::CauchyCartesianCoords,
                                  Tags::CauchyAngularCoords>;
+  using return_tags = mutate_tags;
   using argument_tags =
       tmpl::push_back<boundary_tags, Tags::LMax, Tags::NumberOfRadialPoints>;
 
-  using creatable_classes = tmpl::list<ConformalFactor, InverseCubic<false>,
-                                       NoIncomingRadiation, ZeroNonSmooth>;
+  using creatable_classes =
+      tmpl::list<ConformalFactor, InverseCubic<false>, NoIncomingRadiation,
+                 ZeroNonSmooth, CauchySecondOrder,
+                 ::Cce::Solutions::LinearizedBondiSachs_detail::InitializeJ::
+                     LinearizedBondiSachs>;
 
   InitializeJ() = default;
   explicit InitializeJ(CkMigrateMessage* /*msg*/) {}
@@ -418,22 +664,43 @@ struct InitializeJ<false> : public PUP::able {
 
   virtual std::unique_ptr<InitializeJ<false>> get_clone() const = 0;
 
-  virtual void operator()(
-      gsl::not_null<Scalar<SpinWeighted<ComplexDataVector, 2>>*> j,
-      gsl::not_null<tnsr::i<DataVector, 3>*> cartesian_cauchy_coordinates,
-      gsl::not_null<
-          tnsr::i<DataVector, 2, ::Frame::Spherical<::Frame::Inertial>>*>
-          angular_cauchy_coordinates,
-      const Scalar<SpinWeighted<ComplexDataVector, 2>>& boundary_j,
-      const Scalar<SpinWeighted<ComplexDataVector, 2>>& boundary_dr_j,
-      const Scalar<SpinWeighted<ComplexDataVector, 0>>& r,
-      const Scalar<SpinWeighted<ComplexDataVector, 0>>& beta, size_t l_max,
-      size_t number_of_radial_points,
-      gsl::not_null<Parallel::NodeLock*> hdf5_lock) const = 0;
+  /// \brief The interpolator this generator wants used to build the worldtube
+  /// boundary value of \f$\partial_u \partial_r J\f$, or `nullptr` to use the
+  /// evolution's `H5Interpolator`.
+  ///
+  /// \details That boundary value is consumed by the initial data alone, so a
+  /// generator is free to choose its own time-interpolation order for it
+  /// without affecting the evolution.
+  virtual std::unique_ptr<intrp::SpanInterpolator> du_dr_j_interpolator()
+      const {
+    return nullptr;
+  }
+
+  /// Whether this generator reads the worldtube boundary value of
+  /// \f$\partial_u \partial_r J\f$.
+  virtual bool needs_du_dr_j() const { return false; }
+
+  // Each derived class declares its own `return_tags` and `argument_tags` and
+  // implements a non-virtual `operator()` whose signature matches those tags.
+  // The dispatch below picks the correct dynamic type and forwards through
+  // `db::mutate_apply` so the per-class tag lists are honored.
+  template <typename DbTags>
+  void operator()(const gsl::not_null<db::DataBox<DbTags>*> box,
+                  const gsl::not_null<Parallel::NodeLock*> hdf5_lock) const {
+    call_with_dynamic_type<void, creatable_classes>(
+        this, [&](auto* const derived) {
+          db::mutate_apply(*derived, box, hdf5_lock);
+        });
+  }
 };
 }  // namespace InitializeJ
 }  // namespace Cce
 
+// NOLINTBEGIN(misc-header-include-cycle)
+#include "Evolution/Systems/Cce/AnalyticSolutions/LinearizedBondiSachsInitializeJ.hpp"
+#include "Evolution/Systems/Cce/Initialize/CauchySecondOrder.hpp"
+#include "Evolution/Systems/Cce/Initialize/ConformalFactor.hpp"
 #include "Evolution/Systems/Cce/Initialize/InverseCubic.hpp"
 #include "Evolution/Systems/Cce/Initialize/NoIncomingRadiation.hpp"
 #include "Evolution/Systems/Cce/Initialize/ZeroNonSmooth.hpp"
+// NOLINTEND(misc-header-include-cycle)

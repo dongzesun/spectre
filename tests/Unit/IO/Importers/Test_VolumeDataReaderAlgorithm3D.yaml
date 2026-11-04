@@ -11,13 +11,15 @@ SourceDomainCreator:
       OuterRadius: 4.
       XCoord: &x_right 7.683
       ExciseInterior: True
-      UseLogarithmicMap: True
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     ObjectB:
       InnerRadius: 0.45
       OuterRadius: 4.
       XCoord: &x_left -7.683
       ExciseInterior: True
-      UseLogarithmicMap: True
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     CenterOfMassOffset: [0., 0.]
     Envelope:
       Radius: 60.
@@ -27,8 +29,10 @@ SourceDomainCreator:
       RadialPartitioning: []
       RadialDistribution: Inverse
       OpeningAngle: 90.0
+      UseSphericalHarmonics: false
     UseEquiangularMap: True
     CubeScale: 1.0
+    UseWorldtube: false
     InitialRefinement: 1
     InitialGridPoints: 7
     TimeDependentMaps: None
@@ -40,13 +44,15 @@ TargetDomainCreator:
       OuterRadius: 6.
       XCoord: *x_right
       ExciseInterior: True
-      UseLogarithmicMap: true
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     ObjectB:
       InnerRadius: 0.46
       OuterRadius: 6.
       XCoord: *x_left
       ExciseInterior: True
-      UseLogarithmicMap: true
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     CenterOfMassOffset: [0., 0.]
     Envelope:
       Radius: 100.
@@ -56,8 +62,10 @@ TargetDomainCreator:
       RadialPartitioning: []
       RadialDistribution: Linear
       OpeningAngle: 90.0
+      UseSphericalHarmonics: false
     UseEquiangularMap: True
     CubeScale: 1.0
+    UseWorldtube: false
     InitialRefinement: 0
     InitialGridPoints: 3
     TimeDependentMaps: None
@@ -69,6 +77,8 @@ Importers:
     ObservationValue: 3.
     ObservationValueEpsilon: Auto
     ElementsAreIdentical: False
+    ExtrapolateIntoExcisions: False
+    NumThreads: 1
 
 ResourceInfo:
   AvoidGlobalProc0: false

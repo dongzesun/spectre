@@ -9,6 +9,7 @@
 #include <mutex>
 #include <utility>
 
+#include "DataStructures/ComplexDataVector.hpp"
 #include "DataStructures/ComplexModalVector.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
@@ -20,6 +21,7 @@
 #include "NumericalAlgorithms/Interpolation/SpanInterpolator.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshCoefficients.hpp"
 #include "NumericalAlgorithms/SpinWeightedSphericalHarmonics/SwshTransform.hpp"
+#include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
@@ -158,6 +160,25 @@ void populate_hypersurface_boundary_data(
             get(get<Spectral::Swsh::Tags::SwshTransform<tag>>(
                 *interpolated_coefficients)));
       });
+}
+
+void differentiate_dr_j_in_time(const gsl::not_null<ComplexDataVector*> du_dr_j,
+                                const DataVector& times,
+                                const ComplexDataVector& dr_j_over_time,
+                                const intrp::SpanInterpolator& interpolator,
+                                const double time) {
+  const size_t number_of_angular_points = du_dr_j->size();
+  ComplexDataVector dr_j_at_point{times.size()};
+  for (size_t i = 0; i < number_of_angular_points; ++i) {
+    for (size_t ti = 0; ti < times.size(); ++ti) {
+      dr_j_at_point[ti] = dr_j_over_time[(ti * number_of_angular_points) + i];
+    }
+    (*du_dr_j)[i] = interpolator.derivative(
+        gsl::span<const double>(times.data(), times.size()),
+        gsl::span<const std::complex<double>>(dr_j_at_point.data(),
+                                              dr_j_at_point.size()),
+        time);
+  }
 }
 }  // namespace detail
 
@@ -430,15 +451,133 @@ bool BondiWorldtubeDataManager::populate_hypersurface_boundary_data(
       *boundary_data_variables)) =
       exp(2.0 * bondi_beta.data()) / square(bondi_r.data()) *
       (bondi_k.data() * bondi_q.data() - bondi_j.data() * conj(bondi_q.data()));
+
+  populate_boundary_du_dr_j(boundary_data_variables, time);
   return true;
+}
+
+void BondiWorldtubeDataManager::populate_boundary_du_dr_j(
+    const gsl::not_null<Variables<
+        Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>>*>
+        boundary_data_variables,
+    const double time) const {
+  // This derivative is consumed only by the initial-data generator, so it runs
+  // on `du_dr_j_interpolator_` when one was supplied, independently of the
+  // interpolation order the evolution uses for values.
+  ASSERT(du_dr_j_interpolator_ != nullptr or interpolator_ != nullptr,
+         "Internal bug in BondiWorldtubeDataManager::populate_boundary_du_dr_j."
+         " When du_dr_j_interpolator_ is nullptr, then interpolator_ must not "
+         "be nullptr. Please file an issue.");
+  const intrp::SpanInterpolator& du_dr_j_interpolator =
+      du_dr_j_interpolator_ == nullptr ? *interpolator_
+                                       : *du_dr_j_interpolator_;
+  // The previous detail::populate_hypersurface_boundary_data call already
+  // refreshed time_span_start_ / time_span_end_ for the current target time.
+  // The sub-window for the time derivative is taken from that same buffer.
+  // `set_du_dr_j_interpolator` has already rejected an interpolator that would
+  // want more points than the buffer holds, so the span below is wide enough.
+  const auto interpolation_time_span = detail::create_span_for_time_value(
+      time, 0,
+      du_dr_j_interpolator.required_number_of_points_before_and_after(),
+      time_span_start_, time_span_end_, buffer_updater_->get_time_buffer());
+  const size_t interpolation_span_size =
+      interpolation_time_span.second - interpolation_time_span.first;
+  const size_t buffer_span_size = time_span_end_ - time_span_start_;
+  const size_t offset_in_buffer =
+      interpolation_time_span.first - time_span_start_;
+
+  const DataVector time_points{
+      buffer_updater_->get_time_buffer().data() +  // NOLINT
+          interpolation_time_span.first,
+      interpolation_span_size};
+
+  const size_t number_of_libsharp_coefficients =
+      Spectral::Swsh::size_of_libsharp_coefficient_vector(l_max_);
+  const size_t number_of_angular_points =
+      Spectral::Swsh::number_of_swsh_collocation_points(l_max_);
+
+  SpinWeighted<ComplexModalVector, 2> dr_j_libsharp_modes{
+      number_of_libsharp_coefficients};
+  SpinWeighted<ComplexDataVector, 2> dr_j_nodal{};
+
+  // Dr<J> over time, laid out so the nodal slice at buffer time `ti` lives in
+  // [ti * num_points, (ti + 1) * num_points).
+  ComplexDataVector dr_j_over_time{interpolation_span_size *
+                                   number_of_angular_points};
+
+  const auto& dr_j_modes_buffer =
+      get(get<Spectral::Swsh::Tags::SwshTransform<Tags::Dr<Tags::BondiJ>>>(
+              coefficients_buffers_))
+          .data();
+
+  for (size_t ti = 0; ti < interpolation_span_size; ++ti) {
+    const size_t time_index_in_buffer = offset_in_buffer + ti;
+    dr_j_libsharp_modes.data() = 0.0;
+    for (const auto libsharp_mode :
+         Spectral::Swsh::cached_coefficients_metadata(l_max_)) {
+      const size_t plus_m_goldberg_index = Spectral::Swsh::goldberg_mode_index(
+          l_max_, libsharp_mode.l, static_cast<int>(libsharp_mode.m));
+      const size_t minus_m_goldberg_index = Spectral::Swsh::goldberg_mode_index(
+          l_max_, libsharp_mode.l, -static_cast<int>(libsharp_mode.m));
+      Spectral::Swsh::goldberg_modes_to_libsharp_modes_single_pair(
+          libsharp_mode, make_not_null(&dr_j_libsharp_modes), 0,
+          dr_j_modes_buffer[(plus_m_goldberg_index * buffer_span_size) +
+                            time_index_in_buffer],
+          dr_j_modes_buffer[(minus_m_goldberg_index * buffer_span_size) +
+                            time_index_in_buffer]);
+    }
+    dr_j_nodal.data().set_data_ref(
+        dr_j_over_time.data() + (ti * number_of_angular_points),  // NOLINT
+        number_of_angular_points);
+    Spectral::Swsh::inverse_swsh_transform(
+        l_max_, 1, make_not_null(&dr_j_nodal), dr_j_libsharp_modes);
+  }
+
+  // Time derivative (at constant y, i.e. following the worldtube) of the
+  // boundary Dr<J>, i.e. Du<Dr<J>>. The conversion to Du<Dy<J>> via the
+  // worldtube Jacobian is performed by the consumer of this boundary value.
+  detail::differentiate_dr_j_in_time(
+      make_not_null(
+          &get(get<Tags::BoundaryValue<Tags::Du<Tags::Dr<Tags::BondiJ>>>>(
+                   *boundary_data_variables))
+               .data()),
+      time_points, dr_j_over_time, du_dr_j_interpolator, time);
 }
 
 std::unique_ptr<WorldtubeDataManager<
     Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>>>
 BondiWorldtubeDataManager::get_clone() const {
-  return std::make_unique<BondiWorldtubeDataManager>(
+  auto clone = std::make_unique<BondiWorldtubeDataManager>(
       buffer_updater_->get_clone(), l_max_, buffer_depth_,
       interpolator_->get_clone());
+  if (du_dr_j_interpolator_ != nullptr) {
+    clone->set_du_dr_j_interpolator(du_dr_j_interpolator_->get_clone());
+  }
+  return clone;
+}
+
+void BondiWorldtubeDataManager::set_du_dr_j_interpolator(
+    std::unique_ptr<intrp::SpanInterpolator> interpolator) {
+  if (interpolator != nullptr) {
+    const size_t required_points =
+        interpolator->required_number_of_points_before_and_after();
+    const size_t available_points =
+        interpolator_->required_number_of_points_before_and_after();
+    if (required_points > available_points) {
+      ERROR(
+          "The `DuDrJInterpolator` of the initial-data generator needs "
+          << required_points
+          << " points before and after the target time, but the worldtube "
+             "buffer is sized by `H5Interpolator`, which needs only "
+          << available_points
+          << ". The time derivative of Dr(J) is taken inside that buffer, so "
+             "`DuDrJInterpolator` must not be of higher order than "
+             "`H5Interpolator`. Lower the order of `DuDrJInterpolator` (2 to 4 "
+             "is what the second-order match wants) or raise the order of "
+             "`H5Interpolator`.");
+    }
+  }
+  du_dr_j_interpolator_ = std::move(interpolator);
 }
 
 std::pair<size_t, size_t> BondiWorldtubeDataManager::get_time_span() const {
@@ -452,6 +591,7 @@ void BondiWorldtubeDataManager::pup(PUP::er& p) {
   p | l_max_;
   p | buffer_depth_;
   p | interpolator_;
+  p | du_dr_j_interpolator_;
   if (p.isUnpacking()) {
     detail::set_non_pupped_members<Tags::worldtube_boundary_tags_for_writing<
         Spectral::Swsh::Tags::SwshTransform>>(

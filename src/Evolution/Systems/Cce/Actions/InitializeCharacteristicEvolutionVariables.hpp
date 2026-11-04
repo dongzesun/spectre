@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "DataStructures/DataBox/DataBox.hpp"
-#include "DataStructures/DataBox/PrefixHelpers.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
 #include "Evolution/Systems/Cce/OptionTags.hpp"
@@ -20,7 +20,6 @@
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Utilities/Requires.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace Cce {
 /// \brief The set of actions for use in the CCE evolution system
@@ -45,12 +44,7 @@ CREATE_GET_TYPE_ALIAS_OR_DEFAULT(compute_tags)
  * \ref DataBoxGroup changes:
  * - Modifies: nothing
  * - Adds:
- *  - `metavariables::evolved_coordinates_variables_tag`
- *  -
- * ```
- * db::add_tag_prefix<Tags::dt,
- * metavariables::evolved_coordinates_variables_tag>
- * ```
+ *  - `metavariables::system::evolved_coordinates_variables_tag`
  *  - `Tags::Variables<metavariables::cce_angular_coordinate_tags>`
  *  - `Tags::Variables<metavariables::cce_scri_tags>`
  *  -
@@ -90,19 +84,14 @@ struct InitializeCharacteristicEvolutionVariables {
   using angular_coordinates_variables_tag =
       ::Tags::Variables<typename Metavariables::cce_angular_coordinate_tags>;
   using coordinate_variables_tag =
-      typename Metavariables::evolved_coordinates_variables_tag;
-  using dt_coordinate_variables_tag =
-      db::add_tag_prefix<::Tags::dt, coordinate_variables_tag>;
+      typename Metavariables::system::evolved_coordinates_variables_tag;
   using evolved_swsh_variables_tag =
-      ::Tags::Variables<typename Metavariables::evolved_swsh_tags>;
-  using evolved_swsh_dt_variables_tag =
-      db::add_tag_prefix<::Tags::dt, evolved_swsh_variables_tag>;
+      typename Metavariables::system::evolved_swsh_tag;
   using ccm_tag = ::Tags::Variables<typename Metavariables::ccm_psi0>;
 
   using simple_tags_for_evolution = tmpl::list<
       boundary_value_variables_tag, coordinate_variables_tag,
-      dt_coordinate_variables_tag, evolved_swsh_variables_tag,
-      evolved_swsh_dt_variables_tag, angular_coordinates_variables_tag,
+      evolved_swsh_variables_tag, angular_coordinates_variables_tag,
       scri_variables_tag, volume_variables_tag,
       pre_swsh_derivatives_variables_tag, transform_buffer_variables_tag,
       swsh_derivative_variables_tag,
@@ -110,7 +99,7 @@ struct InitializeCharacteristicEvolutionVariables {
       Spectral::Swsh::Tags::SwshInterpolator<Tags::PartiallyFlatAngularCoords>,
       ccm_tag>;
   using simple_tags =
-      tmpl::append<StepChoosers::step_chooser_simple_tags<Metavariables, true>,
+      tmpl::append<StepChoosers::step_chooser_simple_tags<Metavariables>,
                    simple_tags_for_evolution>;
 
   using compute_tags = tmpl::remove_duplicates<tmpl::join<
@@ -144,9 +133,7 @@ struct InitializeCharacteristicEvolutionVariables {
     Initialization::mutate_assign<simple_tags_for_evolution>(
         box, typename boundary_value_variables_tag::type{boundary_size},
         typename coordinate_variables_tag::type{boundary_size},
-        typename dt_coordinate_variables_tag::type{boundary_size},
         typename evolved_swsh_variables_tag::type{volume_size},
-        typename evolved_swsh_dt_variables_tag::type{volume_size},
         typename angular_coordinates_variables_tag::type{boundary_size},
         typename scri_variables_tag::type{boundary_size},
         typename volume_variables_tag::type{volume_size},

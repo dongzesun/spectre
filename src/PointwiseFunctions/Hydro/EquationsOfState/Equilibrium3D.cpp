@@ -8,7 +8,6 @@
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
-#include "PointwiseFunctions/Hydro/EquationsOfState/DarkEnergyFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Enthalpy.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Factory.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/HybridEos.hpp"
@@ -16,6 +15,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Spectral.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/MakeWithValue.hpp"
 
 namespace EquationsOfState {
 
@@ -92,6 +92,30 @@ Equilibrium3D<EquilEos>::temperature_from_density_and_energy_impl(
 
 template <typename EquilEos>
 template <class DataType>
+Scalar<DataType>
+Equilibrium3D<EquilEos>::specific_entropy_from_density_and_energy_impl(
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& specific_internal_energy,
+    const Scalar<DataType>& /*electron_fraction*/) const {
+  return underlying_eos_.specific_entropy_from_density_and_energy(
+      rest_mass_density, specific_internal_energy);
+}
+
+template <typename EquilEos>
+template <class DataType>
+Scalar<DataType>
+Equilibrium3D<EquilEos>::specific_entropy_from_density_and_temperature_impl(
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& temperature,
+    const Scalar<DataType>& /*electron_fraction*/) const {
+  return underlying_eos_.specific_entropy_from_density_and_energy(
+      rest_mass_density,
+      underlying_eos_.specific_internal_energy_from_density_and_temperature(
+          rest_mass_density, temperature));
+}
+
+template <typename EquilEos>
+template <class DataType>
 Scalar<DataType> Equilibrium3D<EquilEos>::
     specific_internal_energy_from_density_and_temperature_impl(
         const Scalar<DataType>& rest_mass_density,
@@ -127,12 +151,48 @@ Equilibrium3D<EquilEos>::sound_speed_squared_from_density_and_temperature_impl(
                    rest_mass_density, specific_internal_energy)))};
 }
 
+template <typename EquilEos>
+template <class DataType>
+Scalar<DataType>
+Equilibrium3D<EquilEos>::kappa_from_density_and_temperature_impl(
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& temperature,
+    const Scalar<DataType>& /*electron_fraction*/) const {
+  // The wrapped 2D EOS exposes kappa * p / rho^2 rather than kappa itself.
+  // Undo that here so the 3D interface returns kappa = dp/deps directly.
+  const Scalar<DataType> specific_internal_energy =
+      underlying_eos_.specific_internal_energy_from_density_and_temperature(
+          rest_mass_density, temperature);
+  const Scalar<DataType> pressure =
+      underlying_eos_.pressure_from_density_and_energy(
+          rest_mass_density, specific_internal_energy);
+  const Scalar<DataType> kappa_p_over_rho_squared =
+      underlying_eos_.kappa_times_p_over_rho_squared_from_density_and_energy(
+          rest_mass_density, specific_internal_energy);
+  return Scalar<DataType>{get(kappa_p_over_rho_squared) / get(pressure) *
+                          square(get(rest_mass_density))};
+}
+
+template <typename EquilEos>
+template <typename DataType>
+Scalar<DataType>
+Equilibrium3D<EquilEos>::zeta_from_density_and_temperature_impl(
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& /*temperature*/,
+    const Scalar<DataType>& /*electron_fraction*/) const {
+  return make_with_value<Scalar<DataType>>(get(rest_mass_density), 0.0);
+}
+
+template class Equilibrium3D<IdealFluid<true>>;
+template class Equilibrium3D<IdealFluid<false>>;
 template class Equilibrium3D<HybridEos<PolytropicFluid<true>>>;
 template class Equilibrium3D<HybridEos<PolytropicFluid<false>>>;
 template class Equilibrium3D<HybridEos<Spectral>>;
+template class Equilibrium3D<HybridEos<Enthalpy<PolytropicFluid<true>>>>;
+template class Equilibrium3D<
+    HybridEos<Enthalpy<Enthalpy<Enthalpy<PolytropicFluid<true>>>>>>;
 template class Equilibrium3D<HybridEos<Enthalpy<Spectral>>>;
-template class Equilibrium3D<DarkEnergyFluid<true>>;
-template class Equilibrium3D<IdealFluid<true>>;
-template class Equilibrium3D<IdealFluid<false>>;
+template class Equilibrium3D<HybridEos<Enthalpy<Enthalpy<Spectral>>>>;
+template class Equilibrium3D<HybridEos<Enthalpy<Enthalpy<Enthalpy<Spectral>>>>>;
 
 }  // namespace EquationsOfState

@@ -12,9 +12,10 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "Time/AdaptiveSteppingDiagnostics.hpp"
 #include "Time/ChooseLtsStepSize.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Tags/HistoryEvolvedVariables.hpp"
+#include "Time/Tags/LtsStepChoosers.hpp"
 #include "Time/Tags/MinimumTimeStep.hpp"
-#include "Time/Tags/StepChoosers.hpp"
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeStepRequest.hpp"
@@ -31,6 +32,7 @@ namespace Tags {
 struct AdaptiveSteppingDiagnostics;
 struct DataBox;
 struct FixedLtsRatio;
+struct LtsMode;
 template <typename Tag>
 struct Next;
 struct TimeStep;
@@ -44,7 +46,7 @@ struct TimeStepper;
 ///
 /// \details
 /// Usually, the new step size is chosen by calling the StepChoosers from
-/// `Tags::StepChoosers`, restricted based on the allowed step sizes at the
+/// `Tags::LtsStepChoosers`, restricted based on the allowed step sizes at the
 /// current time, and limits from history initialization.
 ///
 /// If `Tags::FixedLtsRatio` is present in the DataBox and not empty, the
@@ -65,13 +67,17 @@ template <typename StepChoosersToUse = AllStepChoosers,
 struct ChangeStepSize {
   using const_global_cache_tags =
       tmpl::list<CacheTagPrefix<Tags::MinimumTimeStep>,
-                 CacheTagPrefix<Tags::StepChoosers>>;
+                 CacheTagPrefix<Tags::LtsStepChoosers>>;
 
   using return_tags = tmpl::list<Tags::DataBox>;
   using argument_tags = tmpl::list<>;
 
   template <typename DbTags>
   static void apply(const gsl::not_null<db::DataBox<DbTags>*> box) {
+    if (db::get<CacheTagPrefix<Tags::LtsMode>>(*box) == LtsMode::Off) {
+      return;
+    }
+
     const auto& time_step_id = db::get<Tags::TimeStepId>(*box);
     if (time_step_id.substep() != 0) {
       return;
@@ -80,7 +86,7 @@ struct ChangeStepSize {
     const LtsTimeStepper& time_stepper =
         db::get<CacheTagPrefix<Tags::TimeStepper<LtsTimeStepper>>>(*box);
     const auto& step_choosers =
-        db::get<CacheTagPrefix<Tags::StepChoosers>>(*box);
+        db::get<CacheTagPrefix<Tags::LtsStepChoosers>>(*box);
 
     using history_tags = ::Tags::get_all_history_tags<DbTags>;
     bool can_change_step_size = true;

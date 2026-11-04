@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Amr/Flag.hpp"
 #include "Domain/Amr/NeighborsOfChild.hpp"
 #include "Domain/Amr/Tags/Flags.hpp"
@@ -18,7 +19,9 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/IsValidDgMesh.hpp"
 #include "Domain/Structure/Neighbors.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/Tags/NeighborMesh.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -26,9 +29,9 @@
 #include "ParallelAlgorithms/Amr/Projectors/Mesh.hpp"
 #include "ParallelAlgorithms/Amr/Tags.hpp"
 #include "ParallelAlgorithms/Initialization/MutateAssign.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace Parallel {
@@ -67,9 +70,30 @@ struct InitializeChild {
         tuples::get<::domain::Tags::Mesh<volume_dim>>(parent_items);
     auto neighbors = amr::neighbors_of_child(parent, parent_info,
                                              parent_neighbor_info, child_id);
-    Element<volume_dim> child(child_id, std::move(neighbors.first));
-    Mesh<volume_dim> child_mesh =
-        amr::projectors::mesh(parent_mesh, parent_info.flags);
+    auto child_topologies = parent.topologies();
+    if constexpr (volume_dim == 2) {
+      if (parent_mesh.basis(0) == Spectral::Basis::ZernikeB2 and
+          child_id.segment_id(0).index() == 1) {
+        child_topologies = domain::topologies::annulus;
+      }
+    } else if constexpr (volume_dim == 3) {
+      if (child_id.segment_id(0).index() == 1) {
+        if (parent_mesh.basis(0) == Spectral::Basis::ZernikeB1) {
+          child_topologies[0] = domain::Topology::I1;
+        } else if (parent_mesh.basis(0) == Spectral::Basis::ZernikeB2) {
+          child_topologies = domain::topologies::cylindrical_shell;
+        } else if (parent_mesh.basis(0) == Spectral::Basis::ZernikeB3) {
+          child_topologies = domain::topologies::spherical_shell;
+        }
+      }
+    }
+    Element<volume_dim> child(child_id, std::move(neighbors.first),
+                              child_topologies);
+    Mesh<volume_dim> child_mesh = amr::projectors::child_mesh(
+        parent_mesh, child_id, parent_info.flags, parent.topologies());
+    if (not domain::is_valid_dg_mesh(child_mesh, child)) {
+      ERROR("Invalid mesh " << child_mesh << " for Element " << child);
+    }
 
     // Default initialization of amr::Tags::Info and amr::Tags::NeighborInfo
     // is okay

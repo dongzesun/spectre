@@ -8,10 +8,12 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Structure/DirectionMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Neighbors.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
@@ -20,7 +22,6 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 struct TagInt : db::SimpleTag {
@@ -33,7 +34,8 @@ struct TagDouble : db::SimpleTag {
 
 void test_p_refinement() {
   const ElementId<1> element_id{0};
-  Element<1> element{element_id, DirectionMap<1, Neighbors<1>>{}};
+  const Element<1> element{element_id, DirectionMap<1, Neighbors<1>>{},
+                           domain::topologies::hypercube<1>};
   const Mesh<1> mesh{2, Spectral::Basis::Legendre,
                      Spectral::Quadrature::GaussLobatto};
   auto box = db::create<db::AddSimpleTags<TagInt, TagDouble>>(3, 4.2);

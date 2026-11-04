@@ -9,6 +9,7 @@
 #include "DataStructures/Index.hpp"
 #include "DataStructures/IndexIterator.hpp"
 #include "Framework/TestHelpers.hpp"
+#include "Helpers/NumericalAlgorithms/Spectral/BallTestFunctions.hpp"
 #include "Helpers/NumericalAlgorithms/Spectral/DiskTestFunctions.hpp"
 #include "Helpers/NumericalAlgorithms/Spectral/FourierTestFunctions.hpp"
 #include "Helpers/NumericalAlgorithms/SphericalHarmonics/YlmTestFunctions.hpp"
@@ -156,7 +157,9 @@ void test_definite_integral_disk(const size_t n_r, const size_t n_ph) {
     for (size_t pow_ny = 0; pow_ny <= M - pow_nx; ++pow_ny) {
       CAPTURE(pow_ny);
       const DiskTestFunctions::ProductOfPolynomials f{pow_nx, pow_ny};
-      const DataVector integrand = r * f(r, phi);
+      // Manually cancel dxi/dr factor of two that definite_integral
+      // internally adds so ever other caller doesn't have to add it
+      const DataVector integrand = 0.5 * r * f(r, phi);
       CHECK(f.definite_integral() ==
             approx(definite_integral(integrand, mesh)));
     }
@@ -187,7 +190,9 @@ void test_definite_integral_cylinder(const size_t n_r, const size_t n_ph,
       const double disk_integral = f.definite_integral();
       for (size_t pow_nz = 0; pow_nz < n_z; ++pow_nz) {
         CAPTURE(pow_nz);
-        const DataVector integrand = r * f(r, phi) * pow(z, pow_nz);
+        // Manually cancel dxi/dr factor of two that definite_integral
+        // internally adds so ever other caller doesn't have to add it
+        const DataVector integrand = 0.5 * r * f(r, phi) * pow(z, pow_nz);
         const double z_integral =
             (0 == pow_nz % 2) ? 2.0 / (static_cast<double>(pow_nz) + 1.0) : 0.0;
         CHECK(disk_integral * z_integral ==
@@ -266,6 +271,35 @@ void test_definite_integral_hollow_cylinder(const size_t n_r, const size_t n_ph,
   }
 }
 
+void test_definite_integral_ball(const size_t n_r, const size_t L) {
+  CAPTURE(n_r);
+  CAPTURE(L);
+  const Mesh<3> mesh{
+      {n_r, L + 1, 2 * L + 1},
+      {Spectral::Basis::ZernikeB3, Spectral::Basis::ZernikeB3,
+       Spectral::Basis::ZernikeB3},
+      {Spectral::Quadrature::GaussRadauUpper, Spectral::Quadrature::Gauss,
+       Spectral::Quadrature::Equiangular}};
+  const auto xi_vector = logical_coordinates(mesh);
+  const DataVector r = 0.5 * (get<0>(xi_vector) + 1.0);
+  for (size_t pow_nx = 0; pow_nx <= L; ++pow_nx) {
+    CAPTURE(pow_nx);
+    for (size_t pow_ny = 0; pow_ny <= L - pow_nx; ++pow_ny) {
+      CAPTURE(pow_ny);
+      for (size_t pow_nz = 0; pow_nz <= L - pow_nx - pow_ny; ++pow_nz) {
+        CAPTURE(pow_nz);
+        const BallTestFunctions::ProductOfPolynomials f{pow_nx, pow_ny, pow_nz};
+        // Manually cancel dxi/dr factor of two that definite_integral
+        // internally adds so ever other caller doesn't have to add it
+        const DataVector integrand =
+            0.5 * r * r * f(r, get<1>(xi_vector), get<2>(xi_vector));
+        CHECK(f.definite_integral() ==
+              approx(definite_integral(integrand, mesh)));
+      }
+    }
+  }
+}
+
 void test_definite_integral_cartoon_spherical(const size_t n_x) {
   const Mesh mesh =
       Mesh<3>{{{n_x, 1, 1}},
@@ -327,7 +361,8 @@ SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.DefiniteIntegral",
       Spectral::minimum_number_of_points<Spectral::Basis::Legendre,
                                          Spectral::Quadrature::GaussLobatto>;
   constexpr size_t max_extents =
-      Spectral::maximum_number_of_points<Spectral::Basis::Legendre>;
+      Spectral::maximum_number_of_points<Spectral::Basis::Legendre,
+                                         Spectral::Quadrature::GaussLobatto>;
   for (size_t n0 = min_extents; n0 <= max_extents; ++n0) {
     test_definite_integral_1d(Mesh<1>{n0, Spectral::Basis::Legendre,
                                       Spectral::Quadrature::GaussLobatto});
@@ -376,6 +411,15 @@ SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.DefiniteIntegral",
     }
   }
 
+  for (size_t n_r = 2; n_r < 5; ++n_r) {
+    for (size_t L = 2; L < 9; ++L) {
+      // We enforce these restrictions for the ball
+      if (L < 2 * n_r - 1) {
+        test_definite_integral_ball(n_r, L);
+      }
+    }
+  }
+
   for (size_t n_x = min_extents; n_x <= max_extents; ++n_x) {
     test_definite_integral_cartoon_spherical(n_x);
     for (size_t n_y = min_extents; n_y <= max_extents - 1; ++n_y) {
@@ -388,7 +432,8 @@ SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.DefiniteIntegral",
       Spectral::minimum_number_of_points<Spectral::Basis::FiniteDifference,
                                          Spectral::Quadrature::CellCentered>;
   constexpr size_t max_extents_fd =
-    Spectral::maximum_number_of_points<Spectral::Basis::FiniteDifference>;
+      Spectral::maximum_number_of_points<Spectral::Basis::FiniteDifference,
+                                         Spectral::Quadrature::CellCentered>;
   for (size_t n0 = min_extents_fd; n0 <= max_extents_fd; ++n0) {
     test_midpoint_integral_1d(Mesh<1>{n0, Spectral::Basis::FiniteDifference,
                                       Spectral::Quadrature::CellCentered});

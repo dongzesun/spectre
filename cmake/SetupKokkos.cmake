@@ -68,12 +68,15 @@ if(SPECTRE_KOKKOS)
     include(FetchContent)
     FetchContent_Declare(Kokkos
       GIT_REPOSITORY https://github.com/kokkos/kokkos.git
-      GIT_TAG 4.4.00
+      GIT_TAG 5.2.1
       GIT_SHALLOW TRUE
       ${SPECTRE_FETCHCONTENT_BASE_ARGS}
     )
     FetchContent_MakeAvailable(Kokkos)
   endif()
+
+  set_property(TARGET SpectreFlags
+    APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS SPECTRE_KOKKOS)
 endif()
 
 # Determine if the compiler is NVIDIA's nvcc (if not already determined by

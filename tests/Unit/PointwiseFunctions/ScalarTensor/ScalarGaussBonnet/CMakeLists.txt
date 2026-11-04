@@ -4,6 +4,7 @@ set(LIBRARY "Test_ScalarGaussBonnetPointwise")
 
 set(LIBRARY_SOURCES
   Test_CouplingParameters.cpp
+  Test_DoubleCovariantDerivativeOfCoupling.cpp
   Test_ScalarSource.cpp
   Test_Tags.cpp
   )
@@ -18,3 +19,5 @@ target_link_libraries(
   ScalarTensor
   ScalarTensorPointwise
   )
+
+  add_subdirectory(CouplingFunctions)

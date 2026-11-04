@@ -7,12 +7,14 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Index.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/Tags/NeighborMesh.hpp"
 #include "Evolution/DgSubcell/ActiveGrid.hpp"
@@ -43,7 +45,6 @@
 #include "Utilities/Numeric.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 
@@ -180,7 +181,8 @@ void test_send_receive_actions() {
     neighbors[Direction<Dim>::lower_eta()] =
         Neighbors<Dim>{{south_id}, orientation};
   }
-  const Element<Dim> element{self_id, neighbors};
+  const Element<Dim> element{self_id, neighbors,
+                             domain::topologies::hypercube<Dim>};
 
   using NeighborDataMap =
       DirectionalIdMap<Dim, Particles::MonteCarlo::McGhostZoneData<Dim>>;

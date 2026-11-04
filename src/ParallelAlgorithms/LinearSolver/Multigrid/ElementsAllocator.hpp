@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Creators/Tags/Domain.hpp"
 #include "Domain/Creators/Tags/InitialExtents.hpp"
 #include "Domain/Creators/Tags/InitialRefinementLevels.hpp"
@@ -33,7 +34,6 @@
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace LinearSolver::multigrid {
 
@@ -167,9 +167,8 @@ struct ElementsAllocator
                                       initial_extents, element_weight.value(),
                                       basis, quadrature);
         const domain::BlockZCurveProcDistribution<Dim> element_distribution{
-            element_costs,   num_of_procs_to_use,
-            blocks,          initial_refinement_levels,
-            initial_extents, procs_to_ignore};
+            element_costs, num_of_procs_to_use, blocks,
+            initial_refinement_levels, procs_to_ignore};
 
         for (const auto& element_id : element_ids) {
           const size_t target_proc =

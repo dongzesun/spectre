@@ -8,6 +8,7 @@
 #include <cstddef>
 
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Domain/Creators/Rectilinear.hpp"
@@ -19,7 +20,6 @@
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace ScalarSelfForce::AnalyticData {
 
@@ -67,6 +67,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.ScalarSelfForce.CircularOrbit",
                                                 6.,
                                                 m_mode_number,
                                                 {{-25., -5., 20., 40.}},
+                                                false,
                                                 impose_equatorial_symmetry};
       CAPTURE(circular_orbit.puncture_position());
       const auto background =
@@ -112,5 +113,51 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.ScalarSelfForce.CircularOrbit",
                                    custom_approx);
     }
   }
+}
+
+SPECTRE_TEST_CASE(
+    "Unit.PointwiseFunctions.ScalarSelfForce.CircularOrbit.Compactification",
+    "[PointwiseFunctions][Unit]") {
+  // Check that Alpha in the compactified u-region (coordinate sigma) matches
+  // the original r-based Alpha formula, rescaled by the chain-rule Jacobian
+  // J = dsigma/dr = r_u^2/r^2, for sigma = 2*r_u - r_u^2/r.
+  const double black_hole_mass = 1.;
+  const double black_hole_spin = 0.9;
+  const double r_u = 25.;
+  const double r = 2. * r_u;
+  // sigma(r=2*r_u) = 2*r_u - r_u^2/(2*r_u) = 1.5*r_u
+  const double sigma = 1.5 * r_u;
+  const double cos_theta = 0.3;
+  const double sin_theta_squared = 1. - square(cos_theta);
+
+  const auto circular_orbit = CircularOrbit{black_hole_mass,
+                                            black_hole_spin,
+                                            6.,
+                                            1,
+                                            {{-10., -5., r_u, r_u}},
+                                            true,
+                                            false};
+
+  tnsr::I<DataVector, 2> x{};
+  get<0>(x) = DataVector{sigma};
+  get<1>(x) = DataVector{cos_theta};
+  const auto background =
+      circular_orbit.variables(x, CircularOrbit::background_tags{});
+  const auto& alpha = get<Tags::Alpha>(background);
+
+  // Independently compute the reference r-based Alpha and the Jacobian.
+  const double a = black_hole_spin * black_hole_mass;
+  const double M = black_hole_mass;
+  const double r_plus = M * (1. + sqrt(1. - square(black_hole_spin)));
+  const double r_minus = M * (1. - sqrt(1. - square(black_hole_spin)));
+  const double delta = (r - r_plus) * (r - r_minus);
+  const double r_sq_plus_a_sq = square(r) + square(a);
+  const double jacobian = square(r_u) / square(r);  // dsigma/dr at r=2*r_u
+  const double expected_alpha0 = (delta / r_sq_plus_a_sq) * jacobian;
+  const double expected_alpha1 =
+      (1. / r_sq_plus_a_sq) / jacobian * sin_theta_squared;
+
+  CHECK_ITERABLE_APPROX(get<0>(alpha)[0], expected_alpha0);
+  CHECK_ITERABLE_APPROX(get<1>(alpha)[0], expected_alpha1);
 }
 }  // namespace ScalarSelfForce::AnalyticData

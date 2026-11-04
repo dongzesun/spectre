@@ -20,6 +20,7 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/OrientationMap.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Evolution/DiscontinuousGalerkin/Limiters/Krivodonova.hpp"
 #include "NumericalAlgorithms/LinearOperators/CoefficientTransforms.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
@@ -125,13 +126,13 @@ void test_limiting_two_neighbors() {
   using Limiter = Krivodonova<dim, tmpl::list<ScalarTag<0>, VectorTag<dim, 0>>>;
   // Use non-unity but close alpha values to make the math easier but still
   // test thoroughly.
-  Limiter krivodonova{
-      make_array<Spectral::maximum_number_of_points<Spectral::Basis::Legendre>>(
-          0.99)};
+  Limiter krivodonova{make_array<Spectral::maximum_number_of_points<
+      Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>>(0.99)};
 
   NeighborData<dim, typename Limiter::PackagedData> neighbor_data{};
 
-  const Element<dim> element(ElementId<dim>{0}, {});
+  const Element<dim> element(ElementId<dim>{0}, {},
+                             domain::topologies::hypercube<dim>);
   // We don't care about the ElementId for these tests, just the direction.
   Limiter::PackagedData& package_data_upper = neighbor_data[DirectionalId<dim>{
       Direction<dim>::upper_xi(), ElementId<dim>{0}}];
@@ -262,13 +263,13 @@ void test_limiting_different_values_different_tensors() {
   using Limiter = Krivodonova<dim, tmpl::list<ScalarTag<0>, VectorTag<dim, 0>>>;
   // Use non-unity but close alpha values to make the math easier but still
   // test thoroughly.
-  Limiter krivodonova{
-      make_array<Spectral::maximum_number_of_points<Spectral::Basis::Legendre>>(
-          0.99)};
+  const Limiter krivodonova{make_array<Spectral::maximum_number_of_points<
+      Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>>(0.99)};
 
   NeighborData<dim, typename Limiter::PackagedData> neighbor_data{};
 
-  const Element<dim> element(ElementId<dim>{0}, {});
+  const Element<dim> element(ElementId<dim>{0}, {},
+                             domain::topologies::hypercube<dim>);
   // We don't care about the ElementId for these tests, just the direction.
   Limiter::PackagedData& package_data_up_xi = neighbor_data[DirectionalId<dim>{
       Direction<dim>::upper_xi(), ElementId<dim>{0}}];
@@ -320,7 +321,9 @@ void run() {
   INFO("Testing 1d limiter");
   for (size_t order = Spectral::minimum_number_of_points<
            Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>;
-       order < Spectral::maximum_number_of_points<Spectral::Basis::Legendre>;
+       order <
+       Spectral::maximum_number_of_points<Spectral::Basis::Legendre,
+                                          Spectral::Quadrature::GaussLobatto>;
        ++order) {
     test_package_data(order);
   }
@@ -819,13 +822,13 @@ void test_limiting_different_values_different_tensors() {
   using Limiter = Krivodonova<dim, tmpl::list<ScalarTag<0>, VectorTag<dim, 0>>>;
   // Use non-unity but close alpha values to make the math easier but still
   // test thoroughly.
-  Limiter krivodonova{
-      make_array<Spectral::maximum_number_of_points<Spectral::Basis::Legendre>>(
-          0.99)};
+  const Limiter krivodonova{make_array<Spectral::maximum_number_of_points<
+      Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>>(0.99)};
 
   NeighborData<dim, typename Limiter::PackagedData> neighbor_data{};
 
-  const Element<dim> element(ElementId<dim>{0}, {});
+  const Element<dim> element(ElementId<dim>{0}, {},
+                             domain::topologies::hypercube<dim>);
   // We don't care about the ElementId for these tests, just the direction.
   Limiter::PackagedData& package_data_up_xi = neighbor_data[DirectionalId<dim>{
       Direction<dim>::upper_xi(), ElementId<dim>{0}}];
@@ -923,13 +926,13 @@ void run() {
   using Limiter = Krivodonova<dim, tmpl::list<ScalarTag<0>>>;
   // Use non-unity but close alpha values to make the math easier but still
   // test thoroughly.
-  Limiter krivodonova{
-      make_array<Spectral::maximum_number_of_points<Spectral::Basis::Legendre>>(
-          0.99)};
+  Limiter krivodonova{make_array<Spectral::maximum_number_of_points<
+      Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>>(0.99)};
 
   NeighborData<dim, typename Limiter::PackagedData> neighbor_data{};
 
-  const Element<dim> element(ElementId<dim>{0}, {});
+  const Element<dim> element(ElementId<dim>{0}, {},
+                             domain::topologies::hypercube<dim>);
   // We don't care about the ElementId for these tests, just the direction.
   Limiter::PackagedData& package_data_up_xi = neighbor_data[DirectionalId<dim>{
       Direction<dim>::upper_xi(), ElementId<dim>{0}}];
@@ -2553,13 +2556,13 @@ void test_limiting_different_values_different_tensors() {
   using Limiter = Krivodonova<dim, tmpl::list<ScalarTag<0>, VectorTag<dim, 0>>>;
   // Use non-unity but close alpha values to make the math easier but still
   // test thoroughly.
-  Limiter krivodonova{
-      make_array<Spectral::maximum_number_of_points<Spectral::Basis::Legendre>>(
-          0.99)};
+  const Limiter krivodonova{make_array<Spectral::maximum_number_of_points<
+      Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>>(0.99)};
 
   NeighborData<dim, typename Limiter::PackagedData> neighbor_data{};
 
-  const Element<dim> element(ElementId<dim>{0}, {});
+  const Element<dim> element(ElementId<dim>{0}, {},
+                             domain::topologies::hypercube<dim>);
   // We don't care about the ElementId for these tests, just the direction.
   Limiter::PackagedData& package_data_up_xi = neighbor_data[DirectionalId<dim>{
       Direction<dim>::upper_xi(), ElementId<dim>{0}}];
@@ -2786,13 +2789,13 @@ void run() {
   using Limiter = Krivodonova<dim, tmpl::list<ScalarTag<0>, VectorTag<dim, 0>>>;
   // Use non-unity but close alpha values to make the math easier but still
   // test thoroughly.
-  Limiter krivodonova{
-      make_array<Spectral::maximum_number_of_points<Spectral::Basis::Legendre>>(
-          0.99)};
+  Limiter krivodonova{make_array<Spectral::maximum_number_of_points<
+      Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>>(0.99)};
 
   NeighborData<dim, typename Limiter::PackagedData> neighbor_data{};
 
-  const Element<dim> element(ElementId<dim>{0}, {});
+  const Element<dim> element(ElementId<dim>{0}, {},
+                             domain::topologies::hypercube<dim>);
   // We don't care about the ElementId for these tests, just the direction.
   Limiter::PackagedData& package_data_up_xi = neighbor_data[DirectionalId<dim>{
       Direction<dim>::upper_xi(), ElementId<dim>{0}}];

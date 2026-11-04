@@ -12,6 +12,7 @@
 #include "DataStructures/ComplexDataVector.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Elliptic/Systems/DQ/Tags.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
@@ -20,7 +21,6 @@
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace DQ::Solutions {
 
@@ -111,6 +111,17 @@ class ProductOfSinusoids : public elliptic::analytic_data::AnalyticSolution {
       : wave_numbers_(wave_numbers), complex_phase_(complex_phase) {
     ASSERT((std::is_same_v<DataType, ComplexDataVector> or complex_phase == 0.),
            "The complex phase is only supported for ComplexDataVector.");
+  }
+
+  // Match the elliptic analytic-solution interface; the exact fields do
+  // not depend on the numerical mesh or Jacobian.
+  template <typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataVector, Dim>& x, const Mesh<Dim>& /*mesh*/,
+      const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
+                            Frame::Inertial>& /*inv_jacobian*/,
+      tmpl::list<RequestedTags...> meta) const {
+    return variables(x, meta);
   }
 
   template <typename... RequestedTags>

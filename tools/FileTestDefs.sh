@@ -20,6 +20,16 @@ die() {
     exit 1
 }
 
+# Set locale information, so grep behaves consistently across systems.
+# We set it globally here so scripts that source this one also get the
+# settings.
+export LANG=${LC_ALL:-${LANG}}
+export LC_ALL=
+export LC_COLLATE=C
+export LC_CTYPE=$(locale -a | grep --max-count=1 '\.utf8$')
+# Check that we ended up with something reasonable.
+[ "$(locale charmap)" = UTF-8 ] || die "Failed to enable a UTF-8 locale"
+
 # Option to enable color in grep or the empty string if grep does not
 # support color
 color_option=''
@@ -260,10 +270,12 @@ long_lines_exclude() {
         grep -v 'import' | \
         grep -v '\\link' | \
         grep -v '\\endlink' | \
-        grep -v 'CopyFiles:'
+        grep -v 'CopyFiles:' | \
+        grep -v '^allowed-tools:'
 }
 long_lines() {
     whitelist "$1" \
+              '.claude/skills/*' \
               '.cmake$' \
               '.css$' \
               '.github/workflows/*' \
@@ -283,6 +295,7 @@ long_lines() {
               'CITATION.cff' \
               'CMakeLists.txt$' \
               'Doxyfile.in$' \
+              'containers/CodingAgents.def$' \
               'containers/Dockerfile.buildenv$' \
               'containers/Dockerfile.travis$' \
               'docs/DevGuide/Travis.md' \
@@ -323,6 +336,11 @@ long_lines_test() {
     test_check pass foo.cpp "// \\image ${eighty}"$'\n'
     test_check pass foo.cpp "// \\link ${eighty}"$'\n'
     test_check pass foo.cpp "// \\endlink ${eighty}"$'\n'
+    local multibyte
+    printf -v multibyte '\xf0\x9f\x98\x82' # U+1F602: 4 bytes in UTF-8
+    local tenmultibyte=${multibyte}${multibyte}${multibyte}${multibyte}\
+${multibyte}${multibyte}${multibyte}${multibyte}${multibyte}${multibyte}
+    test_check pass foo.cpp "${tenmultibyte}${tenmultibyte}${tenmultibyte}"$'\n'
 }
 standard_checks+=(long_lines)
 
@@ -437,8 +455,10 @@ license() {
               '.svg' \
               '.patch' \
               '.xmf' \
+              'AGENTS.md' \
               'LICENSE' \
               'citation.bib' \
+              'CLAUDE.md' \
               'cmake/CodeCoverage.cmake$' \
               'cmake/CodeCoverageDetection.cmake$' \
               'cmake/FindCatch.cmake$' \
@@ -622,7 +642,7 @@ enable_if() {
                   'src/IO/H5/File.hpp$' \
                   'src/Utilities/Requires.hpp$' \
                   'src/Utilities/TMPL.hpp$' \
-                  'src/Utilities/TaggedTuple.hpp$' \
+                  'src/DataStructures/TaggedTuple.hpp$' \
                   'tests/Unit/Utilities/Test_TypeTraits.cpp$' && \
         staged_grep -q std::enable_if "$1"
 }
@@ -933,6 +953,26 @@ prevent_cklocalbranch_test() {
     test_check pass foo.txt '// a comment talking about ckLocalBranch'
 }
 standard_checks+=(prevent_cklocalbranch)
+
+# Check for unnamed namespaces in headers.  These are basically always
+# ODR violations if the header is included in more than one
+# translation unit.
+header_unnamed_namespace() {
+    is_includible "$1" && staged_grep -q "namespace *{" "$1"
+}
+header_unnamed_namespace_report() {
+    echo "Found unnamed namespaces in headers.  Use detail namespaces instead."
+    pretty_grep "namespace *{" "$@"
+}
+header_unnamed_namespace_test() {
+    test_check pass foo.cpp 'namespace Foo {'
+    test_check pass foo.hpp 'namespace Foo {'
+    test_check pass foo.tpp 'namespace Foo {'
+    test_check pass foo.cpp 'namespace {'
+    test_check fail foo.hpp 'namespace {'
+    test_check fail foo.tpp 'namespace {'
+}
+standard_checks+=(header_unnamed_namespace)
 
 # if test is enabled: redefines staged_grep to run tests on files that
 # are not in git

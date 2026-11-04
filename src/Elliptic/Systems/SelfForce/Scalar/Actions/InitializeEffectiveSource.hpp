@@ -11,6 +11,7 @@
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
 #include "Domain/BlockLogicalCoordinates.hpp"
@@ -31,7 +32,6 @@
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace Parallel {
@@ -73,7 +73,8 @@ struct InitializeEffectiveSource : tt::ConformsTo<::amr::protocols::Projector> {
 
  public:  // Iterable action
   using const_global_cache_tags =
-      tmpl::list<elliptic::dg::Tags::Massive, BackgroundTag>;
+      tmpl::list<elliptic::dg::Tags::Massive, BackgroundTag,
+                 Tags::NullSlicingBlocks<Dim>>;
   using simple_tags =
       tmpl::list<fixed_sources_tag, singular_vars_tag,
                  ::Tags::Mortars<singular_vars_on_mortars_tag, Dim>,

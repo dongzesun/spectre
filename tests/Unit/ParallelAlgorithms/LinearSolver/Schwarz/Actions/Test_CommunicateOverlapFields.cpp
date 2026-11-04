@@ -10,11 +10,13 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "IO/Logging/Tags.hpp"
 #include "IO/Logging/Verbosity.hpp"
@@ -29,7 +31,6 @@
 #include "ParallelAlgorithms/LinearSolver/Tags.hpp"
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 
@@ -145,24 +146,29 @@ void test_communicate_overlap_fields(const size_t num_points_per_dim,
     add_element({first_element_id,
                  {{Direction<Dim>::upper_xi(),
                    {{second_element_id, third_element_id},
-                    OrientationMap<Dim>::create_aligned()}}}});
+                    OrientationMap<Dim>::create_aligned()}}},
+                 domain::topologies::hypercube<Dim>});
     add_element(
         {second_element_id,
          {{Direction<Dim>::lower_xi(),
-           {{first_element_id}, OrientationMap<Dim>::create_aligned()}}}});
+           {{first_element_id}, OrientationMap<Dim>::create_aligned()}}},
+         domain::topologies::hypercube<Dim>});
     add_element(
         {third_element_id,
          {{Direction<Dim>::lower_xi(),
-           {{first_element_id}, OrientationMap<Dim>::create_aligned()}}}});
+           {{first_element_id}, OrientationMap<Dim>::create_aligned()}}},
+         domain::topologies::hypercube<Dim>});
   } else {
     add_element(
         {first_element_id,
          {{Direction<Dim>::upper_xi(),
-           {{second_element_id}, OrientationMap<Dim>::create_aligned()}}}});
+           {{second_element_id}, OrientationMap<Dim>::create_aligned()}}},
+         domain::topologies::hypercube<Dim>});
     add_element(
         {second_element_id,
          {{Direction<Dim>::lower_xi(),
-           {{first_element_id}, OrientationMap<Dim>::create_aligned()}}}});
+           {{first_element_id}, OrientationMap<Dim>::create_aligned()}}},
+         domain::topologies::hypercube<Dim>});
   }
 
   ActionTesting::set_phase(make_not_null(&runner), Parallel::Phase::Testing);

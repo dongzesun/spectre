@@ -31,7 +31,8 @@ namespace {
 void test_uniform_cost_function() {
   // AlignedLattice with differently-refined Elements
   const auto domain_creator = domain::creators::AlignedLattice<2>(
-      {{{{70, 71, 72, 73}}, {{90, 92, 95, 99}}}}, {{2, 5}}, {{3, 3}},
+      {{{{70, 71, 72, 73}}, {{90, 92, 95, 99}}}}, {{{}, {}}}, {{{}, {}}},
+      {{2, 5}}, {{3, 3}},
       {{{{{1, 0}}, {{3, 2}}, {{3, 5}}}, {{{2, 1}}, {{3, 3}}, {{4, 6}}}}},
       {{{{{1, 0}}, {{3, 2}}, {{4, 5}}}, {{{2, 1}}, {{3, 3}}, {{6, 7}}}}}, {});
 
@@ -52,24 +53,24 @@ void test_uniform_cost_function() {
 // functions
 void test_weighted_cost_function(const domain::ElementWeight element_weight) {
   const auto domain_creator1 = domain::creators::AlignedLattice<3>(
-      {{{{0.0, 1.0, 2.0}}, {{0.0, 1.0}}, {{0.0, 1.0}}}}, {{2, 1, 0}},
-      {{4, 4, 4}}, {}, {}, {});
+      {{{{0.0, 1.0, 2.0}}, {{0.0, 1.0}}, {{0.0, 1.0}}}}, {{{}, {}, {}}},
+      {{{}, {}, {}}}, {{2, 1, 0}}, {{4, 4, 4}}, {}, {}, {});
   const auto domain1 = domain_creator1.create_domain();
   const auto& blocks1 = domain1.blocks();
 
   // Block size and grid points are the same as blocks in `domain1`, but
   // refinement levels are different
   const auto domain_creator2 = domain::creators::AlignedLattice<3>(
-      {{{{0.0, 1.0}}, {{0.0, 1.0}}, {{0.0, 1.0}}}}, {{2, 3, 2}}, {{4, 4, 4}},
-      {}, {}, {});
+      {{{{0.0, 1.0}}, {{0.0, 1.0}}, {{0.0, 1.0}}}}, {{{}, {}, {}}},
+      {{{}, {}, {}}}, {{2, 3, 2}}, {{4, 4, 4}}, {}, {}, {});
   const auto domain2 = domain_creator2.create_domain();
   const auto& blocks2 = domain2.blocks();
 
   // Block size and refinement levels are the same as blocks in `domain1`, but
   // grid points are different
   const auto domain_creator3 = domain::creators::AlignedLattice<3>(
-      {{{{0.0, 1.0}}, {{0.0, 1.0}}, {{0.0, 1.0}}}}, {{2, 1, 0}}, {{4, 3, 2}},
-      {}, {}, {});
+      {{{{0.0, 1.0}}, {{0.0, 1.0}}, {{0.0, 1.0}}}}, {{{}, {}, {}}},
+      {{{}, {}, {}}}, {{2, 1, 0}}, {{4, 3, 2}}, {}, {}, {});
   const auto domain3 = domain_creator3.create_domain();
   const auto& blocks3 = domain2.blocks();
 
@@ -174,7 +175,7 @@ void test_uniform_element_distribution_construction(
 
   const domain::BlockZCurveProcDistribution<Dim> element_distribution(
       costs, number_of_procs_with_elements, blocks, initial_refinement_levels,
-      initial_extents, global_procs_to_ignore);
+      global_procs_to_ignore);
   const auto proc_map = element_distribution.block_element_distribution();
 
   const size_t total_procs =
@@ -201,9 +202,11 @@ void test_uniform_element_distribution_construction(
   // the expected number of total elements
   CHECK(actual_num_elements_in_dist == num_elements);
 
+  size_t procs_skipped = 0;
   size_t lowest_proc_with_elements = 0;
   while (global_procs_to_ignore.count(lowest_proc_with_elements) == 1) {
     lowest_proc_with_elements++;
+    procs_skipped++;
   }
   const size_t num_elements_on_lowest_proc =
       num_elements_by_proc[lowest_proc_with_elements];
@@ -214,6 +217,7 @@ void test_uniform_element_distribution_construction(
     const size_t num_elements_this_proc = num_elements_by_proc[proc_num];
     if (global_procs_to_ignore.count(proc_num) == 1) {
       CHECK(num_elements_this_proc == 0);
+      procs_skipped++;
     } else {
       // check that the distribution is near-uniform
       CHECK((num_elements_this_proc == num_elements_on_lowest_proc or
@@ -223,6 +227,18 @@ void test_uniform_element_distribution_construction(
     num_elements_so_far += num_elements_this_proc;
     proc_num++;
   }
+
+  // check that the only remaining procs we could have is the number of
+  // remaining procs to skip and the expected leftover procs from having more
+  // total procs requested than total elements to distribute
+  const size_t expected_unused_procs =
+      num_elements < number_of_procs_with_elements
+          ? number_of_procs_with_elements - num_elements
+          : 0;
+  const size_t procs_to_skip_left =
+      global_procs_to_ignore.size() - procs_skipped;
+  CHECK((total_procs - proc_num) ==
+        (expected_unused_procs + procs_to_skip_left));
 
   // check that any remainder of processors we didn't need do indeed have 0
   // elements assigned to them
@@ -267,7 +283,7 @@ void test_weighted_element_distribution_construction(
 
   const domain::BlockZCurveProcDistribution<Dim> element_distribution(
       costs, number_of_procs_with_elements, blocks, initial_refinement_levels,
-      initial_extents, global_procs_to_ignore);
+      global_procs_to_ignore);
   const auto proc_map = element_distribution.block_element_distribution();
 
   const size_t total_procs =
@@ -328,12 +344,16 @@ void test_weighted_element_distribution_construction(
 
   cost_index = 0;
   double cost_remaining = total_cost;
+  size_t total_elements_left_to_distribute = num_elements;
   size_t procs_skipped = 0;
   size_t proc_num = 0;
   // check that we distributed the right number of elements to each proc based
   // on the sum of their costs in Z-curve index order
   while (proc_num < total_procs) {
     if (global_procs_to_ignore.count(proc_num)) {
+      // make sure no elements are allocated to a proc that should be skipped
+      CHECK(num_elements_by_proc[proc_num] == 0);
+
       procs_skipped++;
       proc_num++;
       continue;
@@ -380,10 +400,11 @@ void test_weighted_element_distribution_construction(
         abs(proc_cost_with_final_element - target_proc_cost);
 
     // if the elements assigned to this proc have a cost that is over the target
-    // cost per proc, make sure that either it's because only one element is
-    // being assigned to the proc or this cost is closer to the target than if
+    // cost per proc, make sure that either it's because (1) only one element is
+    // being assigned to the proc, (2) this cost is closer to the target than if
     // we omitted the final element, i.e. check that it's better to keep the
-    // final element than to not
+    // final element than to not, or (3) the distance from the target cost with
+    // or without the additional element is about the same
     if (proc_cost_with_final_element > target_proc_cost) {
       CHECK((num_elements_this_proc == 1 or
              diff_with_final_element == approx(diff_without_final_element) or
@@ -399,20 +420,38 @@ void test_weighted_element_distribution_construction(
       const double diff_with_extra_element =
           abs(proc_cost_with_extra_element - target_proc_cost);
 
-      // if it appears better to add one more element, check that it's because
-      // the distance from the target cost with or without the additional
-      // element is about the same
+      // if it appears better to add one more element, check that it wasn't
+      // added either because (1) the distance from the target cost with or
+      // without the additional element is about the same or (2) if it were to
+      // be added, then we would end up with less elements left to distribute
+      // than processors left to distribute to
       if (diff_with_extra_element < diff_with_final_element) {
         Approx custom_approx = Approx::custom().epsilon(1.0e-12).scale(1.0);
-        CHECK(diff_with_extra_element ==
-              custom_approx(diff_with_final_element));
+        CHECK(
+            ((total_elements_left_to_distribute - num_elements_this_proc) >=
+                 (number_of_procs_with_elements - (proc_num - procs_skipped)) or
+             (diff_with_extra_element ==
+              custom_approx(diff_with_final_element))));
       }
     }
 
     cost_index += num_elements_this_proc;
     cost_remaining -= proc_cost_with_final_element;
+    total_elements_left_to_distribute -= num_elements_this_proc;
     proc_num++;
   }
+
+  // check that the only remaining procs we could have is the number of
+  // remaining procs to skip and the expected leftover procs from having more
+  // total procs requested than total elements to distribute
+  const size_t expected_unused_procs =
+      num_elements < number_of_procs_with_elements
+          ? number_of_procs_with_elements - num_elements
+          : 0;
+  const size_t procs_to_skip_left =
+      global_procs_to_ignore.size() - procs_skipped;
+  CHECK((total_procs - proc_num) ==
+        (expected_unused_procs + procs_to_skip_left));
 
   // check that any remainder of processors we didn't need do indeed have 0
   // elements assigned to them
@@ -454,7 +493,7 @@ void test_proc_retrieval(
 
   const domain::BlockZCurveProcDistribution<Dim> element_distribution(
       costs, number_of_procs_with_elements, blocks, initial_refinement_levels,
-      initial_extents, global_procs_to_ignore);
+      global_procs_to_ignore);
   const auto proc_map = element_distribution.block_element_distribution();
 
   const size_t total_number_of_procs =
@@ -511,14 +550,15 @@ SPECTRE_TEST_CASE("Unit.Domain.ElementDistribution", "[Domain][Unit]") {
 
   // 1D, single block
   const auto lattice_1d = domain::creators::AlignedLattice<1>(
-      {{{{0.0, 1.0}}}}, {{4}}, {{6}}, {}, {}, {});
+      {{{{0.0, 1.0}}}}, {{{}}}, {{{}}}, {{4}}, {{6}}, {}, {}, {});
   // 2D
   const auto lattice_2d = domain::creators::AlignedLattice<2>(
-      {{{{0.0, 0.3}}, {{0.0, 0.8, 2.5, 4.9}}}}, {{2, 3}}, {{4, 5}}, {}, {}, {});
+      {{{{0.0, 0.3}}, {{0.0, 0.8, 2.5, 4.9}}}}, {{{}, {}}}, {{{}, {}}},
+      {{2, 3}}, {{4, 5}}, {}, {}, {});
   // 3D
   const auto lattice_3d = domain::creators::AlignedLattice<3>(
-      {{{{0.0, 0.6}}, {{0.0, 0.4, 0.7}}, {{0.0, 0.3}}}}, {{2, 1, 3}},
-      {{5, 4, 5}}, {}, {}, {});
+      {{{{0.0, 0.6}}, {{0.0, 0.4, 0.7}}, {{0.0, 0.3}}}}, {{{}, {}, {}}},
+      {{{}, {}, {}}}, {{2, 1, 3}}, {{5, 4, 5}}, {}, {}, {});
 
   // Test element distribution construction logic
 
@@ -534,7 +574,7 @@ SPECTRE_TEST_CASE("Unit.Domain.ElementDistribution", "[Domain][Unit]") {
   // weighted distribution, more procs than elements to distribute
   test_weighted_element_distribution_construction(
       domain::ElementWeight::NumGridPoints, lattice_2d, 100,
-      std::unordered_set<size_t>{0, 9});
+      std::unordered_set<size_t>{0, 9, 99});
 
   // Test processor retrieval with ignored processors
   test_proc_retrieval(domain::ElementWeight::NumGridPointsAndGridSpacing,

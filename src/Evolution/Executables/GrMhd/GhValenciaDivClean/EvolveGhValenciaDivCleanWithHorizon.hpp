@@ -5,34 +5,26 @@
 
 #include <vector>
 
-#include "Evolution/DiscontinuousGalerkin/Limiters/Tags.hpp"
 #include "Evolution/Executables/GrMhd/GhValenciaDivClean/GhValenciaDivCleanBase.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/TimeDerivativeTerms.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "Evolution/VariableFixing/Tags.hpp"
+#include "NumericalAlgorithms/Strahlkorper/IO/InitialShapeFromFile.hpp"
+#include "NumericalAlgorithms/Strahlkorper/InitialShape.hpp"
 #include "Options/FactoryHelpers.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/ErrorOnFailedApparentHorizon.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/FindApparentHorizon.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/ComputeHorizonVolumeQuantities.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/ComputeHorizonVolumeQuantities.tpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/InterpolationTarget.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/Tags.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/CleanUpInterpolator.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InitializeInterpolationTarget.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolationTargetReceiveVars.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorReceivePoints.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorReceiveVolumeData.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorRegisterElement.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/TryToInterpolate.hpp"
-#include "ParallelAlgorithms/Interpolation/Callbacks/ObserveTimeSeriesOnSurface.hpp"
-#include "ParallelAlgorithms/Interpolation/Events/Interpolate.hpp"
-#include "ParallelAlgorithms/Interpolation/InterpolationTarget.hpp"
-#include "ParallelAlgorithms/Interpolation/Interpolator.hpp"
-#include "ParallelAlgorithms/Interpolation/Protocols/InterpolationTargetTag.hpp"
-#include "ParallelAlgorithms/Interpolation/Tags.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/FailedHorizonFind.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/ObserveFieldsOnHorizon.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/ObserveTimeSeriesOnHorizon.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Component.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Criteria/Criterion.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Criteria/Factory.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Events/FindApparentHorizon.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/HorizonAliases.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/KerrSchild.hpp"
+#include "ParallelAlgorithms/ApparentHorizonFinder/Protocols/HorizonMetavars.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/Tags.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Factory.hpp"
 #include "Time/Tags/Time.hpp"
@@ -46,28 +38,25 @@ struct EvolutionMetavars
     : public GhValenciaDivCleanTemplateBase<
           EvolutionMetavars<UseControlSystems, UseParametrizedDeleptonization,
                             InterpolationTargetTags...>,
-          false, false, UseParametrizedDeleptonization, true> {
+          false, false, UseParametrizedDeleptonization> {
   static_assert(not UseControlSystems,
                 "GhValenciaWithHorizon doesn't support control systems yet.");
   static constexpr bool use_dg_subcell = false;
 
   using defaults = GhValenciaDivCleanDefaults<use_dg_subcell>;
-  using base =
-      GhValenciaDivCleanTemplateBase<EvolutionMetavars, use_dg_subcell,
-                                     UseControlSystems,
-                                     UseParametrizedDeleptonization, true>;
+  using base = GhValenciaDivCleanTemplateBase<EvolutionMetavars, use_dg_subcell,
+                                              UseControlSystems,
+                                              UseParametrizedDeleptonization>;
   static constexpr size_t volume_dim = defaults::volume_dim;
   using domain_frame = typename defaults::domain_frame;
   static constexpr bool use_damped_harmonic_rollon =
       defaults::use_damped_harmonic_rollon;
   using temporal_id = typename defaults::temporal_id;
-  static constexpr bool local_time_stepping = defaults::local_time_stepping;
   using system = typename defaults::system;
   using analytic_variables_tags = typename defaults::analytic_variables_tags;
   using analytic_solution_fields = typename defaults::analytic_solution_fields;
   using ordered_list_of_primitive_recovery_schemes =
       typename defaults::ordered_list_of_primitive_recovery_schemes;
-  using limiter = typename defaults::limiter;
   using initialize_initial_data_dependent_quantities_actions =
       typename defaults::initialize_initial_data_dependent_quantities_actions;
 
@@ -77,34 +66,26 @@ struct EvolutionMetavars
       "Harmonic formulation\n"
       "on a domain with a single horizon and corresponding excised region"};
 
-  struct AhA : tt::ConformsTo<intrp::protocols::InterpolationTargetTag> {
-    using temporal_id = ::Tags::Time;
-    using tags_to_observe = tmpl::list<gr::surfaces::Tags::Area>;
-    using compute_vars_to_interpolate = ah::ComputeHorizonVolumeQuantities;
-    using vars_to_interpolate_to_target = tmpl::list<
-        gr::Tags::SpatialMetric<DataVector, volume_dim, domain_frame>,
-        gr::Tags::InverseSpatialMetric<DataVector, volume_dim, domain_frame>,
-        gr::Tags::ExtrinsicCurvature<DataVector, volume_dim, domain_frame>,
-        gr::Tags::SpatialChristoffelSecondKind<DataVector, volume_dim,
-                                               domain_frame>>;
-    using compute_items_on_target = tmpl::append<
-        tmpl::list<gr::surfaces::Tags::AreaElementCompute<domain_frame>>,
-        tags_to_observe>;
-    using compute_target_points =
-        ah::TargetPoints::ApparentHorizon<AhA, ::Frame::Inertial>;
-    using post_interpolation_callbacks = tmpl::list<
-        intrp::callbacks::FindApparentHorizon<AhA, ::Frame::Inertial>>;
+  struct AhA : tt::ConformsTo<ah::protocols::HorizonMetavars> {
+    using time_tag = ah::Tags::ObservationTime<0>;
+
+    using frame = domain_frame;
+
+    using horizon_find_callbacks =
+        tmpl::list<ah::callbacks::ObserveTimeSeriesOnHorizon<
+            ::ah::tags_for_observing<domain_frame>, AhA>>;
     using horizon_find_failure_callbacks =
-        tmpl::list<intrp::callbacks::ErrorOnFailedApparentHorizon>;
-    using post_horizon_find_callbacks = tmpl::list<
-        intrp::callbacks::ObserveTimeSeriesOnSurface<tags_to_observe, AhA>>;
+        tmpl::list<ah::callbacks::FailedHorizonFind<AhA, false>>;
+
+    using compute_tags_on_element =
+        tmpl::list<ah::Tags::ObservationTimeCompute<0>>;
+
+    static constexpr ah::Destination destination = ah::Destination::Observation;
+
+    static std::string name() { return "AhA"; }
   };
 
-  using interpolation_target_tags = tmpl::list<InterpolationTargetTags..., AhA>;
-  using interpolator_source_vars = tmpl::list<
-      gr::Tags::SpacetimeMetric<DataVector, volume_dim, domain_frame>,
-      gh::Tags::Pi<DataVector, volume_dim, domain_frame>,
-      gh::Tags::Phi<DataVector, volume_dim, domain_frame>>;
+  using interpolation_target_tags = tmpl::list<InterpolationTargetTags...>;
 
   using observe_fields = typename base::observe_fields;
 
@@ -112,8 +93,12 @@ struct EvolutionMetavars
       : tt::ConformsTo<Options::protocols::FactoryCreation> {
     using factory_classes = Options::add_factory_classes<
         typename base::factory_creation::factory_classes,
-        tmpl::pair<Event, tmpl::list<intrp::Events::Interpolate<
-                              3, AhA, interpolator_source_vars>>>>;
+        tmpl::pair<Event, tmpl::list<ah::Events::FindApparentHorizon<AhA>>>,
+        tmpl::pair<ah::Criterion, ah::Criteria::standard_criteria>,
+        tmpl::pair<ylm::InitialShape<domain_frame>,
+                   tmpl::list<ylm::InitialShapes::Sphere<domain_frame>,
+                              ylm::InitialShapes::FromFile<domain_frame>,
+                              ah::InitialShapes::KerrSchild<domain_frame>>>>;
   };
 
   using initial_data_tag = typename base::initial_data_tag;
@@ -133,7 +118,6 @@ struct EvolutionMetavars
 
   using registration = typename base::registration;
 
-  using component_list =
-      tmpl::push_back<typename base::component_list,
-                      intrp::InterpolationTarget<EvolutionMetavars, AhA>>;
+  using component_list = tmpl::push_back<typename base::component_list,
+                                         ah::Component<EvolutionMetavars, AhA>>;
 };

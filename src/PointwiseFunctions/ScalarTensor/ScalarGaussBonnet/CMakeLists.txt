@@ -9,6 +9,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   CouplingParameters.cpp
+  DoubleCovariantDerivativeOfCoupling.cpp
   ScalarSource.cpp
   )
 
@@ -17,6 +18,8 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   CouplingParameters.hpp
+  DoubleCovariantDerivativeOfCoupling.hpp
+  ScalarGaussBonnet.hpp
   ScalarSource.hpp
   Tags.hpp
   )
@@ -29,3 +32,5 @@ target_link_libraries(
   INTERFACE
   ErrorHandling
   )
+
+add_subdirectory(CouplingFunctions)

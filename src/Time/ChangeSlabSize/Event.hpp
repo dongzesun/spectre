@@ -11,6 +11,8 @@
 #include <memory>
 #include <pup.h>
 #include <pup_stl.h>
+#include <typeindex>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -23,10 +25,14 @@
 #include "Parallel/Reduction.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "Time/ChangeSlabSize/Tags.hpp"
+#include "Time/LtsMode.hpp"
+#include "Time/RequestsStepperErrorTolerances.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
+#include "Time/StepperErrorTolerances.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeStepRequest.hpp"
 #include "Time/TimeStepRequestProcessor.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Functional.hpp"
 #include "Utilities/PrettyType.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
@@ -35,6 +41,7 @@
 /// \cond
 namespace Tags {
 struct DataBox;
+struct LtsMode;
 struct TimeStepId;
 }  // namespace Tags
 /// \endcond
@@ -72,7 +79,7 @@ struct StoreNewSlabSize {
 /// integration.  With local time-stepping this controls the interval
 /// between times when the sequences of steps on all elements are
 /// forced to align.
-class ChangeSlabSize : public Event {
+class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
   using ReductionData = Parallel::ReductionData<
       Parallel::ReductionDatum<int64_t, funcl::AssertEqual<>>,
       Parallel::ReductionDatum<TimeStepRequestProcessor, funcl::Plus<>>>;
@@ -127,12 +134,12 @@ class ChangeSlabSize : public Event {
   // can't get a const version while mutating other tags, so request a
   // mutable version.
   using return_tags = tmpl::list<::Tags::DataBox>;
-  using argument_tags = tmpl::list<::Tags::TimeStepId>;
+  using argument_tags = tmpl::list<::Tags::TimeStepId, ::Tags::LtsMode>;
 
   template <typename DbTags, typename Metavariables, typename ArrayIndex,
             typename ParallelComponent>
   void operator()(const gsl::not_null<db::DataBox<DbTags>*> box,
-                  const TimeStepId& time_step_id,
+                  const TimeStepId& time_step_id, const LtsMode lts_mode,
                   Parallel::GlobalCache<Metavariables>& cache,
                   const ArrayIndex& array_index,
                   const ParallelComponent* const /*meta*/,
@@ -149,6 +156,15 @@ class ChangeSlabSize : public Event {
     TimeStepRequestProcessor step_requests(time_step_id.time_runs_forward());
     bool synchronization_required = false;
     for (const auto& step_chooser : step_choosers_) {
+      if (lts_mode != LtsMode::Off and step_chooser->must_set_step_size()) {
+        // The runtime name might not be exactly the same as the one
+        // used by the factory, but hopefully it's close enough that
+        // the user can figure it out.
+        ERROR_NO_TRACE("The "
+                       << pretty_type::get_runtime_type_name(*step_chooser)
+                       << " StepChooser cannot be used for the slab size in "
+                          "an LTS evolution.");
+      }
       step_requests.process(
           step_chooser->desired_step(current_slab_size.value(), *box));
       // We must synchronize if any step chooser requires it, not just
@@ -208,12 +224,8 @@ class ChangeSlabSize : public Event {
     return true;
   }
 
-  template <typename F>
-  void for_each_step_chooser(F&& f) const {
-    for (const auto& step_chooser : step_choosers_) {
-      f(*step_chooser);
-    }
-  }
+  std::unordered_map<std::type_index, StepperErrorTolerances> tolerances()
+      const override;
 
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p) override {

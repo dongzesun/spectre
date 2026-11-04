@@ -24,6 +24,7 @@
 #include "Domain/Structure/Neighbors.hpp"
 #include "Domain/Structure/OrientationMap.hpp"
 #include "Domain/Structure/SegmentId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -206,26 +207,30 @@ void test() {
       element_1_id,
       DirectionMap<1, Neighbors<1>>{
           {Direction<1>::upper_xi(),
-           Neighbors<1>{std::unordered_set{element_2_id}, aligned}}}};
+           Neighbors<1>{std::unordered_set{element_2_id}, aligned}}},
+      domain::topologies::hypercube<1>};
   const Element<1> element_2{
       element_2_id,
       DirectionMap<1, Neighbors<1>>{
           {Direction<1>::lower_xi(),
            Neighbors<1>{std::unordered_set{element_1_id}, aligned}},
           {Direction<1>::upper_xi(),
-           Neighbors<1>{std::unordered_set{element_3_id}, aligned}}}};
+           Neighbors<1>{std::unordered_set{element_3_id}, aligned}}},
+      domain::topologies::hypercube<1>};
   const Element<1> element_3{
       element_3_id,
       DirectionMap<1, Neighbors<1>>{
           {Direction<1>::lower_xi(),
            Neighbors<1>{std::unordered_set{element_2_id}, aligned}},
           {Direction<1>::upper_xi(),
-           Neighbors<1>{std::unordered_set{element_4_id}, aligned}}}};
+           Neighbors<1>{std::unordered_set{element_4_id}, aligned}}},
+      domain::topologies::hypercube<1>};
   const Element<1> element_4{
       element_4_id,
       DirectionMap<1, Neighbors<1>>{
           {Direction<1>::lower_xi(),
-           Neighbors<1>{std::unordered_set{element_3_id}, aligned}}}};
+           Neighbors<1>{std::unordered_set{element_3_id}, aligned}}},
+      domain::topologies::hypercube<1>};
 
   const Mesh<1> element_1_mesh{std::array{3_st}, Spectral::Basis::Legendre,
                                Spectral::Quadrature::GaussLobatto};
@@ -362,7 +367,8 @@ void test() {
             {Direction<1>::lower_xi(),
              Neighbors<1>{std::unordered_set{new_parent_id}, aligned}},
             {Direction<1>::upper_xi(),
-             Neighbors<1>{std::unordered_set{new_lower_child_id}, aligned}}}};
+             Neighbors<1>{std::unordered_set{new_lower_child_id}, aligned}}},
+        domain::topologies::hypercube<1>};
     DirectionalIdMap<1, Mesh<1>> expected_element_3_neighbor_meshes;
     expected_element_3_neighbor_meshes.emplace(
         std::pair{DirectionalId{Direction<1>::lower_xi(), new_parent_id},
@@ -376,10 +382,44 @@ void test() {
         {std::array{amr::Flag::Undefined}, element_3_mesh_post_refinement}, {});
   }
 }
+
+void test_s1() {
+  using metavariables = Metavariables<false>;
+  using array_component = ArrayComponent<metavariables>;
+  using singleton_component = SingletonComponent<metavariables>;
+  const ElementId<1> element_id{0};
+  const Element<1> element{element_id, {}, domain::topologies::hypertorus<1>};
+  const Mesh<1> mesh{std::array{3_st}, Spectral::bases::hypertorus<1>,
+                     Spectral::quadratures::hypertorus<1>};
+  const Mesh<1> refined_mesh{std::array{5_st}, Spectral::bases::hypertorus<1>,
+                             Spectral::quadratures::hypertorus<1>};
+  amr::Info<1> element_info{{amr::Flag::IncreaseResolution}, refined_mesh};
+  std::unordered_map<ElementId<1>, amr::Info<1>> neighbor_info{};
+  using NeighborMeshes = DirectionalIdMap<1, Mesh<1>>;
+
+  ActionTesting::MockRuntimeSystem<metavariables> runner{{::Verbosity::Debug}};
+  ActionTesting::emplace_component_and_initialize<array_component>(
+      &runner, element_id,
+      {element, mesh, NeighborMeshes{}, element_info, neighbor_info});
+  ActionTesting::emplace_component<singleton_component>(&runner, 0);
+  CHECK(ActionTesting::is_simple_action_queue_empty<array_component>(
+      runner, element_id));
+  CHECK(ActionTesting::number_of_queued_simple_actions<singleton_component>(
+            runner, 0) == 0);
+  ActionTesting::simple_action<array_component, amr::Actions::AdjustDomain>(
+      make_not_null(&runner), element_id);
+  CHECK(ActionTesting::is_simple_action_queue_empty<array_component>(
+      runner, element_id));
+  CHECK(ActionTesting::number_of_queued_simple_actions<singleton_component>(
+            runner, 0) == 0);
+  check_box(runner, element_id, element, refined_mesh, NeighborMeshes{},
+            {std::array{amr::Flag::Undefined}, refined_mesh}, {});
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Amr.Actions.AdjustDomain",
                   "[Unit][ParallelAlgorithms]") {
   test<false>();
   test<true>();
+  test_s1();
 }

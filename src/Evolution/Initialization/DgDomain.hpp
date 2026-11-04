@@ -13,6 +13,7 @@
 
 #include "ControlSystem/Tags/FunctionsOfTimeInitialize.hpp"
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/IndexType.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
 #include "Domain/CoordinateMaps/Identity.hpp"
@@ -29,6 +30,7 @@
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/IsValidDgMesh.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/Tags/NeighborMesh.hpp"
 #include "Domain/TagsTimeDependent.hpp"
@@ -43,9 +45,9 @@
 #include "Parallel/Tags/ArrayIndex.hpp"
 #include "ParallelAlgorithms/Amr/Protocols/Projector.hpp"
 #include "ParallelAlgorithms/Initialization/MutateAssign.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \cond
 namespace Frame {
@@ -123,6 +125,8 @@ struct Domain {
       ::domain::Tags::CoordinatesMeshVelocityAndJacobiansCompute<
           ::domain::CoordinateMaps::Tags::CoordinateMap<dim, Frame::Grid,
                                                         Frame::Inertial>>,
+      ::domain::Tags::GridToInertialInverseJacobian<dim>,
+      ::domain::Tags::GridToInertialJacobian<dim>,
 
       ::domain::Tags::InertialFromGridCoordinatesCompute<dim>,
       ::domain::Tags::ElementToInertialInverseJacobian<dim>,
@@ -153,6 +157,9 @@ struct Domain {
     const Spectral::Basis i1_basis{Spectral::Basis::Legendre};
     *mesh = ::domain::create_initial_mesh(initial_extents, *element, i1_basis,
                                           i1_quadrature);
+    if (not ::domain::is_valid_dg_mesh(*mesh, *element)) {
+      ERROR("Invalid mesh: " << *mesh << " for Element " << *element);
+    }
     const auto& my_block = domain.blocks()[element_id.block_id()];
     *element_map = ElementMap<dim, Frame::Grid>{element_id, my_block};
 
@@ -175,7 +182,11 @@ struct Domain {
               neighbor_orientation.inverse_map()(::domain::create_initial_mesh(
                   initial_extents, neighbor_block, neighbor, i1_basis,
                   i1_quadrature)));
-        } else {
+        } else if (element->face_types().at(direction) ==
+                   ::domain::FaceType::SingleNonconforming) {
+          // We do not insert neighbor meshes into neighbor_mesh for a direction
+          // with domain::FaceType::MultipleNonconforming as this could
+          // overflow the FixedHashMap size
           neighbor_mesh->emplace(
               DirectionalId{direction, neighbor},
               ::domain::create_initial_mesh(initial_extents, neighbor_block,

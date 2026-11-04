@@ -8,7 +8,6 @@
 
 #include <array>
 #include <complex>
-#include <functional>
 #include <type_traits>
 #include <vector>
 
@@ -16,7 +15,6 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/MakeArray.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 /// \ingroup DataStructuresGroup
 /// Implementations of make_with_value.
@@ -164,34 +162,4 @@ struct NumberOfPoints<std::vector<T>> {
   }
 };
 
-template <typename T>
-struct NumberOfPoints<std::reference_wrapper<T>> {
-  static SPECTRE_ALWAYS_INLINE size_t apply(
-      const std::reference_wrapper<T>& input) {
-    return number_of_points(input.get());
-  }
-};
-
-/// \brief Makes a `TaggedTuple`; each element of the `TaggedTuple`
-/// must be `make_with_value`-creatable from a `T`.
-template <typename... Tags, typename T>
-struct MakeWithValueImpl<tuples::TaggedTuple<Tags...>, T> {
-  template <typename ValueType>
-  static SPECTRE_ALWAYS_INLINE tuples::TaggedTuple<Tags...> apply(
-      const T& input, const ValueType value) {
-    return tuples::TaggedTuple<Tags...>(
-        make_with_value<typename Tags::type>(input, value)...);
-  }
-};
-
-template <typename Tag, typename... Tags>
-struct NumberOfPoints<tuples::TaggedTuple<Tag, Tags...>> {
-  static SPECTRE_ALWAYS_INLINE size_t apply(
-      const tuples::TaggedTuple<Tag, Tags...>& input) {
-    const size_t points = number_of_points(tuples::get<Tag>(input));
-    ASSERT((... and (number_of_points(tuples::get<Tags>(input)) == points)),
-           "Inconsistent number of points in tuple entries.");
-    return points;
-  }
-};
 }  // namespace MakeWithValueImpls

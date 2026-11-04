@@ -8,6 +8,7 @@
 #include <tuple>
 
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
@@ -38,20 +39,22 @@
 #include "PointwiseFunctions/GeneralRelativity/SpacetimeNormalVector.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
+#include "PointwiseFunctions/MathFunctions/MathFunction.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 struct Metavariables {
   struct factory_creation
       : tt::ConformsTo<Options::protocols::FactoryCreation> {
-    using factory_classes = tmpl::map<tmpl::pair<
-        grmhd::GhValenciaDivClean::BoundaryConditions::BoundaryCondition,
-        tmpl::list<grmhd::GhValenciaDivClean::BoundaryConditions::
-                       ConstraintPreservingFreeOutflow>>>;
+    using factory_classes = tmpl::map<
+        tmpl::pair<MathFunction<1, Frame::Inertial>, tmpl::list<>>,
+        tmpl::pair<
+            grmhd::GhValenciaDivClean::BoundaryConditions::BoundaryCondition,
+            tmpl::list<grmhd::GhValenciaDivClean::BoundaryConditions::
+                           ConstraintPreservingFreeOutflow>>>;
   };
 };
 
@@ -498,7 +501,8 @@ SPECTRE_TEST_CASE(
               grmhd::GhValenciaDivClean::BoundaryConditions::BoundaryCondition>,
           Metavariables>(
           "ConstraintPreservingFreeOutflow:\n"
-          "  Type: ConstraintPreservingPhysical\n")
+          "  Type: ConstraintPreservingPhysical\n"
+          "  IncomingWaveProfile: None\n")
           ->get_clone();
 
   const auto serialized_and_deserialized_condition = serialize_and_deserialize(

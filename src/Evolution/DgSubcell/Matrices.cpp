@@ -12,12 +12,14 @@
 #include "DataStructures/IndexIterator.hpp"
 #include "DataStructures/Matrix.hpp"
 #include "Domain/Structure/Side.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/CollocationPoints.hpp"
 #include "NumericalAlgorithms/Spectral/InterpolationMatrix.hpp"
 #include "NumericalAlgorithms/Spectral/MaximumNumberOfPoints.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/MinimumNumberOfPoints.hpp"
+#include "NumericalAlgorithms/Spectral/Parity.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "NumericalAlgorithms/Spectral/QuadratureWeights.hpp"
 #include "Utilities/Algorithm.hpp"
@@ -27,30 +29,76 @@
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Numeric.hpp"
+#include "Utilities/RuntimeCache.hpp"
 #include "Utilities/StaticCache.hpp"
 
 namespace evolution::dg::subcell::fd {
-const Matrix& projection_matrix(
-    const Mesh<1>& dg_mesh, const size_t subcell_extents,
-    const Spectral::Quadrature& subcell_quadrature) {
-  ASSERT(dg_mesh.basis(0) == Spectral::Basis::Legendre,
-         "FD Subcell projection only supports Legendre basis right now but got "
-         "basis "
+const Matrix& projection_matrix(const Mesh<1>& dg_mesh,
+                                const size_t subcell_extents,
+                                const Spectral::Quadrature& subcell_quadrature,
+                                const Spectral::Parity parity) {
+  ASSERT(dg_mesh.basis(0) == Spectral::Basis::Legendre or
+             dg_mesh.basis(0) == Spectral::Basis::Cartoon or
+             dg_mesh.basis(0) == Spectral::Basis::ZernikeB1,
+         "FD Subcell projection only supports Legendre, Cartoon, or ZernikeB1 "
+         "bases right "
+         "now but got basis "
              << dg_mesh.basis(0));
   ASSERT(subcell_quadrature == Spectral::Quadrature::FaceCentered or
-             subcell_quadrature == Spectral::Quadrature::CellCentered,
+             subcell_quadrature == Spectral::Quadrature::CellCentered or
+             subcell_quadrature == Spectral::Quadrature::AxialSymmetry or
+             subcell_quadrature == Spectral::Quadrature::SphericalSymmetry,
          "subcell_quadrature option in projection_matrix should be "
-         "FaceCentered or CellCentered");
-  static const auto cache = make_static_cache<
-      CacheRange<
-          Spectral::minimum_number_of_points<
-              Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>,
-          Spectral::maximum_number_of_points<Spectral::Basis::Legendre> + 1>,
+         "FaceCentered, CellCentered, or a Cartoon quadrature, but got "
+             << subcell_quadrature);
+  ASSERT(dg_mesh.basis(0) != Spectral::Basis::ZernikeB1 or
+             parity != Spectral::Parity::Uninitialized,
+         "Parity must be set when using ZernikeB1");
+
+  const static auto zernike_b1_cache = make_static_cache<
+      CacheRange<Spectral::minimum_number_of_points<
+                     Spectral::Basis::ZernikeB1,
+                     Spectral::Quadrature::GaussRadauUpper>,
+                 Spectral::maximum_number_of_points<
+                     Spectral::Basis::ZernikeB1,
+                     Spectral::Quadrature::GaussRadauUpper> +
+                     1>,
       CacheRange<Spectral::minimum_number_of_points<
                      Spectral::Basis::FiniteDifference,
                      Spectral::Quadrature::CellCentered>,
                  Spectral::maximum_number_of_points<
-                     Spectral::Basis::FiniteDifference> +
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered> +
+                     1>,
+      CacheEnumeration<Spectral::Quadrature, Spectral::Quadrature::CellCentered,
+                       Spectral::Quadrature::FaceCentered>,
+      CacheEnumeration<Spectral::Parity, Spectral::Parity::Even,
+                       Spectral::Parity::Odd>>(
+      [](const size_t local_num_dg_points, const size_t local_num_fd_points,
+         const Spectral::Quadrature local_subcell_quadrature,
+         const Spectral::Parity local_parity) {
+        return Spectral::interpolation_matrix<
+            Spectral::Basis::ZernikeB1, Spectral::Quadrature::GaussRadauUpper>(
+            local_num_dg_points,
+            Spectral::collocation_points(
+                Mesh<1>{local_num_fd_points, Spectral::Basis::FiniteDifference,
+                        local_subcell_quadrature}),
+            local_parity);
+      });
+
+  const static auto legendre_cache = make_static_cache<
+      CacheRange<
+          Spectral::minimum_number_of_points<
+              Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>,
+          Spectral::maximum_number_of_points<
+              Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto> +
+              1>,
+      CacheRange<Spectral::minimum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered>,
+                 Spectral::maximum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered> +
                      1>,
       CacheEnumeration<Spectral::Quadrature, Spectral::Quadrature::Gauss,
                        Spectral::Quadrature::GaussLobatto>,
@@ -66,8 +114,16 @@ const Matrix& projection_matrix(
                 Mesh<1>{local_num_fd_points, Spectral::Basis::FiniteDifference,
                         local_subcell_quadrature}));
       });
-  return cache(dg_mesh.extents(0), subcell_extents, dg_mesh.quadrature(0),
-               subcell_quadrature);
+  if (dg_mesh.basis(0) == Spectral::Basis::Cartoon) {
+    static const Matrix cartoon_matrix{1, 1, 1.0};
+    return cartoon_matrix;
+  } else if (dg_mesh.basis(0) == Spectral::Basis::ZernikeB1) {
+    return zernike_b1_cache(dg_mesh.extents(0), subcell_extents,
+                            subcell_quadrature, parity);
+  } else {
+    return legendre_cache(dg_mesh.extents(0), subcell_extents,
+                          dg_mesh.quadrature(0), subcell_quadrature);
+  }
 }
 
 namespace {
@@ -213,88 +269,97 @@ template <Spectral::Quadrature QuadratureType, size_t NumDgGridPoints1d,
           size_t Dim>
 Matrix reconstruction_matrix_cache_impl_helper(
     const Index<Dim>& subcell_extents) {
-  // We currently require all dimensions to have the same number of grid
-  // points.
-  const Index<Dim> dg_extents{NumDgGridPoints1d};
-  const Matrix& proj_matrix =
-      projection_matrix_all_dimensions<QuadratureType, NumDgGridPoints1d>(
-          subcell_extents);
-  const size_t num_pts = dg_extents.product();
-  const size_t num_subcells = subcell_extents.product();
+  if constexpr (QuadratureType == Spectral::Quadrature::SphericalSymmetry or
+                QuadratureType == Spectral::Quadrature::AxialSymmetry) {
+    ASSERT(Dim == 1,
+           "Cartoon basis should never be the first basis: only a mesh slice "
+           "should get here, got Dim = "
+               << Dim);
+    return Matrix{1, 1, 1.0};
+  } else {
+    // We currently require all dimensions to have the same number of grid
+    // points.
+    const Index<Dim> dg_extents{NumDgGridPoints1d};
+    const Matrix& proj_matrix =
+        projection_matrix_all_dimensions<QuadratureType, NumDgGridPoints1d>(
+            subcell_extents);
+    const size_t num_pts = dg_extents.product();
+    const size_t num_subcells = subcell_extents.product();
 
-  const size_t reconstruction_rows_and_cols = num_pts + 1;
-  Matrix lhs_recons_matrix(reconstruction_rows_and_cols,
-                           reconstruction_rows_and_cols, 0.0);
-  // We use rhs_recons_matrix here as a temp buffer, we will fill it later.
-  Matrix rhs_recons_matrix(num_pts + 1, num_subcells);
-  dgemm_<true>('T', 'N', proj_matrix.columns(), proj_matrix.columns(),
-               proj_matrix.rows(), 2.0, proj_matrix.data(),
-               proj_matrix.spacing(), proj_matrix.data(), proj_matrix.spacing(),
-               0.0, rhs_recons_matrix.data(), rhs_recons_matrix.spacing());
+    const size_t reconstruction_rows_and_cols = num_pts + 1;
+    Matrix lhs_recons_matrix(reconstruction_rows_and_cols,
+                             reconstruction_rows_and_cols, 0.0);
+    // We use rhs_recons_matrix here as a temp buffer, we will fill it later.
+    Matrix rhs_recons_matrix(num_pts + 1, num_subcells);
+    dgemm_<true>('T', 'N', proj_matrix.columns(), proj_matrix.columns(),
+                 proj_matrix.rows(), 2.0, proj_matrix.data(),
+                 proj_matrix.spacing(), proj_matrix.data(),
+                 proj_matrix.spacing(), 0.0, rhs_recons_matrix.data(),
+                 rhs_recons_matrix.spacing());
 
-  for (size_t l = 0; l < num_pts; ++l) {
-    for (size_t j = 0; j < num_pts; ++j) {
-      lhs_recons_matrix(l, j) = rhs_recons_matrix(j, l);
-    }
-  }
-
-  std::array<const DataVector*, Dim> weights{};
-  for (size_t d = 0; d < Dim; ++d) {
-    gsl::at(weights, d) =
-        &Spectral::quadrature_weights<Spectral::Basis::Legendre,
-                                      QuadratureType>(dg_extents[d]);
-  }
-  for (IndexIterator<Dim> dg_it(dg_extents); dg_it; ++dg_it) {
-    lhs_recons_matrix(dg_it.collapsed_index(), num_pts) =
-        -(*weights[0])[dg_it()[0]];
-    lhs_recons_matrix(num_pts, dg_it.collapsed_index()) =
-        (*weights[0])[dg_it()[0]];
-    for (size_t i = 1; i < Dim; ++i) {
-      lhs_recons_matrix(dg_it.collapsed_index(), num_pts) *=
-          (*gsl::at(weights, i))[dg_it()[i]];
-      lhs_recons_matrix(num_pts, dg_it.collapsed_index()) *=
-          (*gsl::at(weights, i))[dg_it()[i]];
-    }
-  }
-
-  for (size_t k = 0; k < num_subcells; ++k) {
     for (size_t l = 0; l < num_pts; ++l) {
-      rhs_recons_matrix(l, k) = 2.0 * proj_matrix(k, l);
+      for (size_t j = 0; j < num_pts; ++j) {
+        lhs_recons_matrix(l, j) = rhs_recons_matrix(j, l);
+      }
     }
-  }
 
-  double deltas = 2.0 / subcell_extents[0];
-  for (size_t d = 1; d < Dim; ++d) {
-    deltas *= 2.0 / subcell_extents[d];
-  }
-  for (size_t i = 0; i < num_subcells; ++i) {
-    rhs_recons_matrix(num_pts, i) = deltas;
-  }
-  for (IndexIterator<Dim> it(subcell_extents); it; ++it) {
-    rhs_recons_matrix(num_pts, it.collapsed_index()) *=
-        integration_weight(subcell_extents, *it);
-  }
-
-  const Matrix inv_lhs_recons_matrix = inv(lhs_recons_matrix);
-  Matrix full_recons_matrix(inv_lhs_recons_matrix.rows(),
-                            rhs_recons_matrix.columns());
-  // Do matrix multipy with dgemm_ directly because that seems to be faster
-  // than Blaze.
-  dgemm_<true>('N', 'N', inv_lhs_recons_matrix.rows(),
-               rhs_recons_matrix.columns(), inv_lhs_recons_matrix.columns(),
-               1.0, inv_lhs_recons_matrix.data(),
-               inv_lhs_recons_matrix.spacing(), rhs_recons_matrix.data(),
-               rhs_recons_matrix.spacing(), 0.0, full_recons_matrix.data(),
-               full_recons_matrix.spacing());
-  // exclude bottom row for Lagrange multiplier.
-  Matrix reduced_recons_matrix(num_pts, num_subcells);
-  for (size_t i = 0; i < num_pts; ++i) {
-    for (size_t j = 0; j < num_subcells; ++j) {
-      reduced_recons_matrix(i, j) = full_recons_matrix(i, j);
+    std::array<const DataVector*, Dim> weights{};
+    for (size_t d = 0; d < Dim; ++d) {
+      gsl::at(weights, d) =
+          &Spectral::quadrature_weights<Spectral::Basis::Legendre,
+                                        QuadratureType>(dg_extents[d]);
     }
-  }
+    for (IndexIterator<Dim> dg_it(dg_extents); dg_it; ++dg_it) {
+      lhs_recons_matrix(dg_it.collapsed_index(), num_pts) =
+          -(*weights[0])[dg_it()[0]];
+      lhs_recons_matrix(num_pts, dg_it.collapsed_index()) =
+          (*weights[0])[dg_it()[0]];
+      for (size_t i = 1; i < Dim; ++i) {
+        lhs_recons_matrix(dg_it.collapsed_index(), num_pts) *=
+            (*gsl::at(weights, i))[dg_it()[i]];
+        lhs_recons_matrix(num_pts, dg_it.collapsed_index()) *=
+            (*gsl::at(weights, i))[dg_it()[i]];
+      }
+    }
 
-  return reduced_recons_matrix;
+    for (size_t k = 0; k < num_subcells; ++k) {
+      for (size_t l = 0; l < num_pts; ++l) {
+        rhs_recons_matrix(l, k) = 2.0 * proj_matrix(k, l);
+      }
+    }
+
+    double deltas = 2.0 / subcell_extents[0];
+    for (size_t d = 1; d < Dim; ++d) {
+      deltas *= 2.0 / subcell_extents[d];
+    }
+    for (size_t i = 0; i < num_subcells; ++i) {
+      rhs_recons_matrix(num_pts, i) = deltas;
+    }
+    for (IndexIterator<Dim> it(subcell_extents); it; ++it) {
+      rhs_recons_matrix(num_pts, it.collapsed_index()) *=
+          integration_weight(subcell_extents, *it);
+    }
+
+    const Matrix inv_lhs_recons_matrix = inv(lhs_recons_matrix);
+    Matrix full_recons_matrix(inv_lhs_recons_matrix.rows(),
+                              rhs_recons_matrix.columns());
+    // Do matrix multipy with dgemm_ directly because that seems to be faster
+    // than Blaze.
+    dgemm_<true>('N', 'N', inv_lhs_recons_matrix.rows(),
+                 rhs_recons_matrix.columns(), inv_lhs_recons_matrix.columns(),
+                 1.0, inv_lhs_recons_matrix.data(),
+                 inv_lhs_recons_matrix.spacing(), rhs_recons_matrix.data(),
+                 rhs_recons_matrix.spacing(), 0.0, full_recons_matrix.data(),
+                 full_recons_matrix.spacing());
+    // exclude bottom row for Lagrange multiplier.
+    Matrix reduced_recons_matrix(num_pts, num_subcells);
+    for (size_t i = 0; i < num_pts; ++i) {
+      for (size_t j = 0; j < num_subcells; ++j) {
+        reduced_recons_matrix(i, j) = full_recons_matrix(i, j);
+      }
+    }
+    return reduced_recons_matrix;
+  }
 }
 
 template <Spectral::Quadrature QuadratureType, size_t NumDgGridPoints,
@@ -320,80 +385,307 @@ const Matrix& reconstruction_matrix_impl(
 template <size_t Dim>
 const Matrix& reconstruction_matrix(const Mesh<Dim>& dg_mesh,
                                     const Index<Dim>& subcell_extents) {
-  ASSERT(dg_mesh.basis(0) == Spectral::Basis::Legendre,
-         "FD Subcell reconstruction only supports Legendre basis right now.");
-  ASSERT(dg_mesh == Mesh<Dim>(dg_mesh.extents(0), dg_mesh.basis(0),
-                              dg_mesh.quadrature(0)),
-         "The mesh must be uniform but is " << dg_mesh);
-  ASSERT(subcell_extents == Index<Dim>(subcell_extents[0]),
-         "The subcell mesh must be uniform but is " << subcell_extents);
+  ASSERT(dg_mesh.basis(0) == Spectral::Basis::Legendre or
+             dg_mesh.basis(0) == Spectral::Basis::Cartoon,
+         "FD Subcell reconstruction only supports Legendre or Cartoon bases "
+         "right now, got "
+             << dg_mesh);
+  verify_subcell_mesh(dg_mesh);
+  verify_subcell_extents(subcell_extents);
+
   switch (dg_mesh.quadrature(0)) {
     case Spectral::Quadrature::GaussLobatto:
       return reconstruction_matrix_impl<Spectral::Quadrature::GaussLobatto>(
           dg_mesh, subcell_extents,
-          std::make_index_sequence<
-              Spectral::maximum_number_of_points<Spectral::Basis::Legendre> +
-              1>{});
+          std::make_index_sequence<Spectral::maximum_number_of_points<
+                                       Spectral::Basis::Legendre,
+                                       Spectral::Quadrature::GaussLobatto> +
+                                   1>{});
     case Spectral::Quadrature::Gauss:
       return reconstruction_matrix_impl<Spectral::Quadrature::Gauss>(
           dg_mesh, subcell_extents,
           std::make_index_sequence<
-              Spectral::maximum_number_of_points<Spectral::Basis::Legendre> +
+              Spectral::maximum_number_of_points<Spectral::Basis::Legendre,
+                                                 Spectral::Quadrature::Gauss> +
+              1>{});
+    case Spectral::Quadrature::AxialSymmetry:
+      ASSERT(Dim == 1,
+             "Cartoon basis should only be used with DimByDim reconstruction, "
+             "so only a mesh slice "
+             "should get here, got Dim = "
+                 << Dim);
+      return reconstruction_matrix_impl<Spectral::Quadrature::AxialSymmetry>(
+          dg_mesh, subcell_extents,
+          std::make_index_sequence<Spectral::maximum_number_of_points<
+                                       Spectral::Basis::Cartoon,
+                                       Spectral::Quadrature::AxialSymmetry> +
+                                   1>{});
+    case Spectral::Quadrature::SphericalSymmetry:
+      ASSERT(Dim == 1,
+             "Cartoon basis should only be used with DimByDim reconstruction, "
+             "so only a mesh slice "
+             "should get here, got Dim = "
+                 << Dim);
+      return reconstruction_matrix_impl<
+          Spectral::Quadrature::SphericalSymmetry>(
+          dg_mesh, subcell_extents,
+          std::make_index_sequence<
+              Spectral::maximum_number_of_points<
+                  Spectral::Basis::Cartoon,
+                  Spectral::Quadrature::SphericalSymmetry> +
               1>{});
     default:
-      ERROR("Unsupported quadrature type in FD subcell reconstruction matrix");
+      ERROR(
+          "Unsupported quadrature type in FD subcell reconstruction "
+          "matrix, got "
+          << dg_mesh.quadrature(0));
   };
 }
 
+const Matrix& reconstruction_matrix(const Mesh<1>& dg_mesh,
+                                    const size_t subcell_extents,
+                                    const Spectral::Parity parity) {
+  ASSERT(dg_mesh.basis(0) == Spectral::Basis::ZernikeB1 and
+             dg_mesh.quadrature(0) == Spectral::Quadrature::GaussRadauUpper,
+         "reconstruction_matrix with a Parity argument only supports "
+         "ZernikeB1 with GaussRadauUpper quadrature, but got "
+             << dg_mesh);
+  ASSERT(parity != Spectral::Parity::Uninitialized,
+         "Parity must be set when using ZernikeB1");
+  ASSERT(subcell_extents >= dg_mesh.extents(0),
+         "Subcell extents ("
+             << subcell_extents << ") must be >= DG extents ("
+             << dg_mesh.extents(0)
+             << ") for ZernikeB1 reconstruction to be well-posed (P^T P "
+                "would be singular)");
+
+  static const auto cache = make_runtime_cache<
+      CacheRange<Spectral::minimum_number_of_points<
+                     Spectral::Basis::ZernikeB1,
+                     Spectral::Quadrature::GaussRadauUpper>,
+                 Spectral::maximum_number_of_points<
+                     Spectral::Basis::ZernikeB1,
+                     Spectral::Quadrature::GaussRadauUpper> +
+                     1>,
+      CacheRange<Spectral::minimum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered>,
+                 Spectral::maximum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered> +
+                     1>,
+      CacheEnumeration<Spectral::Parity, Spectral::Parity::Even,
+                       Spectral::Parity::Odd>>(
+      [](const size_t n_dg, const size_t n_fd,
+         const Spectral::Parity local_parity) {
+        const Matrix& proj_matrix = projection_matrix(
+            Mesh<1>{n_dg, Spectral::Basis::ZernikeB1,
+                    Spectral::Quadrature::GaussRadauUpper},
+            n_fd, Spectral::Quadrature::CellCentered, local_parity);
+
+        // Compute 2 P^T P (n_dg x n_dg)
+        Matrix two_pt_p(n_dg, n_dg, 0.0);
+        dgemm_<true>('T', 'N', n_dg, n_dg, n_fd, 2.0, proj_matrix.data(),
+                     proj_matrix.spacing(), proj_matrix.data(),
+                     proj_matrix.spacing(), 0.0, two_pt_p.data(),
+                     two_pt_p.spacing());
+
+        // RHS top block: 2 P^T (n_dg x n_fd)
+        Matrix rhs_top(n_dg, n_fd);
+        for (size_t k = 0; k < n_fd; ++k) {
+          for (size_t l = 0; l < n_dg; ++l) {
+            rhs_top(l, k) = 2.0 * proj_matrix(k, l);
+          }
+        }
+
+        // For odd parity, the conservation constraint
+        //
+        //   sum_i w_i^DG u(r_i^DG) = sum_j w_j^FD u(r_j^FD)
+        //
+        // is inconsistent because the DG quadrature points are the roots of
+        // Pi^{m=0}(2*n_dg, r) = Q^0_{2*n_dg} - Q^0_{2*n_dg-2}, which are
+        // optimised for integrating even-parity (m=0) functions Q^0_k. They
+        // are not accurate for odd-parity (m=1) integrands Q^1_k.
+        //
+        // For example, with n_dg=2 (points 0.447, 1.0; weights 0.833, 0.167)
+        // and u(r) = r (the lowest odd-parity basis function):
+        //
+        //   sum_i w_i^DG * r_i  =  0.0787   (DG quadrature, inaccurate for m=1)
+        //   sum_j w_j^FD * r_j  =  0.5000   (6th-order FD, = int_0^1 r dr)
+        //
+        // Imposing this as a constraint via a Lagrange multiplier forces R to
+        // satisfy a false equation, corrupting the reconstruction. The pure
+        // pseudoinverse R = (2 P^T P)^{-1} 2P^T does not impose a conservation
+        // constraint and still satisfies R P = I exactly by construction.
+        if (local_parity == Spectral::Parity::Odd) {
+          // Use the pure pseudoinverse R = (P^T P)^{-1} P^T, which satisfies
+          // R . P = (P^T P)^{-1} (P^T P) = I exactly without relying on any
+          // conservation constraint.
+          const Matrix inv_two_pt_p = inv(two_pt_p);
+          Matrix result(n_dg, n_fd);
+          dgemm_<true>('N', 'N', n_dg, n_fd, n_dg, 1.0, inv_two_pt_p.data(),
+                       inv_two_pt_p.spacing(), rhs_top.data(),
+                       rhs_top.spacing(), 0.0, result.data(), result.spacing());
+          return result;
+        }
+
+        // Even parity: the conservation constraint is self-consistent (see
+        // discussion above), so use Lagrange-constrained least-squares.
+        const size_t aug_size = n_dg + 1;
+        Matrix lhs(aug_size, aug_size, 0.0);
+        for (size_t l = 0; l < n_dg; ++l) {
+          for (size_t j = 0; j < n_dg; ++j) {
+            lhs(l, j) = two_pt_p(l, j);
+          }
+        }
+
+        // Lagrange multiplier row and column (conservation constraint)
+        const DataVector& dg_weights =
+            Spectral::quadrature_weights<Spectral::Basis::ZernikeB1,
+                                         Spectral::Quadrature::GaussRadauUpper>(
+                n_dg);
+        for (size_t i = 0; i < n_dg; ++i) {
+          lhs(i, n_dg) = -dg_weights[i];
+          lhs(n_dg, i) = dg_weights[i];
+        }
+
+        // Fill augmented RHS: rows 0..n_dg-1 hold 2 P^T, row n_dg holds the
+        // FD integration weights. The ZernikeB1 physical domain is [0,1], so
+        // the cell width is 1/n_fd (not 2/n_fd as for Legendre on [-1,1]).
+        Matrix rhs(aug_size, n_fd);
+        for (size_t k = 0; k < n_fd; ++k) {
+          for (size_t l = 0; l < n_dg; ++l) {
+            rhs(l, k) = rhs_top(l, k);
+          }
+        }
+        const double delta = 1.0 / static_cast<double>(n_fd);
+        for (size_t i = 0; i < n_fd; ++i) {
+          rhs(n_dg, i) =
+              delta * get_sixth_order_integration_coefficient(n_fd, i);
+        }
+
+        const Matrix inv_lhs = inv(lhs);
+        Matrix full_recons(aug_size, n_fd);
+        dgemm_<true>('N', 'N', inv_lhs.rows(), n_fd, inv_lhs.columns(), 1.0,
+                     inv_lhs.data(), inv_lhs.spacing(), rhs.data(),
+                     rhs.spacing(), 0.0, full_recons.data(),
+                     full_recons.spacing());
+        // Drop the Lagrange multiplier row
+        Matrix result(n_dg, n_fd);
+        for (size_t i = 0; i < n_dg; ++i) {
+          for (size_t j = 0; j < n_fd; ++j) {
+            result(i, j) = full_recons(i, j);
+          }
+        }
+        return result;
+      });
+
+  return cache(dg_mesh.extents(0), subcell_extents, parity);
+}
+
+namespace {
+// The logical coordinates of the centers of the `ghost_zone_size`
+// subcells nearest the `side` face of the element
+DataVector ghost_zone_target_points(const size_t num_fd_points,
+                                    const size_t ghost_zone_size,
+                                    const Side side) {
+  const DataVector& fd_points =
+      Spectral::collocation_points<Spectral::Basis::FiniteDifference,
+                                   Spectral::Quadrature::CellCentered>(
+          num_fd_points);
+  DataVector target_points(ghost_zone_size);
+  for (size_t i = 0; i < ghost_zone_size; ++i) {
+    target_points[i] =
+        fd_points[side == Side::Lower ? i
+                                      : (num_fd_points - ghost_zone_size + i)];
+  }
+  return target_points;
+}
+}  // namespace
+
 const Matrix& projection_matrix(const Mesh<1>& dg_mesh,
                                 const size_t subcell_extents,
-                                const size_t ghost_zone_size, const Side side) {
+                                const size_t ghost_zone_size, const Side side,
+                                const Spectral::Parity parity) {
   static constexpr size_t max_ghost_zone_size = 5;
-  ASSERT(dg_mesh.basis(0) == Spectral::Basis::Legendre,
-         "FD Subcell projection only supports Legendre basis right now but got "
-         "basis "
+  ASSERT(dg_mesh.basis(0) == Spectral::Basis::Legendre or
+             dg_mesh.basis(0) == Spectral::Basis::ZernikeB1,
+         "FD Subcell ghost zone projection only supports Legendre or ZernikeB1 "
+         "bases right now but got basis "
              << dg_mesh.basis(0));
+  ASSERT(dg_mesh.basis(0) != Spectral::Basis::ZernikeB1 or
+             dg_mesh.quadrature(0) == Spectral::Quadrature::GaussRadauUpper,
+         "ZernikeB1 ghost zone projection only supports GaussRadauUpper "
+         "quadrature, but got "
+             << dg_mesh);
+  ASSERT(dg_mesh.basis(0) != Spectral::Basis::ZernikeB1 or
+             parity != Spectral::Parity::Uninitialized,
+         "Parity must be set when using ZernikeB1");
   ASSERT(ghost_zone_size <= max_ghost_zone_size and ghost_zone_size >= 2,
          "ghost_zone_size must be in [2, " << max_ghost_zone_size
                                            << " ] but got " << ghost_zone_size);
-  static const auto cache =
-      make_static_cache<
-          CacheRange<
-              Spectral::minimum_number_of_points<
-                  Spectral::Basis::Legendre,
-                  Spectral::Quadrature::GaussLobatto>,
-              Spectral::maximum_number_of_points<Spectral::Basis::Legendre> +
-                  1>,
-          CacheRange<Spectral::minimum_number_of_points<
-                         Spectral::Basis::FiniteDifference,
-                         Spectral::Quadrature::CellCentered>,
-                     Spectral::maximum_number_of_points<
-                         Spectral::Basis::FiniteDifference> +
-                         1>,
-          CacheRange<2_st, max_ghost_zone_size + 1>,
-          CacheEnumeration<Spectral::Quadrature, Spectral::Quadrature::Gauss,
-                           Spectral::Quadrature::GaussLobatto>,
-          CacheEnumeration<Side, Side::Lower, Side::Upper>>(
-          [](const size_t local_num_dg_points, const size_t local_num_fd_points,
-             const size_t local_ghost_zone_size,
-             const Spectral::Quadrature dg_quadrature, const Side local_side) {
-            const DataVector& fd_points = Spectral::collocation_points<
-                Spectral::Basis::FiniteDifference,
-                Spectral::Quadrature::CellCentered>(local_num_fd_points);
-            DataVector target_points(local_ghost_zone_size);
-            for (size_t i = 0; i < local_ghost_zone_size; ++i) {
-              target_points[i] = fd_points[local_side == Side::Lower
-                                               ? i
-                                               : (local_num_fd_points -
-                                                  local_ghost_zone_size + i)];
-            }
-            return Spectral::interpolation_matrix(
-                Mesh<1>{local_num_dg_points, Spectral::Basis::Legendre,
-                        dg_quadrature},
-                target_points);
-          });
-  return cache(dg_mesh.extents(0), subcell_extents, ghost_zone_size,
-               dg_mesh.quadrature(0), side);
+  static const auto zernike_b1_cache = make_static_cache<
+      CacheRange<Spectral::minimum_number_of_points<
+                     Spectral::Basis::ZernikeB1,
+                     Spectral::Quadrature::GaussRadauUpper>,
+                 Spectral::maximum_number_of_points<
+                     Spectral::Basis::ZernikeB1,
+                     Spectral::Quadrature::GaussRadauUpper> +
+                     1>,
+      CacheRange<Spectral::minimum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered>,
+                 Spectral::maximum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered> +
+                     1>,
+      CacheRange<2_st, max_ghost_zone_size + 1>,
+      CacheEnumeration<Side, Side::Lower, Side::Upper>,
+      CacheEnumeration<Spectral::Parity, Spectral::Parity::Even,
+                       Spectral::Parity::Odd>>(
+      [](const size_t local_num_dg_points, const size_t local_num_fd_points,
+         const size_t local_ghost_zone_size, const Side local_side,
+         const Spectral::Parity local_parity) {
+        return Spectral::interpolation_matrix<
+            Spectral::Basis::ZernikeB1, Spectral::Quadrature::GaussRadauUpper>(
+            local_num_dg_points,
+            ghost_zone_target_points(local_num_fd_points, local_ghost_zone_size,
+                                     local_side),
+            local_parity);
+      });
+  static const auto legendre_cache = make_static_cache<
+      CacheRange<
+          Spectral::minimum_number_of_points<
+              Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto>,
+          Spectral::maximum_number_of_points<
+              Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto> +
+              1>,
+      CacheRange<Spectral::minimum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered>,
+                 Spectral::maximum_number_of_points<
+                     Spectral::Basis::FiniteDifference,
+                     Spectral::Quadrature::CellCentered> +
+                     1>,
+      CacheRange<2_st, max_ghost_zone_size + 1>,
+      CacheEnumeration<Spectral::Quadrature, Spectral::Quadrature::Gauss,
+                       Spectral::Quadrature::GaussLobatto>,
+      CacheEnumeration<Side, Side::Lower, Side::Upper>>(
+      [](const size_t local_num_dg_points, const size_t local_num_fd_points,
+         const size_t local_ghost_zone_size,
+         const Spectral::Quadrature dg_quadrature, const Side local_side) {
+        return Spectral::interpolation_matrix(
+            Mesh<1>{local_num_dg_points, Spectral::Basis::Legendre,
+                    dg_quadrature},
+            ghost_zone_target_points(local_num_fd_points, local_ghost_zone_size,
+                                     local_side));
+      });
+  if (dg_mesh.basis(0) == Spectral::Basis::ZernikeB1) {
+    return zernike_b1_cache(dg_mesh.extents(0), subcell_extents,
+                            ghost_zone_size, side, parity);
+  }
+  return legendre_cache(dg_mesh.extents(0), subcell_extents, ghost_zone_size,
+                        dg_mesh.quadrature(0), side);
 }
 
 #define GET_DIM(data) BOOST_PP_TUPLE_ELEM(0, data)

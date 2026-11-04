@@ -20,8 +20,14 @@
 #include "Evolution/DiscontinuousGalerkin/Actions/ComputeTimeDerivative.hpp"
 #include "Evolution/DiscontinuousGalerkin/CleanMortarHistory.hpp"
 #include "Evolution/DiscontinuousGalerkin/DgElementArray.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/ChangeFixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/FixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/NonconformingEqualRateRegions.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/Mortars.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/ProjectSpectralFilters.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/QuadratureTag.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SetupEqualRateRegions.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SpectralFilters.hpp"
 #include "Evolution/Initialization/DgDomain.hpp"
 #include "Evolution/Initialization/Evolution.hpp"
 #include "Evolution/Initialization/NonconservativeSystem.hpp"
@@ -33,13 +39,15 @@
 #include "Evolution/Systems/ScalarWave/Initialize.hpp"
 #include "Evolution/Systems/ScalarWave/MomentumDensity.hpp"
 #include "Evolution/Systems/ScalarWave/System.hpp"
-#include "Evolution/Tags/Filter.hpp"
 #include "IO/Observer/Actions/RegisterEvents.hpp"
 #include "IO/Observer/Helpers.hpp"
 #include "IO/Observer/ObserverComponent.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags.hpp"
-#include "NumericalAlgorithms/LinearOperators/ExponentialFilter.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Factory.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/FilledSphere.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/SphericalShell.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Tag.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
 #include "Parallel/ArrayCollection/DgElementCollection.hpp"
@@ -53,9 +61,9 @@
 #include "Parallel/Protocols/RegistrationMetavariables.hpp"
 #include "Parallel/Reduction.hpp"
 #include "ParallelAlgorithms/Actions/AddComputeTags.hpp"
-#include "ParallelAlgorithms/Actions/FilterAction.hpp"
 #include "ParallelAlgorithms/Actions/InitializeItems.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
+#include "ParallelAlgorithms/Actions/SpectralFilter.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
 #include "ParallelAlgorithms/Amr/Actions/CollectDataFromChildren.hpp"
 #include "ParallelAlgorithms/Amr/Actions/Component.hpp"
@@ -66,15 +74,16 @@
 #include "ParallelAlgorithms/Amr/Criteria/Factory.hpp"
 #include "ParallelAlgorithms/Amr/Criteria/Tags/Criteria.hpp"
 #include "ParallelAlgorithms/Amr/Events/ObserveAmrCriteria.hpp"
-#include "ParallelAlgorithms/Amr/Events/ObserveAmrStats.hpp"
 #include "ParallelAlgorithms/Amr/Events/RefineMesh.hpp"
 #include "ParallelAlgorithms/Amr/Projectors/CopyFromCreatorOrLeaveAsIs.hpp"
 #include "ParallelAlgorithms/Amr/Projectors/DefaultInitialize.hpp"
 #include "ParallelAlgorithms/Amr/Projectors/Tensors.hpp"
 #include "ParallelAlgorithms/Amr/Projectors/Variables.hpp"
 #include "ParallelAlgorithms/Amr/Protocols/AmrMetavariables.hpp"
+#include "ParallelAlgorithms/Events/ChangeFixedLtsRatio.hpp"
 #include "ParallelAlgorithms/Events/Completion.hpp"
 #include "ParallelAlgorithms/Events/Factory.hpp"
+#include "ParallelAlgorithms/Events/ObserveGridStats.hpp"
 #include "ParallelAlgorithms/Events/Tags.hpp"
 #include "ParallelAlgorithms/EventsAndDenseTriggers/DenseTrigger.hpp"
 #include "ParallelAlgorithms/EventsAndDenseTriggers/DenseTriggers/Factory.hpp"
@@ -89,6 +98,7 @@
 #include "PointwiseFunctions/AnalyticSolutions/WaveEquation/PlaneWave.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/WaveEquation/RegularSphericalWave.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/NumericData.hpp"
+#include "PointwiseFunctions/InitialDataUtilities/WithNoise.hpp"
 #include "PointwiseFunctions/MathFunctions/Factory.hpp"
 #include "PointwiseFunctions/MathFunctions/MathFunction.hpp"
 #include "Time/Actions/SelfStartActions.hpp"
@@ -98,7 +108,6 @@
 #include "Time/ChangeTimeStepperOrder.hpp"
 #include "Time/CleanHistory.hpp"
 #include "Time/RecordTimeStepperData.hpp"
-#include "Time/StepChoosers/ByBlock.hpp"
 #include "Time/StepChoosers/Factory.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/Tags/StepperErrors.hpp"
@@ -106,7 +115,6 @@
 #include "Time/Tags/TimeStepId.hpp"
 #include "Time/TimeSequence.hpp"
 #include "Time/TimeSteppers/Factory.hpp"
-#include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Time/Triggers/TimeTriggers.hpp"
 #include "Time/UpdateU.hpp"
@@ -137,10 +145,7 @@ struct EvolutionMetavars {
 
   using system = ScalarWave::System<Dim>;
   using temporal_id = Tags::TimeStepId;
-  using TimeStepperBase = TimeStepper;
 
-  static constexpr bool local_time_stepping =
-      TimeStepperBase::local_time_stepping;
   static constexpr bool use_dg_element_collection = false;
 
   using analytic_solution_fields = typename system::variables_tag::tags_list;
@@ -183,21 +188,23 @@ struct EvolutionMetavars {
                        volume_dim, typename system::variables_tag::tags_list>>,
         tmpl::pair<DenseTrigger, DenseTriggers::standard_dense_triggers>,
         tmpl::pair<DomainCreator<volume_dim>, domain_creators<volume_dim>>,
-        tmpl::pair<Event,
-                   tmpl::flatten<tmpl::list<
-                       Events::Completion, amr::Events::RefineMesh,
-                       amr::Events::ObserveAmrStats<volume_dim>,
-                       amr::Events::ObserveAmrCriteria<EvolutionMetavars>,
-                       dg::Events::field_observations<
-                           volume_dim, observe_fields, non_tensor_compute_tags>,
-                       Events::time_events<system>>>>,
+        tmpl::pair<
+            Event,
+            tmpl::flatten<tmpl::list<
+                Events::Completion, amr::Events::RefineMesh,
+                Events::ObserveGridStats<volume_dim, non_tensor_compute_tags>,
+                amr::Events::ObserveAmrCriteria<EvolutionMetavars>,
+                dg::Events::field_observations<volume_dim, observe_fields,
+                                               non_tensor_compute_tags>,
+                Events::time_events<system>,
+                dg::Events::ChangeFixedLtsRatio<volume_dim>>>>,
         tmpl::pair<evolution::BoundaryCorrection,
                    ScalarWave::BoundaryCorrections::
                        standard_boundary_corrections<volume_dim>>,
         tmpl::pair<evolution::initial_data::InitialData,
                    tmpl::push_back<initial_data_list,
-                                   evolution::initial_data::NumericData>>,
-        tmpl::pair<LtsTimeStepper, TimeSteppers::lts_time_steppers>,
+                                   evolution::initial_data::NumericData,
+                                   evolution::initial_data::WithNoise>>,
         tmpl::pair<MathFunction<1, Frame::Inertial>,
                    MathFunctions::all_math_functions<1, Frame::Inertial>>,
         tmpl::pair<PhaseChange, PhaseControl::factory_creatable_classes>,
@@ -206,63 +213,53 @@ struct EvolutionMetavars {
             ScalarWave::BoundaryConditions::standard_boundary_conditions<
                 volume_dim>>,
         tmpl::pair<StepChooser<StepChooserUse::LtsStep>,
-                   tmpl::push_back<StepChoosers::standard_step_choosers<system>,
-                                   StepChoosers::ByBlock<volume_dim>>>,
+                   StepChoosers::standard_step_choosers<system>>,
         tmpl::pair<StepChooser<StepChooserUse::Slab>,
-                   tmpl::push_back<StepChoosers::standard_slab_choosers<
-                                       system, local_time_stepping>,
-                                   StepChoosers::ByBlock<volume_dim>>>,
+                   tmpl::push_back<
+                       StepChoosers::standard_slab_choosers<system>,
+                       evolution::dg::StepChoosers::FixedLtsRatio<volume_dim>>>,
         tmpl::pair<TimeSequence<double>,
                    TimeSequences::all_time_sequences<double>>,
         tmpl::pair<TimeSequence<std::uint64_t>,
                    TimeSequences::all_time_sequences<std::uint64_t>>,
         tmpl::pair<TimeStepper, TimeSteppers::time_steppers>,
         tmpl::pair<Trigger, tmpl::append<Triggers::logical_triggers,
-                                         Triggers::time_triggers>>>;
+                                         Triggers::time_triggers>>,
+        tmpl::pair<
+            Filters::Filter<volume_dim,
+                            typename system::variables_tag::tags_list>,
+            tmpl::append<
+                Filters::all_filters<volume_dim,
+                                     typename system::variables_tag::tags_list>,
+                tmpl::conditional_t<
+                    volume_dim == 3,
+                    tmpl::list<Filters::SphericalShell<
+                                   typename system::variables_tag::tags_list>,
+                               Filters::FilledSphere<
+                                   typename system::variables_tag::tags_list>>,
+                    tmpl::list<>>>>>;
   };
 
   using observed_reduction_data_tags =
       observers::collect_reduction_data_tags<tmpl::flatten<tmpl::list<
           tmpl::at<typename factory_creation::factory_classes, Event>>>>;
 
-  // The scalar wave system generally does not require filtering, except
-  // possibly on certain deformed domains.  Here a filter is added in 2D for
-  // testing purposes.  When performing numerical experiments with the scalar
-  // wave system, the user should determine whether this filter can be removed.
-  static constexpr bool use_filtering = (2 == volume_dim);
-
   using step_actions = tmpl::flatten<tmpl::list<
       evolution::dg::Actions::ComputeTimeDerivative<
-          volume_dim, system, AllStepChoosers, local_time_stepping,
-          use_dg_element_collection>,
+          volume_dim, system, AllStepChoosers, use_dg_element_collection>,
       evolution::dg::Actions::ApplyBoundaryCorrectionsToTimeDerivative<
           volume_dim, use_dg_element_collection>,
       Actions::MutateApply<RecordTimeStepperData<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          tmpl::list<evolution::Actions::RunEventsAndDenseTriggers<
-                         tmpl::list<evolution::dg::ApplyBoundaryCorrections<
-                             local_time_stepping, EvolutionMetavars, volume_dim,
-                             true>>>,
-                     Actions::MutateApply<UpdateU<system, local_time_stepping>>,
-                     evolution::dg::Actions::ApplyLtsBoundaryCorrections<
-                         volume_dim, false, use_dg_element_collection>,
-                     Actions::MutateApply<ChangeTimeStepperOrder<system>>>,
-          tmpl::list<
-              evolution::Actions::RunEventsAndDenseTriggers<tmpl::list<>>,
-              Actions::MutateApply<UpdateU<system, local_time_stepping>>>>,
+      evolution::Actions::RunEventsAndDenseTriggers<tmpl::list<
+          evolution::dg::ApplyLtsDenseBoundaryCorrections<EvolutionMetavars>>>,
+      Actions::MutateApply<UpdateU<system>>,
+      evolution::dg::Actions::ApplyLtsBoundaryCorrections<
+          volume_dim, use_dg_element_collection>,
+      Actions::MutateApply<ChangeTimeStepperOrder<system>>,
       Actions::MutateApply<CleanHistory<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
-          tmpl::list<>>,
-      tmpl::conditional_t<
-          use_filtering,
-          dg::Actions::Filter<
-              Filters::Exponential<0>,
-              tmpl::list<ScalarWave::Tags::Psi, ScalarWave::Tags::Pi,
-                         ScalarWave::Tags::Phi<Dim>>>,
-          tmpl::list<>>>>;
+      Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
+      dg::Actions::SpectralFilter<volume_dim,
+                                  typename system::variables_tag::tags_list>>>;
 
   using const_global_cache_tags =
       tmpl::list<evolution::initial_data::Tags::InitialData>;
@@ -270,21 +267,30 @@ struct EvolutionMetavars {
   using dg_registration_list =
       tmpl::list<observers::Actions::RegisterEventsWithObservers>;
 
+  using equal_rate_regions =
+      tmpl::list<evolution::dg::NonconformingEqualRateRegions<volume_dim>>;
+
   using initialization_actions = tmpl::list<
       Initialization::Actions::InitializeItems<
-          Initialization::TimeStepping<EvolutionMetavars, TimeStepperBase>,
+          Initialization::TimeStepping<EvolutionMetavars, TimeStepper, false,
+                                       true>,
           evolution::dg::Initialization::Domain<EvolutionMetavars>,
-          ::amr::Initialization::Initialize<volume_dim, EvolutionMetavars>,
-          Initialization::TimeStepperHistory<EvolutionMetavars>>,
+          ::amr::Initialization::Initialize<volume_dim, EvolutionMetavars>>,
       Initialization::Actions::NonconservativeSystem<system>,
+      Initialization::Actions::InitializeItems<
+          Initialization::TimeStepperHistory<system>>,
       evolution::Initialization::Actions::SetVariables<
           domain::Tags::Coordinates<Dim, Frame::ElementLogical>>,
       ScalarWave::Actions::InitializeConstraints<volume_dim>,
       Initialization::Actions::AddComputeTags<
-          StepChoosers::step_chooser_compute_tags<EvolutionMetavars,
-                                                  local_time_stepping>>,
+          StepChoosers::step_chooser_compute_tags<EvolutionMetavars>>,
       ::evolution::dg::Initialization::Mortars<volume_dim>,
+      evolution::dg::Initialization::Actions::SetupEqualRateRegions<
+          EvolutionMetavars, volume_dim, equal_rate_regions>,
       evolution::Actions::InitializeRunEventsAndDenseTriggers,
+      Initialization::Actions::InitializeItems<
+          evolution::dg::Initialization::SpectralFilters<
+              volume_dim, typename system::variables_tag::tags_list>>,
       Parallel::Actions::TerminatePhase>;
 
   using dg_element_array = DgElementArray<
@@ -317,16 +323,15 @@ struct EvolutionMetavars {
 
           Parallel::PhaseActions<
               Parallel::Phase::Evolve,
-              tmpl::flatten<tmpl::list<
-                  std::conditional_t<local_time_stepping,
-                                     evolution::Actions::RunEventsAndTriggers<
-                                         Triggers::WhenToCheck::AtSteps>,
-                                     tmpl::list<>>,
-                  evolution::Actions::RunEventsAndTriggers<
-                      Triggers::WhenToCheck::AtSlabs>,
-                  Actions::ChangeSlabSize, step_actions,
-                  Actions::MutateApply<AdvanceTime<>>,
-                  PhaseControl::Actions::ExecutePhaseChange>>>>>;
+              tmpl::flatten<
+                  tmpl::list<evolution::Actions::RunEventsAndTriggers<
+                                 Triggers::WhenToCheck::AtSteps>,
+                             evolution::Actions::RunEventsAndTriggers<
+                                 Triggers::WhenToCheck::AtSlabs>,
+                             Actions::ChangeSlabSize,
+                             evolution::dg::Actions::ChangeFixedLtsRatio,
+                             step_actions, Actions::MutateApply<AdvanceTime<>>,
+                             PhaseControl::Actions::ExecutePhaseChange>>>>>;
 
   struct amr : tt::ConformsTo<::amr::protocols::AmrMetavariables> {
     using element_array = dg_element_array;
@@ -337,13 +342,14 @@ struct EvolutionMetavars {
                                             typename system::variables_tag>,
         ::amr::projectors::ProjectTensors<volume_dim,
                                           ::ScalarWave::Tags::ConstraintGamma2>,
-        evolution::dg::Initialization::ProjectMortars<volume_dim,
-                                                      local_time_stepping>,
+        evolution::dg::Initialization::ProjectMortars<volume_dim>,
         Initialization::ProjectTimeStepperHistory<EvolutionMetavars>,
         evolution::Actions::ProjectRunEventsAndDenseTriggers,
+        evolution::dg::Initialization::ProjectSpectralFilters<
+            volume_dim, typename system::variables_tag::tags_list>,
         ::amr::projectors::DefaultInitialize<
             Initialization::Tags::InitialTimeDelta,
-            Initialization::Tags::InitialSlabSize<local_time_stepping>,
+            Initialization::Tags::InitialSlabSize,
             ::domain::Tags::InitialExtents<volume_dim>,
             ::domain::Tags::InitialRefinementLevels<volume_dim>,
             evolution::dg::Tags::Quadrature,
@@ -351,6 +357,11 @@ struct EvolutionMetavars {
             SelfStart::Tags::InitialValue<typename system::variables_tag>,
             SelfStart::Tags::InitialValue<Tags::TimeStep>>,
         ::amr::projectors::CopyFromCreatorOrLeaveAsIs<
+            evolution::dg::Tags::ChangeFixedLtsRatio::NumberOfExpectedMessages,
+            evolution::dg::Tags::ChangeFixedLtsRatio::NewStepSize,
+            Tags::FixedLtsRatio,
+            Parallel::Tags::Section<dg_element_array,
+                                    evolution::dg::Tags::EqualRateRegionId>,
             Tags::ChangeSlabSize::NumberOfExpectedMessages,
             Tags::ChangeSlabSize::NewSlabSize>>;
     static constexpr bool keep_coarse_grids = false;

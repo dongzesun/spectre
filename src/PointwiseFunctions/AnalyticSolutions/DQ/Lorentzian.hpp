@@ -10,6 +10,7 @@
 #include "DataStructures/ComplexDataVector.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Elliptic/Systems/DQ/Tags.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
@@ -18,7 +19,6 @@
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace DQ::Solutions {
 
@@ -127,6 +127,17 @@ class Lorentzian : public elliptic::analytic_data::AnalyticSolution {
   using PUP::able::register_constructor;
   WRAPPED_PUPable_decl_template(Lorentzian);  // NOLINT
   /// \endcond
+
+  // Match the elliptic analytic-solution interface; this solution does not
+  // require the numerical mesh or Jacobian to evaluate its exact fields.
+  template <typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataVector, Dim>& x, const Mesh<Dim>& /*mesh*/,
+      const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
+                            Frame::Inertial>& /*inv_jacobian*/,
+      tmpl::list<RequestedTags...> meta) const {
+    return variables(x, meta);
+  }
 
   template <typename... RequestedTags>
   tuples::TaggedTuple<RequestedTags...> variables(

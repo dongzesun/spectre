@@ -88,10 +88,8 @@ def generate_tetrahedral_connectivity(
             )
         else:
             raise RequiredChoiceError(
-                (
-                    "Specify '--subfile-name' / '-d' to select a"
-                    " subfile containing volume data."
-                ),
+                "Specify '--subfile-name' / '-d' to select a"
+                " subfile containing volume data.",
                 choices=subfiles,
             )
 
@@ -113,6 +111,7 @@ def generate_tetrahedral_connectivity(
         [
             (key, vol_subfile[key].attrs["observation_value"])
             for key in vol_subfile.keys()
+            if key.startswith("ObservationId")
         ],
         key=lambda key_and_time: key_and_time[1],
     )

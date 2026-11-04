@@ -20,7 +20,7 @@ Next:
 Next:
   Run: spectre.Pipelines.Bbh.EccentricityControl:eccentricity_control
   With:
-    h5_files: "../Segment_*/BbhReductions.h5"
+    h5_files: "../*_Inspiral/BbhReductions.h5"
     id_input_file_path: {{ id_input_file_path }}
     plot_output_dir: ./
     ecc_params_output_file: "../EccentricityParams.yaml"
@@ -48,20 +48,25 @@ InitialData:
     DataDirectory: "{{ SpecDataDirectory }}"
 {% else %}
   NumericInitialData:
-    FileGlob: "{{ IdFileGlob }}"
-    Subgroup: "{{ IdSubfile }}"
+    VolumeData:
+      FileGlob: "{{ IdFileGlob }}"
+      Subgroup: "{{ IdSubfile }}"
   {% if IdFromEvolution %}
-    ObservationValue: {{ InitialTime }}
-    ObservationValueEpsilon: Auto
-    ElementsAreIdentical: True
+      ObservationValue: {{ InitialTime }}
+      ObservationValueEpsilon: Auto
+      ElementsAreIdentical: True
+      ExtrapolateIntoExcisions: False
+      NumThreads: 1
     Variables:
       SpacetimeMetric: SpacetimeMetric
       Pi: Pi
       Phi: Phi
   {% else %}
-    ObservationValue: Last
-    ObservationValueEpsilon: Auto
-    ElementsAreIdentical: False
+      ObservationValue: Last
+      ObservationValueEpsilon: Auto
+      ElementsAreIdentical: False
+      ExtrapolateIntoExcisions: False
+      NumThreads: 1
     Variables:
       Lapse: Lapse
       # Load a shift that is not corotating. See `docs/Examples/BbhInitialData`
@@ -73,6 +78,7 @@ InitialData:
 {% endif %}
 
 DomainCreator:
+{% if not UseCylindricalDomain %}
   BinaryCompactObject:
     ObjectA:
       InnerRadius: &ExcisionRadiusA {{ ExcisionRadiusA }}
@@ -83,7 +89,8 @@ DomainCreator:
       Interior:
         ExciseWithBoundaryCondition:
           DemandOutgoingCharSpeeds:
-      UseLogarithmicMap: true
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     ObjectB:
       InnerRadius: &ExcisionRadiusB {{ ExcisionRadiusB }}
       # Found that the max allowable value for the OuterRadius is 6.0. Higher
@@ -93,7 +100,8 @@ DomainCreator:
       Interior:
         ExciseWithBoundaryCondition:
           DemandOutgoingCharSpeeds:
-      UseLogarithmicMap: true
+      ShellLogMapStrength: 1.0
+      CubeLogMapStrength: None
     CenterOfMassOffset:
       - &YOffset {{ CenterOfMassOffset_y }}
       - &ZOffset {{ CenterOfMassOffset_z }}
@@ -104,6 +112,7 @@ DomainCreator:
       # outer shell
       RadialDistribution: Logarithmic
     OuterShell:
+      UseSphericalHarmonics: false
       Radius: {{ OuterShellRadius }}
       # Radial distribution is linear to resolve gravitational waves
       RadialPartitioning: []
@@ -112,6 +121,7 @@ DomainCreator:
       BoundaryCondition:
         ConstraintPreservingBjorhus:
           Type: ConstraintPreservingPhysical
+          IncomingWaveProfile: None
     UseEquiangularMap: True
     # Found that a CubeScale of 1.2 worked well for equal mass non-spinning
     # inspirals and allowed for more common horizon finds.
@@ -132,7 +142,67 @@ DomainCreator:
       ObjectBCube:    [{{ P     }}, {{ P     }}, {{ P - 1 }}]
       Envelope:       [{{ P + 3 }}, {{ P + 3 }}, {{ P + 5 }}]
       OuterShell0:    [{{ P + 3 }}, {{ P + 3 }}, {{ P + 4 }}]
-{% if IdFromEvolution %}
+    UseWorldtube: false
+{% else %}
+  CylindricalBinaryCompactObject:
+    CenterA: &CenterA [&XCoordA {{ XCoordA }}, &YOffset 0.0, &ZOffset 0.0]
+    CenterB: &CenterB [&XCoordB {{ XCoordB }}, *YOffset, *ZOffset]
+    RadiusA: &ExcisionRadiusA {{ ExcisionRadiusA }}
+    RadiusB: &ExcisionRadiusB {{ ExcisionRadiusB }}
+    InnerSphereA:
+      OuterRadius: Auto
+      RadialDistribution: Logarithmic
+    InnerSphereB:
+      OuterRadius: Auto
+      RadialDistribution: Logarithmic
+    OuterSphere:
+      OuterRadius: {{ OuterShellRadius }}
+    InitialRefinement:
+      # z refinement for cylindrical block groups
+      InnerA: 0
+      InnerB: 0
+      Outer: 0
+      # radial refinement for spherical shell block groups
+      InnerSphereA: 2
+      InnerSphereB: 2
+      OuterSphere: 5
+    # The following grid points have not been demonstrated to necessarily be the
+    # best choice, but (with consideration of the InitialRefinement above) are
+    # chosen to be in the ballpark of what SpEC equal mass non-spinning Lev1
+    # runs seem to do - at least as much as we can with current limitations on
+    # the amount of refinement and number of grid points in this domain.
+    #
+    # Note that --lev currently controls the number of grid points. This is a
+    # temporary stand-in, as Lev is not calibrated yet to match SpEC or the BCO
+    # domain. However, --lev 1 should give intial grid points informed by SpEC's
+    # Lev1 initial grid points.
+    InitialGridPoints:
+      # [radial_points, z_points] for filled cylinder blocks
+      # - theta_points will be set to (4 * radial_points - 3)
+      CAFilledCylinder: [{{ 5 + Lev  }}, {{ 17 + Lev  }}]
+      CBFilledCylinder: [{{ 5 + Lev  }}, {{ 17 + Lev  }}]
+      EAFilledCylinder: [{{ 5 + Lev  }}, {{ 17 + Lev  }}]
+      EBFilledCylinder: [{{ 5 + Lev  }}, {{ 17 + Lev  }}]
+      MAFilledCylinder: [{{ 17 + Lev  }}, {{ 17 + Lev  }}]
+      MBFilledCylinder: [{{ 17 + Lev  }}, {{ 17 + Lev  }}]
+      # [radial_points, theta_points, z_points] for hollow cylinder blocks
+      CACylinder: [{{ 17 + Lev  }}, {{ 13 + 2 * Lev }}, {{ 11 + Lev  }}]
+      CBCylinder: [{{ 17 + Lev  }}, {{ 13 + 2 * Lev }}, {{ 11 + Lev  }}]
+      EACylinder: [{{ 17 + Lev  }}, {{ 17 + 2 * Lev }}, {{ 11 + Lev  }}]
+      EBCylinder: [{{ 17 + Lev  }}, {{ 17 + 2 * Lev }}, {{ 11 + Lev  }}]
+      # [radial_points, L_max] for spherical shell block groups
+      InnerSphereA: [{{ 11 + Lev  }}, {{ 18 + Lev  }}]
+      InnerSphereB: [{{ 11 + Lev  }}, {{ 18 + Lev  }}]
+      OuterSphere: [{{ 10 + Lev }}, {{ 12 + Lev  }}]
+    BoundaryConditions:
+      InnerBoundary:
+        DemandOutgoingCharSpeeds:
+      OuterBoundary:
+        ConstraintPreservingBjorhus:
+          Type: ConstraintPreservingPhysical
+          IncomingWaveProfile: None
+{% endif %}
+  {% if IdFromEvolution %}
     TimeDependentMaps:
       InitialTime: &InitialTime {{ InitialTime }}
       ExpansionMap:
@@ -144,23 +214,31 @@ DomainCreator:
       TranslationMap:
         H5Filename: "{{ FotFilename }}"
         SubfileName: "{{ IdSubfile }}"
+    {% if not UseCylindricalDomain %}
       SkewMap:
         H5Filename: "{{ FotFilename }}"
         SubfileName: "{{ IdSubfile }}"
+    {% else %}
+      SkewMap: None
+    {% endif %}
       ShapeMapA:
         CoefficientTruncationLimit: 1e-16
         H5Filename: "{{ FotFilename }}"
         SubfileName: "{{ IdSubfile }}"
         LMax: Auto
+      {% if not UseCylindricalDomain %}
         TransitionEndsAtCube: True
+      {% endif %}
       ShapeMapB:
         CoefficientTruncationLimit: 1e-16
         H5Filename: "{{ FotFilename }}"
         SubfileName: "{{ IdSubfile }}"
         LMax: Auto
+      {% if not UseCylindricalDomain %}
         TransitionEndsAtCube: True
+      {% endif %}
       GridCenters: None
-{% else %}
+  {% else %}
     TimeDependentMaps:
       InitialTime: &InitialTime 0.0
       ExpansionMap:
@@ -171,41 +249,49 @@ DomainCreator:
         InitialAngularVelocity: [0.0, 0.0, {{ InitialAngularVelocity }}]
       TranslationMap:
         InitialValues: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+    {% if not UseCylindricalDomain %}
       SkewMap:
         InitialValuesY: [0.0, 0.0, 0.0]
         InitialValuesZ: [0.0, 0.0, 0.0]
+    {% else %}
+      SkewMap: None
+    {% endif %}
       ShapeMapA:
         LMax: &ShapeLMax 10
         CoefficientTruncationLimit: 1e-16
-  {% if SpecDataDirectory is defined %}
+      {% if SpecDataDirectory is defined %}
         InitialValues: Spherical
-  {% else %}
+      {% else %}
         InitialValues:
           Mass: {{ ExcisionAShapeMass }}
           Spin:
             - {{ ExcisionAShapeSpin_x }}
             - {{ ExcisionAShapeSpin_y }}
             - {{ ExcisionAShapeSpin_z }}
-  {% endif %}
+      {% endif %}
         SizeInitialValues: [0.0, 0.0, 0.0]
+      {% if not UseCylindricalDomain %}
         TransitionEndsAtCube: true
+      {% endif %}
       ShapeMapB:
         LMax: *ShapeLMax
         CoefficientTruncationLimit: 1e-16
-  {% if SpecDataDirectory is defined %}
+      {% if SpecDataDirectory is defined %}
         InitialValues: Spherical
-  {% else %}
+      {% else %}
         InitialValues:
           Mass: {{ ExcisionBShapeMass }}
           Spin:
             - {{ ExcisionBShapeSpin_x }}
             - {{ ExcisionBShapeSpin_y }}
             - {{ ExcisionBShapeSpin_z }}
-  {% endif %}
+      {% endif %}
         SizeInitialValues: [0.0, 0.0, 0.0]
+      {% if not UseCylindricalDomain %}
         TransitionEndsAtCube: true
+      {% endif %}
       GridCenters: None
-{% endif %}
+  {% endif %}
 
 Evolution:
   InitialTime: *InitialTime
@@ -215,9 +301,10 @@ Evolution:
   # you need it smaller you can edit it, but make sure to change the slab
   # intervals in the EventsAndTriggersAtSlabs
   InitialSlabSize: 0.1
+  LocalTimeStepping: Conservative
   VariableOrderAlgorithm:
     GoalOrder: 4
-  StepChoosers:
+  LtsStepChoosers:
     - LimitIncrease:
         Factor: 2
     - PreventRapidIncrease
@@ -275,21 +362,59 @@ EvolutionSystem:
         Center: [0.0, 0.0, 0.0]
     DampingFunctionGamma2: *ConstraintDampingTripleGaussian
 
-# Half power was determined to filter only the last term up to N = 19
-# since we support up to 20 gridpoints.
-Filtering:
-  ExpFilter0:
-    Alpha: 36.0
-    HalfPower: 420
-    Enable: true
-    BlocksToFilter: All
-
 SpatialDiscretization:
   BoundaryCorrection:
     AveragedUpwindPenalty:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+  {% if not UseCylindricalDomain %}
+    # Half power was determined to filter only the last term up to N = 19
+    # since we support up to 20 gridpoints.
+    Filtering:
+      - Hypercube:
+          HalfPower: 420
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
+  {% else %}
+    # These have not yet been demonstrated to necessarily be the best settings
+    Filtering:
+      - SphericalShell:
+          NumModesToKill: 4
+          AngularHalfPower: None
+          RadialHalfPower: 64
+          Enable: true
+          BlocksToFilter: [InnerSphereA, InnerSphereB, OuterSphere]
+          VolumeFilterOnSubstep: false
+          BoundaryCorrectionFilterOnSubstep: true
+          VolumeFilterEveryNSteps: 8
+          BoundaryCorrectionFilterEveryNSteps: None
+      - FilledCylinder:
+          NumModesToKill: 1
+          RadialAngularHalfPower: 24
+          ZHalfPower: 24
+          Enable: true
+          BlocksToFilter: [InnerA, InnerB, Outer]
+          VolumeFilterOnSubstep: false
+          BoundaryCorrectionFilterOnSubstep: true
+          VolumeFilterEveryNSteps: 2
+          BoundaryCorrectionFilterEveryNSteps: None
+      - HollowCylinder:
+          NumModesToKill: 1
+          AngularHalfPower: 24
+          RadialHalfPower: 24
+          ZHalfPower: 24
+          Enable: true
+          BlocksToFilter: [InnerA, InnerB, Outer]
+          VolumeFilterOnSubstep: false
+          BoundaryCorrectionFilterOnSubstep: true
+          VolumeFilterEveryNSteps: 2
+          BoundaryCorrectionFilterEveryNSteps: None
+  {% endif %}
 
 Observers:
   VolumeFileName: "BbhVolume"
@@ -307,7 +432,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: Auto
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Quiet
@@ -371,6 +498,8 @@ EventsAndTriggersAtSlabs:
           - Name: PointwiseL2Norm(ThreeIndexConstraint)
             NormType: L2Norm
             Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   # Observe constraint energy more sparsely because it is expensive to compute.
   # Also use it for ErrorIfDataTooBig so we only compute it once.
   - Trigger:
@@ -385,6 +514,11 @@ EventsAndTriggersAtSlabs:
           - Name: ConstraintEnergy
             NormType: L2Norm
             Components: Sum
+          - Name: NormalizedConstraintEnergy
+            NormType: L2Norm
+            Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
       - ErrorIfDataTooBig:
           Threshold: 10
           VariablesToCheck: [ConstraintEnergy]
@@ -417,6 +551,7 @@ EventsAndTriggersAtSlabs:
             - SpacetimeMetric
             # For diagnostics:
             - ConstraintEnergy
+            - NormalizedConstraintEnergy
             - PointwiseL2Norm(GaugeConstraint)
             - PointwiseL2Norm(ThreeIndexConstraint)
             # For visualization:
@@ -522,10 +657,21 @@ ApparentHorizons:
   LMax: 33
   ObservationAhA: &AhA
     Criteria:
+      - Residual:
+          MinResidual: {{ AhABMinResidual }}
+          MaxResidual: {{ AhABMaxResidual }}
+          MinResolutionL: {{ AhABMinResolutionL }}
+      - Shape:
+          MinTruncationError: {{ AhABMinTruncationError }}
+          MaxTruncationError: {{ AhABMaxTruncationError }}
+          MaxPileUpModes: {{ AhABMaxPileUpModes }}
+          MinResolutionL: {{ AhABMinResolutionL }}
     InitialGuess:
-      LMax: &ObsLMax 10
-      Radius: {{ ExcisionRadiusA * 1.5 }}
-      Center: [*XCoordA, *YOffset, *ZOffset]
+      InitialL: &ObsLMax 10
+      InitialShape:
+        Sphere:
+          Radius: {{ ExcisionRadiusA * 1.5 }}
+          Center: [*XCoordA, *YOffset, *ZOffset]
     FastFlow: &DefaultFastFlow
       Flow: Fast
       Alpha: 1.0
@@ -537,32 +683,60 @@ ApparentHorizons:
       MaxIts: 100
     Verbosity: Quiet
     MaxComputeCoordsRetries: 3
+  {% if not UseCylindricalDomain %}
     BlocksForHorizonFind: ["ObjectAShell", "ObjectACube"]
+  {% else %}
+    BlocksForHorizonFind:
+      - InnerSphereA
+  {% endif %}
   ObservationAhB: &AhB
     Criteria:
+      - Residual:
+          MinResidual: {{ AhABMinResidual }}
+          MaxResidual: {{ AhABMaxResidual }}
+          MinResolutionL: {{ AhABMinResolutionL }}
+      - Shape:
+          MinTruncationError: {{ AhABMinTruncationError }}
+          MaxTruncationError: {{ AhABMaxTruncationError }}
+          MaxPileUpModes: {{ AhABMaxPileUpModes }}
+          MinResolutionL: {{ AhABMinResolutionL }}
     InitialGuess:
-      LMax: *ObsLMax
-      Radius: {{ ExcisionRadiusB * 1.5 }}
-      Center: [*XCoordB, *YOffset, *ZOffset]
+      InitialL: *ObsLMax
+      InitialShape:
+        Sphere:
+          Radius: {{ ExcisionRadiusB * 1.5 }}
+          Center: [*XCoordB, *YOffset, *ZOffset]
     FastFlow: *DefaultFastFlow
     Verbosity: Quiet
     MaxComputeCoordsRetries: 3
+  {% if not UseCylindricalDomain %}
     BlocksForHorizonFind: ["ObjectBShell", "ObjectBCube"]
+  {% else %}
+    BlocksForHorizonFind:
+      - InnerSphereB
+  {% endif %}
   ObservationAhC:
     Criteria:
     InitialGuess:
-      LMax: 33
-      Radius: 10.0
-      Center: [0.0, 0.0, 0.0]
+      InitialL: 33
+      InitialShape:
+        Sphere:
+          Radius: 10.0
+          Center: [0.0, 0.0, 0.0]
     FastFlow: *DefaultFastFlow
     Verbosity: Quiet
     MaxComputeCoordsRetries: 3
     BlocksForHorizonFind:
+    {% if not UseCylindricalDomain %}
       - "ObjectAShell"
       - "ObjectACube"
       - "ObjectBShell"
       - "ObjectBCube"
       - "Envelope"
+    {% else %}
+      - InnerSphereA
+      - InnerSphereB
+    {% endif %}
   ControlSystemAhA: *AhA
   ControlSystemAhB: *AhB
   ControlSystemCharSpeedAhA: *AhA
@@ -610,6 +784,7 @@ ControlSystems:
     ControlError:
   Rotation: *KinematicControlSystem
   Translation: *KinematicControlSystem
+{% if not UseCylindricalDomain %}
   Skew:
     Averager: *KinematicAverager
     Controller: *KinematicController
@@ -622,6 +797,9 @@ ControlSystems:
       IncreaseFactor: *IncreaseFactor
       DecreaseFactor: *DecreaseFactor
     ControlError:
+{% else %}
+  Skew: None
+{% endif %}
   ShapeA:
     Averager: &SizeShapeAverager
       AverageTimescaleFraction: *AvgTimescaleFrac

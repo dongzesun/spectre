@@ -10,10 +10,12 @@ import numpy as np
 import yaml
 from rich.pretty import pretty_repr
 
-from spectre.Pipelines.EccentricityControl.InitialOrbitalParameters import (
+from SimulationSupport.EccentricityControl.InitialOrbitalParameters import (
     initial_orbital_parameters,
 )
-from spectre.support.DirectoryStructure import PipelineStep, list_pipeline_steps
+from spectre.Pipelines.EccentricityControl.DirectoryStructure import (
+    EccIteration,
+)
 from spectre.support.Schedule import schedule, scheduler_options
 
 logger = logging.getLogger(__name__)
@@ -125,14 +127,15 @@ def id_parameters(
     L1_dist_B = separation - L1_dist_A
     falloff_width_A = 3.0 / 5.0 * L1_dist_A
     falloff_width_B = 3.0 / 5.0 * L1_dist_B
-    # This extra refinement was found through trial and error and allowed mass
-    # ratio 6 to evolve through inspiral stably. This extra refinement doesn't
-    # seem to scale linearly with mass ratio. The current hard-coded limits (3
-    # and 5) were enough to find initial data for mass ratio 50 (no evolution
-    # attempted).
+    # Extra radial refinement and object B's cube log map strength scale
+    # logarithmically with mass ratio to resolve the small black hole.
     q = target_params["MassA"] / target_params["MassB"]
-    extra_radial_refinement_l = min(round(q / 3.0) - 1 if (q > 3.0) else 0, 3)
-    extra_radial_refinement_p = min(round(q / 5.0) if (q > 5.0) else 0, 5)
+    object_b_cube_log_map_strength = 1.0 + 0.15 * np.log(q)
+    extra_radial_refinement_l = round(0.3 * np.log(q))
+    extra_radial_refinement_p = round(0.9 * np.log(q))
+    assert (
+        polynomial_order + 2 + extra_radial_refinement_p <= 20
+    ), "The polynomial order + extra radial points exceeds the maximum of 20."
     horizon_l_max = (
         40 if max(np.linalg.norm(chi_A), np.linalg.norm(chi_B)) > 0.9 else 20
     )
@@ -148,7 +151,10 @@ def id_parameters(
         "LinearVelocity_z": linear_velocity[2],
         "ExcisionRadiusRight": excision_factor * r_plus_A,
         "ExcisionRadiusLeft": excision_factor * r_plus_B,
-        "ObjectOuterRadius": separation / 3.75,
+        "ObjectAOuterRadius": separation / 3.75,
+        "ObjectBOuterRadius": separation / 3.75 / q,
+        "CubeScale": 1.0,
+        "ObjectBCubeLogMapStrength": object_b_cube_log_map_strength,
         "OrbitalAngularVelocity": orbital_angular_velocity,
         "RadialExpansionVelocity": radial_expansion_velocity,
         "ConformalSpinRight_x": chi_A[0],
@@ -232,7 +238,7 @@ def generate_id(
     'support.Pipelines.Bbh.EccentricityControl' for details. If unspecified,
     initial guesses for the orbital parameters are obtained with the function
     'initial_orbital_parameters' in
-    'support.Pipelines.EccentricityControl.InitialOrbitalParameters'.
+    'SimulationSupport.EccentricityControl.InitialOrbitalParameters'.
 
     Scheduling options:
       id_input_file_template: Input file template where parameters are inserted.
@@ -247,13 +253,15 @@ def generate_id(
         be inside of the apparent horizons. This helps to find horizons and
         start an evolution from the initial data without extrapolation.
         (default: True)
-      pipeline_dir: Directory where steps in the pipeline are created. Required
-        when 'evolve' is set to True. The initial data will be created in a
-        subdirectory '001_InitialData'.
+      pipeline_dir: Directory of the simulation, in which the pipeline
+        creates its runs. Required when 'evolve' is set to True. The initial
+        data runs in the 'ID' directory of the next eccentricity-control
+        iteration, e.g. 'Ecc0/ID/0000_InitialData'.
       run_dir: Directory where the initial data is generated. Mutually exclusive
         with 'pipeline_dir'.
-      segments_dir: Directory where the evolution data is generated. Mutually
-        exclusive with 'pipeline_dir' and 'run_dir'.
+      segments_dir: Directory in which the initial-data run is created. Every
+        run of the control loop is a new segment in it. Mutually exclusive with
+        'pipeline_dir' and 'run_dir'.
       out_file_name: Optional. Name of the log file. (Default: "spectre.out")
     """
     logger.warning(
@@ -264,34 +272,29 @@ def generate_id(
     # Resolve directories
     if pipeline_dir:
         pipeline_dir = Path(pipeline_dir).resolve()
-    assert segments_dir is None, (
-        "Initial data generation doesn't use segments at the moment. Specify"
-        " '--run-dir' / '-o' or '--pipeline-dir' / '-d' instead."
-    )
     if evolve:
         assert pipeline_dir is not None, (
             "Specify a '--pipeline-dir' / '-d' to evolve the initial data."
             " Don't specify a '--run-dir' / '-o' because it will be created in"
             " the 'pipeline_dir' automatically."
         )
-        assert run_dir is None, (
+        assert run_dir is None and segments_dir is None, (
             "Specify the '--pipeline-dir' / '-d' rather than '--run-dir' / '-o'"
-            " when evolving the initial data. Directories for the initial data,"
-            " evolution, etc will be created in the 'pipeline_dir'"
-            " automatically."
+            " or '--segments-dir' / '-O' when evolving the initial data."
+            " Directories for the initial data, evolution, etc will be created"
+            " in the 'pipeline_dir' automatically."
         )
-    # If there is a pipeline directory, set run directory as well
-    if pipeline_dir and not run_dir:
-        pipeline_steps = list_pipeline_steps(pipeline_dir)
-        if pipeline_steps:  # Check if the list is not empty
-            run_dir = pipeline_steps[-1].next(label="InitialData").path
-        else:
-            run_dir = PipelineStep.first(
-                directory=pipeline_dir, label="InitialData"
-            ).path
-    # If we run a control loop, then run initial data in a subdirectory
+    # If there is a pipeline directory, set the segments directory as well. The
+    # initial data starts a new eccentricity-control iteration.
+    if pipeline_dir and not run_dir and not segments_dir:
+        segments_dir = EccIteration.next(pipeline_dir).id_dir
     if control:
-        run_dir = f"{run_dir}/ControlParams_000"
+        # Every run of the control loop is a segment, so the initial data runs
+        # in a segment rather than directly in the 'run_dir'
+        if run_dir and not segments_dir:
+            segments_dir = run_dir
+            run_dir = None
+        # Collect the logs of all runs in the control loop in a single file
         out_file_name = f"../{out_file_name}"
 
     # Determine orbital parameters
@@ -558,7 +561,7 @@ def generate_id(
         writable=True,
         path_type=Path,
     ),
-    help="Directory where steps in the pipeline are created.",
+    help="Directory of the simulation, in which the pipeline creates its runs.",
 )
 @scheduler_options
 def generate_id_command(

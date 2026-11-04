@@ -6,19 +6,23 @@
 # directory that are tracked by Git. I.e.
 #   git ls-tree --full-tree --name-only HEAD
 set(SPECTRE_FORMALINE_LOCATIONS
-  .claude
   .clang-format
   .clang-tidy
+  .clangd
+  .claude
   .codecov.yaml
   .codex
   .devcontainer
   .dockerignore
   .github
   .gitignore
+  AGENTS.md
   citation.bib
   CITATION.cff
+  CLAUDE.md
   cmake
   CMakeLists.txt
+  CMakePresets.json
   containers
   docs
   external

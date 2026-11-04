@@ -12,6 +12,7 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Domain/Block.hpp"
@@ -45,7 +46,6 @@
 #include "Utilities/CartesianProduct.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace CurvedScalarWave::Worldtube {
 namespace {
@@ -62,7 +62,8 @@ struct MockElementArray {
           tmpl::list<ActionTesting::InitializeDataBox<
               db::AddSimpleTags<
                   domain::Tags::Element<Dim>, domain::Tags::Mesh<Dim>,
-                  Tags::PunctureField<Dim>, Tags::IteratedPunctureField<Dim>,
+                  Tags::GeodesicPunctureField<Dim>,
+                  Tags::IteratedPunctureField<Dim>,
                   gr::Tags::Shift<DataVector, Dim>, gr::Tags::Lapse<DataVector>,
                   ::Tags::TimeStepId, Tags::WorldtubeSolution<Dim>,
                   Tags::FaceCoordinates<Dim, Frame::Inertial, true>>,

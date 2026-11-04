@@ -7,12 +7,12 @@
 #include <utility>
 
 #include "DataStructures/DataBox/DataBox.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Tags.hpp"
+#include "DataStructures/TaggedTuple.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Tags.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/HorizonAliases.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/Tags.hpp"
 #include "Utilities/ErrorHandling/SegfaultHandler.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace py = pybind11;
 

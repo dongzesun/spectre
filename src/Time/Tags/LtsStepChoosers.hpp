@@ -1,0 +1,31 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#pragma once
+
+#include <memory>
+#include <pup_stl.h>
+#include <vector>
+
+#include "DataStructures/DataBox/Tag.hpp"
+#include "Time/OptionTags/LtsStepChoosers.hpp"
+#include "Time/StepChoosers/StepChooser.hpp"
+#include "Utilities/Serialization/Serialize.hpp"
+#include "Utilities/TMPL.hpp"
+
+namespace Tags {
+/// \ingroup DataBoxTagsGroup
+/// \ingroup TimeGroup
+/// \brief Tag for a vector of ::StepChooser%s
+struct LtsStepChoosers : db::SimpleTag {
+  using type =
+      std::vector<std::unique_ptr<::StepChooser<StepChooserUse::LtsStep>>>;
+  using option_tags = tmpl::list<::OptionTags::LtsStepChoosers>;
+  static constexpr bool is_overlayable = true;
+
+  static constexpr bool pass_metavariables = false;
+  static type create_from_options(const type& step_choosers) {
+    return serialize_and_deserialize<type>(step_choosers);
+  }
+};
+}  // namespace Tags

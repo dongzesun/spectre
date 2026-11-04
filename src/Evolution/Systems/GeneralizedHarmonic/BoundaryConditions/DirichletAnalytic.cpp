@@ -8,6 +8,7 @@
 #include <pup.h>
 #include <type_traits>
 
+#include "DataStructures/TaggedTuple.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/System.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/Factory.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Lapse.hpp"
@@ -15,7 +16,6 @@
 #include "PointwiseFunctions/GeneralRelativity/SpatialMetric.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace gh::BoundaryConditions {
 template <size_t Dim>
@@ -75,13 +75,18 @@ std::optional<std::string> DirichletAnalytic<Dim>::dg_ghost(
     const Scalar<DataVector>& interior_gamma2, const double time) const {
   *gamma1 = interior_gamma1;
   *gamma2 = interior_gamma2;
-  ASSERT(analytic_prescription_ != nullptr,
+  // Use .get() to avoid Clang-13 bug: with -Og in C++20 mode, the compiler
+  // rewrites unique_ptr != nullptr via std::operator== but fails to emit the
+  // out-of-line instantiation, causing a linker error.
+  ASSERT(analytic_prescription_.get() != nullptr,
          "The analytic prescription must be set.");
   using evolved_vars_tags = typename System<Dim>::variables_tag::tags_list;
+  // Unwrap wrapper types (e.g. WithNoise) so boundary conditions use the
+  // inner analytic solution, not the noisy initial data wrapper.
   auto boundary_values = call_with_dynamic_type<
       tuples::tagged_tuple_from_typelist<evolved_vars_tags>,
       gh::Solutions::all_solutions<Dim>>(
-      analytic_prescription_.get(),
+      &analytic_prescription_->unwrap(),
       [&coords, &time](const auto* const analytic_solution_or_data) {
         if constexpr (is_analytic_solution_v<
                           std::decay_t<decltype(*analytic_solution_or_data)>>) {

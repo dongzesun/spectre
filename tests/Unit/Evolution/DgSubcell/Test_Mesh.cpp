@@ -58,7 +58,8 @@ template <Spectral::Basis BasisType, Spectral::Quadrature QuadratureType>
 void test_mesh() {
   constexpr size_t min_num_pts =
       Spectral::minimum_number_of_points<BasisType, QuadratureType>;
-  constexpr size_t max_num_pts = Spectral::maximum_number_of_points<BasisType>;
+  constexpr size_t max_num_pts =
+      Spectral::maximum_number_of_points<BasisType, QuadratureType>;
 #ifdef SPECTRE_DEBUG
   CHECK_THROWS_WITH(
       evolution::dg::subcell::fd::dg_mesh(
@@ -89,7 +90,7 @@ void test_mesh() {
       Catch::Matchers::ContainsSubstring(
           "The DG quadrature for computing the DG mesh must be Gauss or "
           "GaussLobatto but "));
-#endif // SPECTRE_DEBUG
+#endif  // SPECTRE_DEBUG
 
   for (size_t i = min_num_pts; i < max_num_pts; ++i) {
     CHECK(evolution::dg::subcell::fd::mesh(
@@ -145,6 +146,113 @@ void test_mesh() {
             BasisType,
             QuadratureType) == Mesh<3>({{4, 6, 7}}, BasisType, QuadratureType));
 }
+template <Spectral::Basis BasisType, Spectral::Quadrature QuadratureType>
+void test_cartoon_mesh() {
+  for (size_t i = 2; i < 5; ++i) {
+    // Spherically symmetric: second and third bases are Cartoon.
+    const Mesh<3> dg_spherical{
+        {{i, 1, 1}},
+        {BasisType, Spectral::Basis::Cartoon, Spectral::Basis::Cartoon},
+        {QuadratureType, Spectral::Quadrature::SphericalSymmetry,
+         Spectral::Quadrature::SphericalSymmetry}};
+    const Mesh<3> subcell_spherical{
+        {{2 * i - 1, 1, 1}},
+        {Spectral::Basis::FiniteDifference, Spectral::Basis::Cartoon,
+         Spectral::Basis::Cartoon},
+        {Spectral::Quadrature::CellCentered,
+         Spectral::Quadrature::SphericalSymmetry,
+         Spectral::Quadrature::SphericalSymmetry}};
+    CHECK(evolution::dg::subcell::fd::mesh(dg_spherical) == subcell_spherical);
+    CHECK(evolution::dg::subcell::fd::dg_mesh(subcell_spherical, BasisType,
+                                              QuadratureType) == dg_spherical);
+
+    // Axially symmetric: only third basis is Cartoon.
+    const Mesh<3> dg_axial{
+        {{i, i, 1}},
+        {BasisType, BasisType, Spectral::Basis::Cartoon},
+        {QuadratureType, QuadratureType, Spectral::Quadrature::AxialSymmetry}};
+    const Mesh<3> subcell_axial{
+        {{2 * i - 1, 2 * i - 1, 1}},
+        {Spectral::Basis::FiniteDifference, Spectral::Basis::FiniteDifference,
+         Spectral::Basis::Cartoon},
+        {Spectral::Quadrature::CellCentered, Spectral::Quadrature::CellCentered,
+         Spectral::Quadrature::AxialSymmetry}};
+    CHECK(evolution::dg::subcell::fd::mesh(dg_axial) == subcell_axial);
+    CHECK(evolution::dg::subcell::fd::dg_mesh(subcell_axial, BasisType,
+                                              QuadratureType) == dg_axial);
+  }
+  // mesh(): unsupported bases return the uninitialized sentinel rather than
+  // asserting, since subcell is never used on such elements.
+  {
+    const Mesh<3> zernike_b2_cartoon{
+        {{3, 1, 1}},
+        {Spectral::Basis::ZernikeB2, Spectral::Basis::Cartoon,
+         Spectral::Basis::Cartoon},
+        {Spectral::Quadrature::GaussRadauUpper,
+         Spectral::Quadrature::SphericalSymmetry,
+         Spectral::Quadrature::SphericalSymmetry}};
+    CHECK(evolution::dg::subcell::fd::mesh(zernike_b2_cartoon) ==
+          Mesh<3>{0_st, Spectral::Basis::Uninitialized,
+                  Spectral::Quadrature::Uninitialized});
+    // FiniteDifference is also not a valid DG basis, so it returns the
+    // uninitialized sentinel.
+    const Mesh<3> fd_cartoon{
+        {{3, 3, 1}},
+        {Spectral::Basis::FiniteDifference, BasisType,
+         Spectral::Basis::Cartoon},
+        {Spectral::Quadrature::CellCentered, QuadratureType,
+         Spectral::Quadrature::AxialSymmetry}};
+    CHECK(evolution::dg::subcell::fd::mesh(fd_cartoon) ==
+          Mesh<3>{0_st, Spectral::Basis::Uninitialized,
+                  Spectral::Quadrature::Uninitialized});
+  }
+
+#ifdef SPECTRE_DEBUG
+  // dg_mesh() assert: non-FiniteDifference dimension mixed with Cartoon
+  CHECK_THROWS_WITH(
+      evolution::dg::subcell::fd::dg_mesh(
+          Mesh<3>{
+              {{5, 1, 1}},
+              {BasisType, Spectral::Basis::Cartoon, Spectral::Basis::Cartoon},
+              {QuadratureType, Spectral::Quadrature::SphericalSymmetry,
+               Spectral::Quadrature::SphericalSymmetry}},
+          BasisType, QuadratureType),
+      Catch::Matchers::ContainsSubstring(
+          "The basis for computing the DG mesh can only mix "
+          "FiniteDifference with Cartoon"));
+  CHECK_THROWS_WITH(
+      evolution::dg::subcell::fd::dg_mesh(
+          Mesh<3>{{{5, 3, 1}},
+                  {BasisType, Spectral::Basis::FiniteDifference,
+                   Spectral::Basis::Cartoon},
+                  {QuadratureType, Spectral::Quadrature::CellCentered,
+                   Spectral::Quadrature::AxialSymmetry}},
+          BasisType, QuadratureType),
+      Catch::Matchers::ContainsSubstring(
+          "The basis for computing the DG mesh can only mix "
+          "FiniteDifference with Cartoon"));
+#endif  // SPECTRE_DEBUG
+}
+void test_zernike_b1_cartoon_mesh() {
+  for (size_t i = 2; i < 5; ++i) {
+    // Spherically symmetric: ZernikeB1 in dim 0, Cartoon in dims 1 and 2.
+    const Mesh<3> dg_spherical{
+        {{i, 1, 1}},
+        {Spectral::Basis::ZernikeB1, Spectral::Basis::Cartoon,
+         Spectral::Basis::Cartoon},
+        {Spectral::Quadrature::GaussRadauUpper,
+         Spectral::Quadrature::SphericalSymmetry,
+         Spectral::Quadrature::SphericalSymmetry}};
+    const Mesh<3> subcell_spherical{
+        {{2 * i - 1, 1, 1}},
+        {Spectral::Basis::FiniteDifference, Spectral::Basis::Cartoon,
+         Spectral::Basis::Cartoon},
+        {Spectral::Quadrature::CellCentered,
+         Spectral::Quadrature::SphericalSymmetry,
+         Spectral::Quadrature::SphericalSymmetry}};
+    CHECK(evolution::dg::subcell::fd::mesh(dg_spherical) == subcell_spherical);
+  }
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FD.Mesh", "[Evolution][Unit]") {
@@ -152,5 +260,75 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FD.Mesh", "[Evolution][Unit]") {
   test_mesh<Spectral::Basis::Legendre, Spectral::Quadrature::Gauss>();
   test_mesh<Spectral::Basis::Chebyshev, Spectral::Quadrature::GaussLobatto>();
   test_mesh<Spectral::Basis::Chebyshev, Spectral::Quadrature::Gauss>();
+  test_cartoon_mesh<Spectral::Basis::Legendre,
+                    Spectral::Quadrature::GaussLobatto>();
+  test_cartoon_mesh<Spectral::Basis::Legendre, Spectral::Quadrature::Gauss>();
+  test_cartoon_mesh<Spectral::Basis::Chebyshev,
+                    Spectral::Quadrature::GaussLobatto>();
+  test_cartoon_mesh<Spectral::Basis::Chebyshev, Spectral::Quadrature::Gauss>();
+  test_zernike_b1_cartoon_mesh();
   print_comparison_point_computation();
+
+  INFO("Test dg_mesh_supports_subcell");
+  {
+    CHECK(evolution::dg::subcell::fd::dg_mesh_supports_subcell(Mesh<1>{
+        5, Spectral::Basis::Legendre, Spectral::Quadrature::GaussLobatto}));
+    CHECK(evolution::dg::subcell::fd::dg_mesh_supports_subcell(Mesh<2>{
+        5, Spectral::Basis::Chebyshev, Spectral::Quadrature::GaussLobatto}));
+    CHECK(evolution::dg::subcell::fd::dg_mesh_supports_subcell(
+        Mesh<3>{5, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss}));
+    CHECK(evolution::dg::subcell::fd::dg_mesh_supports_subcell(
+        Mesh<3>{{{5, 1, 1}},
+                {Spectral::Basis::Legendre, Spectral::Basis::Cartoon,
+                 Spectral::Basis::Cartoon},
+                {Spectral::Quadrature::GaussLobatto,
+                 Spectral::Quadrature::SphericalSymmetry,
+                 Spectral::Quadrature::SphericalSymmetry}}));
+    CHECK(evolution::dg::subcell::fd::dg_mesh_supports_subcell(
+        Mesh<3>{{{5, 1, 1}},
+                {Spectral::Basis::ZernikeB1, Spectral::Basis::Cartoon,
+                 Spectral::Basis::Cartoon},
+                {Spectral::Quadrature::GaussRadauUpper,
+                 Spectral::Quadrature::SphericalSymmetry,
+                 Spectral::Quadrature::SphericalSymmetry}}));
+
+    CHECK_FALSE(evolution::dg::subcell::fd::dg_mesh_supports_subcell(Mesh<3>{
+        {{5, 5, 9}},
+        {Spectral::Basis::ZernikeB3, Spectral::Basis::ZernikeB3,
+         Spectral::Basis::ZernikeB3},
+        {Spectral::Quadrature::GaussRadauUpper, Spectral::Quadrature::Gauss,
+         Spectral::Quadrature::Equiangular}}));
+    CHECK_FALSE(evolution::dg::subcell::fd::dg_mesh_supports_subcell(Mesh<3>{
+        {{5, 6, 11}},
+        {Spectral::Basis::SphericalHarmonic, Spectral::Basis::SphericalHarmonic,
+         Spectral::Basis::SphericalHarmonic},
+        {Spectral::Quadrature::GaussLobatto, Spectral::Quadrature::Gauss,
+         Spectral::Quadrature::Equiangular}}));
+    CHECK_FALSE(evolution::dg::subcell::fd::dg_mesh_supports_subcell(
+        Mesh<1>{5, Spectral::Basis::FiniteDifference,
+                Spectral::Quadrature::CellCentered}));
+  }
+
+  INFO("Test fd::mesh with unsupported bases");
+  {
+    const Mesh<3> zernike_b3_mesh{
+        {{5, 5, 9}},
+        {Spectral::Basis::ZernikeB3, Spectral::Basis::ZernikeB3,
+         Spectral::Basis::ZernikeB3},
+        {Spectral::Quadrature::GaussRadauUpper, Spectral::Quadrature::Gauss,
+         Spectral::Quadrature::Equiangular}};
+    CHECK(evolution::dg::subcell::fd::mesh(zernike_b3_mesh) ==
+          Mesh<3>{0_st, Spectral::Basis::Uninitialized,
+                  Spectral::Quadrature::Uninitialized});
+
+    const Mesh<3> spherical_harmonic_mesh{
+        {{5, 6, 11}},
+        {Spectral::Basis::SphericalHarmonic, Spectral::Basis::SphericalHarmonic,
+         Spectral::Basis::SphericalHarmonic},
+        {Spectral::Quadrature::GaussLobatto, Spectral::Quadrature::Gauss,
+         Spectral::Quadrature::Equiangular}};
+    CHECK(evolution::dg::subcell::fd::mesh(spherical_harmonic_mesh) ==
+          Mesh<3>{0_st, Spectral::Basis::Uninitialized,
+                  Spectral::Quadrature::Uninitialized});
+  }
 }

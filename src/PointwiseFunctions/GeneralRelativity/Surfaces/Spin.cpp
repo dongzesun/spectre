@@ -18,8 +18,8 @@
 #include "NumericalAlgorithms/LinearAlgebra/FindGeneralizedEigenvalues.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/SpherepackIterator.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/StrahlkorperFunctions.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/StrahlkorperFunctions.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Christoffel.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
@@ -525,6 +525,11 @@ void spin_vector(
   ASSERT(get(spin_function).size() == ylm_physical_size,
          "spin_function size doesn't match ylm physical size: "
              << get(spin_function).size() << " vs " << ylm_physical_size);
+
+  if (spin_magnitude == 0.0) {
+    *result = make_array<3>(0.0);
+    return;
+  }
 
   // Compute very rough center of the measurement frame by simply
   // averaging measurement_frame_coords.  It is ok for this center to

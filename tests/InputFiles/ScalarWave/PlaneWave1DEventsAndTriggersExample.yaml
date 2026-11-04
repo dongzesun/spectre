@@ -42,7 +42,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: Auto
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Verbose
@@ -60,11 +62,16 @@ PhaseChangeAndTriggers:
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.001
+  InitialTimeStep: &initial_time_step 0.001
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper:
     AdamsBashforth:
       Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 DomainCreator:
   Interval:
@@ -82,6 +89,15 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 128
+          Enable: false
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
 
 EventsAndDenseTriggers:
 
@@ -115,10 +131,14 @@ EventsAndTriggersAtSlabs:
             - Name: Error(Pi)
               NormType: L2Norm
               Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   - Trigger: Always
     Events:
       - Completion
 # [multiple_events]
+
+EventsAndTriggersAtSteps:
 
 Observers:
   VolumeFileName: "ScalarWavePlaneWave1DEventsAndTriggersExampleVolume"

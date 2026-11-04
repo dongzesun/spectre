@@ -9,11 +9,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "DataStructures/ApplyMatrices.hpp"
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/FixedHashMap.hpp"
 #include "DataStructures/Matrix.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Creators/Tags/InitialRefinementLevels.hpp"
 #include "Domain/Structure/ChildSize.hpp"
 #include "Domain/Structure/ElementId.hpp"
@@ -38,7 +38,6 @@
 #include "Utilities/GetOutput.hpp"
 #include "Utilities/PrettyType.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
-#include "Utilities/TaggedTuple.hpp"
 #include "Utilities/TypeTraits/IsA.hpp"
 
 namespace LinearSolver::multigrid::detail {
@@ -489,11 +488,9 @@ struct ReceiveCorrectionFromCoarserGrid {
     const auto prolongated_parent_correction =
         [&parent_correction, &parent_mesh, &mesh, &child_size]() {
           if (Spectral::needs_projection(*parent_mesh, mesh, child_size)) {
-            const auto prolongation_operator =
-                Spectral::projection_matrix_parent_to_child(*parent_mesh, mesh,
-                                                            child_size);
-            return apply_matrices(prolongation_operator, parent_correction,
-                                  parent_mesh->extents());
+            return Spectral::project(
+                parent_correction, *parent_mesh, mesh,
+                make_array<Dim>(Spectral::SegmentSize::Full), child_size);
           } else {
             return std::move(parent_correction);
           }

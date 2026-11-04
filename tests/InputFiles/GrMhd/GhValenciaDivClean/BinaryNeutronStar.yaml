@@ -12,6 +12,7 @@ Testing:
 
 Parallelization:
   ElementDistribution: NumGridPoints
+  UseSubcellGridPointsForDistribution: False
 
 ResourceInfo:
   AvoidGlobalProc0: false
@@ -20,12 +21,16 @@ ResourceInfo:
 Evolution:
   InitialTime: 0.0
   # The initial time step gets overridden by `ChangeSlabSize` below
-  InitialTimeStep: 0.075
+  InitialTimeStep: &initial_time_step 0.075
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
-  # Control systems only work with AdamsBashforth
+  LocalTimeStepping: Off
   TimeStepper:
     AdamsMoultonPcMonotonic:
       Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 PhaseChangeAndTriggers:
   - Trigger:
@@ -52,6 +57,7 @@ EquationOfState: &eos
         PolytropicConstant: 123.6
         PolytropicExponent: 2.
       ThermalAdiabaticIndex: 2.0
+      MinTemperature: 1.e-16
 
 DomainCreator:
   BinaryCompactObject:
@@ -72,9 +78,11 @@ DomainCreator:
       RadialDistribution: [Linear, Linear, Linear]
       RadialPartitioning: [80.0, 125.0]
       OpeningAngle: 120.0
+      UseSphericalHarmonics: false
       BoundaryCondition:
         ConstraintPreservingFreeOutflow:
           Type: ConstraintPreservingPhysical
+          IncomingWaveProfile: None
     UseEquiangularMap: True
     CubeScale: 1.0
     InitialRefinement:
@@ -111,6 +119,7 @@ DomainCreator:
       OuterShell2UpperX: [13, 13, 14]
       OuterShell2LowerX: [13, 13, 14]
 
+    UseWorldtube: false
     TimeDependentMaps:
       InitialTime: 0.0
       SkewMap: None
@@ -224,6 +233,18 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      # Half power was determined to filter only the last term up to N = 19
+      # since we support up to 20 gridpoints.
+      - Hypercube:
+          HalfPower: 420
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
+    OnlyDgBlocksAndGroups: [Envelope, OuterShell0, OuterShell1, OuterShell2]
     Subcell:
       TroubledCellIndicator:
         PerssonTci:
@@ -239,7 +260,6 @@ SpatialDiscretization:
         AlwaysUseSubcells: false
         EnableExtensionDirections: false
         UseHalo: false
-        OnlyDgBlocksAndGroups: [Envelope, OuterShell0, OuterShell1, OuterShell2]
       SubcellToDgReconstructionMethod: DimByDim
       FiniteDifferenceDerivativeOrder: 2
       FdInterpolationOrder: 1
@@ -261,15 +281,6 @@ SpatialDiscretization:
         ReconstructRhoTimesTemperature: true
     FilterOptions:
       SpacetimeDissipation: 0.3
-
-Filtering:
-  ExpFilter0:
-    Alpha: 64
-    # Half power was determined to filter only the last term up to N = 19
-    # since we support up to 20 gridpoints.
-    HalfPower: 420
-    Enable: true
-    BlocksToFilter: All
 
 EventsAndTriggersAtCheckpoints:
 
@@ -329,6 +340,8 @@ EventsAndTriggersAtSlabs:
             - Name: RestMassDensity
               NormType: Max
               Components: Individual
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
       - ObserveNorms:
           SubfileName: Constraints
           TensorsToObserve:
@@ -341,6 +354,8 @@ EventsAndTriggersAtSlabs:
           - Name: PointwiseL2Norm(ConstraintEnergy)
             NormType: L2Norm
             Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
 
   - Trigger:
       Slabs:
@@ -363,6 +378,8 @@ EventsAndTriggersAtSlabs:
           - Name: Lapse
             NormType: Min
             Components: Individual
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
       - ObserveNorms:
           SubfileName: FluidQuantities
           TensorsToObserve:
@@ -375,6 +392,8 @@ EventsAndTriggersAtSlabs:
           - Name: TildeDUnboundUtCriterion
             NormType: VolumeIntegral
             Components: Individual
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
 
   - Trigger:
       Slabs:
@@ -435,6 +454,8 @@ EventsAndTriggersAtSlabs:
         Value: 6000.0 # About 9 orbits plus 1200M post-merger
     Events:
       - Completion
+
+EventsAndTriggersAtSteps:
 
 InterpolationTargets:
   BondiSachsInterpolation:
@@ -550,11 +571,14 @@ InitialData:
   #   AtmosphereDensity: *AtmosphereDensity
   #   ElectronFraction: 0.15
   NumericInitialData:
-    FileGlob: BnsVolume*.h5
-    Subgroup: VolumeData
-    ObservationValue: Last
-    ObservationValueEpsilon: Auto
-    ElementsAreIdentical: False
+    VolumeData:
+      FileGlob: BnsVolume*.h5
+      Subgroup: VolumeData
+      ObservationValue: Last
+      ObservationValueEpsilon: Auto
+      ElementsAreIdentical: False
+      ExtrapolateIntoExcisions: False
+      NumThreads: 1
     GhVariables:
       Lapse: Lapse
       Shift: ShiftExcess
@@ -563,6 +587,7 @@ InitialData:
     HydroVariables:
       RestMassDensity: RestMassDensity
       LowerSpatialFourVelocity: LowerSpatialFourVelocity
+      Temperature: 0.
       ElectronFraction: 0.15
       MagneticField: 0.
     DensityCutoff: *AtmosphereDensityCutoff

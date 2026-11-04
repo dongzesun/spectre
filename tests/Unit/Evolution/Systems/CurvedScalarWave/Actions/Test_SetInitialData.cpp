@@ -12,6 +12,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
@@ -50,7 +51,6 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace CurvedScalarWave::Actions {
 namespace {
@@ -288,18 +288,20 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.CurvedScalarWave.SetInitialData",
                   "[Unit][Evolution]") {
   register_factory_classes_with_charm<Metavariables>();
   test_set_initial_data(
-      NumericInitialData{"TestInitialData.h5",
-                         "VolumeData",
-                         0.,
-                         {1.0e-9},
-                         false,
-                         {"CustomPsi", "CustomPi", "CustomPhi"}},
+      NumericInitialData{
+          importers::ImporterOptions{"TestInitialData.h5", "VolumeData", 0.,
+                                     Options::Auto<double>{1.0e-9}, false,
+                                     false, Options::Auto<size_t>{1}},
+          NumericInitialData::ScalarVars{"CustomPsi", "CustomPi", "CustomPhi"}},
       "NumericInitialData:\n"
-      "  FileGlob: TestInitialData.h5\n"
-      "  Subgroup: VolumeData\n"
-      "  ObservationValue: 0.\n"
-      "  ObservationValueEpsilon: 1e-9\n"
-      "  ElementsAreIdentical: False\n"
+      "  VolumeData:\n"
+      "    FileGlob: TestInitialData.h5\n"
+      "    Subgroup: VolumeData\n"
+      "    ObservationValue: 0.\n"
+      "    ObservationValueEpsilon: 1e-9\n"
+      "    ElementsAreIdentical: False\n"
+      "    ExtrapolateIntoExcisions: False\n"
+      "    NumThreads: 1\n"
       "  Variables:\n"
       "    Psi: CustomPsi\n"
       "    Pi: CustomPi\n"

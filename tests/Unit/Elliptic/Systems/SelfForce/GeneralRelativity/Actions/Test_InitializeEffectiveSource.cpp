@@ -41,7 +41,9 @@ struct ElementArray {
   using metavariables = Metavariables;
   using chare_type = ActionTesting::MockArrayChare;
   using array_index = ElementId<2>;
-  using const_global_cache_tags = tmpl::list<domain::Tags::Domain<2>>;
+  using const_global_cache_tags =
+      tmpl::list<domain::Tags::Domain<2>,
+                 GrSelfForce::Tags::NullSlicingBlocks<2>>;
   using phase_dependent_action_list = tmpl::list<
       Parallel::PhaseActions<
           Parallel::Phase::Initialization,
@@ -83,21 +85,20 @@ SPECTRE_TEST_CASE("Unit.GrSelfForce.Actions.InitializeEffectiveSource",
   domain::creators::register_derived_with_charm();
   register_factory_classes_with_charm<Metavariables>();
   const domain::creators::AlignedLattice<2> domain_creator{
-      {{{-20., 0., 20.}, {0., M_PI}}}, {{2, 2}}, {{4, 4}}, {}, {}, {}};
+      {{{-20., 0., 20.}, {0., M_PI}}}, {}, {}, {{2, 2}}, {{4, 4}}, {}, {}, {}};
   const auto element_regularized =
       ElementId<2>{1, {{SegmentId{2, 0}, SegmentId{2, 1}}}};
   const auto element_unregularized =
       ElementId<2>{0, {{SegmentId{2, 3}, SegmentId{2, 1}}}};
 
-  ActionTesting::MockRuntimeSystem<Metavariables> runner{
-      tuples::TaggedTuple<background_tag, domain::Tags::Domain<2>,
-                          domain::Tags::FunctionsOfTimeInitialize,
-                          elliptic::dg::Tags::Massive,
-                          elliptic::dg::Tags::Quadrature>{
-          std::make_unique<GrSelfForce::AnalyticData::CircularOrbit>(1.0, 0.0,
-                                                                     6.0, 1),
-          domain_creator.create_domain(), domain_creator.functions_of_time(),
-          false, Spectral::Quadrature::GaussLobatto}};
+  ActionTesting::MockRuntimeSystem<Metavariables> runner{tuples::TaggedTuple<
+      background_tag, domain::Tags::Domain<2>,
+      domain::Tags::FunctionsOfTimeInitialize, elliptic::dg::Tags::Massive,
+      elliptic::dg::Tags::Quadrature, GrSelfForce::Tags::NullSlicingBlocks<2>>{
+      std::make_unique<GrSelfForce::AnalyticData::CircularOrbit>(
+          1.0, 0.0, 6.0, 1, std::nullopt, false),
+      domain_creator.create_domain(), domain_creator.functions_of_time(), false,
+      Spectral::Quadrature::GaussLobatto, std::vector<size_t>{}}};
   const ::Tags::Mortars<domain::Tags::Coordinates<2, Frame::Inertial>, 2>::type
       empty_mortar_coords{};
   ActionTesting::emplace_component_and_initialize<element_array>(

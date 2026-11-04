@@ -18,6 +18,7 @@
 #include "Evolution/Systems/Cce/Components/CharacteristicEvolution.hpp"
 #include "Evolution/Systems/Cce/Components/WorldtubeBoundary.hpp"
 #include "Evolution/Systems/Cce/IntegrandInputSteps.hpp"
+#include "Evolution/Systems/Cce/System.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
@@ -31,6 +32,7 @@
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "Time/AdvanceTime.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/Tags/StepperErrorEstimatesEnabled.hpp"
 #include "Time/TimeSteppers/AdamsBashforth.hpp"
@@ -151,9 +153,7 @@ struct MockCharacteristicEvolution {
 
   using initialize_action_list = tmpl::list<
       Actions::InitializeCharacteristicEvolutionVariables<Metavariables>,
-      Actions::InitializeCharacteristicEvolutionTime<
-          typename Metavariables::evolved_coordinates_variables_tag,
-          typename Metavariables::evolved_swsh_tags, false>,
+      Actions::InitializeCharacteristicEvolutionTime,
       // advance the time so that the current `TimeStepId` is valid without
       // having to perform self-start.
       ::Actions::MutateApply<AdvanceTime<Tags::CceEvolutionPrefix>>,
@@ -184,11 +184,9 @@ struct MockCharacteristicEvolution {
 };
 
 struct test_metavariables {
-  using evolved_swsh_tags = tmpl::list<Tags::BondiJ>;
+  using system = System<false>;
   using evolved_swsh_dt_tags = tmpl::list<Tags::BondiH>;
   using cce_step_choosers = tmpl::list<>;
-  using evolved_coordinates_variables_tag = ::Tags::Variables<
-      tmpl::list<Tags::CauchyCartesianCoords, Tags::InertialRetardedTime>>;
   using cce_boundary_communication_tags =
       Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>;
   using cce_gauge_boundary_tags = tmpl::flatten<tmpl::list<
@@ -277,12 +275,12 @@ SPECTRE_TEST_CASE(
   const RotatingSchwarzschildWithNoninertialNews analytic_solution{
       extraction_radius, 1.0, 0.05};
   const AnalyticBoundaryDataManager analytic_manager{
-      l_max, extraction_radius, analytic_solution.get_clone()};
+      l_max, extraction_radius, analytic_solution.get_clone(), 0.05};
   ActionTesting::MockRuntimeSystem<test_metavariables> runner{
       {start_time, false, l_max, l_max, number_of_radial_points,
        static_cast<std::unique_ptr<LtsTimeStepper>>(
            std::make_unique<::TimeSteppers::AdamsBashforth>(3)),
-       scri_output_density, true}};
+       LtsMode::Conservative, scri_output_density, true}};
   runner.set_phase(Parallel::Phase::Initialization);
   // Serialize and deserialize to get around the lack of implicit copy
   // constructor.

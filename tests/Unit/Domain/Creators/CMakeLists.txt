@@ -5,6 +5,7 @@ set(LIBRARY "Test_DomainCreators")
 
 set(LIBRARY_SOURCES
   Test_AlignedLattice.cpp
+  Test_AngularCartoonSphere2D.cpp
   Test_AngularCylinder.cpp
   Test_AngularDisk.cpp
   Test_BinaryCompactObject.cpp
@@ -17,6 +18,7 @@ set(LIBRARY_SOURCES
   Test_Disk.cpp
   Test_ExpandOverBlocks.cpp
   Test_FrustalCloak.cpp
+  Test_Hypertorus.cpp
   Test_Interval.cpp
   Test_NonconformingSphericalShells.cpp
   Test_Rectangle.cpp
@@ -44,7 +46,8 @@ target_link_libraries(
   H5
   Informer
   SphericalHarmonics
-  SphericalHarmonicsIO
+  Strahlkorper
+  StrahlkorperIO
   )
 
 add_subdirectory(Python)

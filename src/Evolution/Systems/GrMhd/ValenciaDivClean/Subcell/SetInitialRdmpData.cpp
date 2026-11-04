@@ -10,6 +10,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/DgSubcell/ActiveGrid.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/PerssonTci.hpp"
 #include "Evolution/DgSubcell/Projection.hpp"
 #include "Evolution/DgSubcell/TwoMeshRdmpTci.hpp"
@@ -23,7 +24,10 @@ void SetInitialRdmpData::apply(
     const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
     const evolution::dg::subcell::ActiveGrid active_grid,
     const Mesh<3>& dg_mesh, const Mesh<3>& subcell_mesh) {
-  if (active_grid == evolution::dg::subcell::ActiveGrid::Subcell) {
+  // Also skip projection for non-hypercube elements (which can never use
+  // subcell) to avoid projecting onto the invalid subcell mesh
+  if (active_grid == evolution::dg::subcell::ActiveGrid::Subcell or
+      not evolution::dg::subcell::fd::dg_mesh_supports_subcell(dg_mesh)) {
     const Scalar<DataVector> tilde_b_magnitude = magnitude(tilde_b);
 
     rdmp_tci_data->max_variables_values =
@@ -35,13 +39,15 @@ void SetInitialRdmpData::apply(
   } else {
     const Scalar<DataVector> tilde_b_magnitude = magnitude(tilde_b);
     const auto subcell_tilde_b_mag = evolution::dg::subcell::fd::project(
-        get(tilde_b_magnitude), dg_mesh, subcell_mesh.extents());
+        get(tilde_b_magnitude), dg_mesh, subcell_mesh.extents(),
+        Spectral::Parity::Even);
     const auto subcell_tilde_d = evolution::dg::subcell::fd::project(
-        get(tilde_d), dg_mesh, subcell_mesh.extents());
+        get(tilde_d), dg_mesh, subcell_mesh.extents(), Spectral::Parity::Even);
     const auto subcell_tilde_ye = evolution::dg::subcell::fd::project(
-        get(tilde_ye), dg_mesh, subcell_mesh.extents());
+        get(tilde_ye), dg_mesh, subcell_mesh.extents(), Spectral::Parity::Even);
     const auto subcell_tilde_tau = evolution::dg::subcell::fd::project(
-        get(tilde_tau), dg_mesh, subcell_mesh.extents());
+        get(tilde_tau), dg_mesh, subcell_mesh.extents(),
+        Spectral::Parity::Even);
 
     using std::max;
     using std::min;

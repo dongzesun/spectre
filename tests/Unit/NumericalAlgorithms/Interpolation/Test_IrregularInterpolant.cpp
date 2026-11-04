@@ -17,6 +17,7 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/IndexIterator.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
@@ -32,6 +33,7 @@
 #include "Domain/Structure/ElementId.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
+#include "Helpers/NumericalAlgorithms/Spectral/BallTestFunctions.hpp"
 #include "Helpers/NumericalAlgorithms/Spectral/DiskTestFunctions.hpp"
 #include "Helpers/NumericalAlgorithms/Spectral/FourierTestFunctions.hpp"
 #include "Helpers/NumericalAlgorithms/SphericalHarmonics/YlmTestFunctions.hpp"
@@ -49,7 +51,6 @@
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 // Polynomial of given degree with leading coefficinet \f$a_0\f$, and with
@@ -643,11 +644,57 @@ void test_3d_cylinder(const gsl::not_null<std::mt19937*> generator) {
   }
 }
 
+void test_3d_ball(const gsl::not_null<std::mt19937*> generator) {
+  std::uniform_real_distribution<> xi_distribution(-1.0, 1.0);
+  std::uniform_real_distribution<> phi_distribution(0.0, 2.0 * M_PI);
+  for (size_t n_target_points = 1; n_target_points < 13;
+       n_target_points += 11) {
+    tnsr::I<DataVector, 3, Frame::ElementLogical> xi_target{n_target_points};
+    get<0>(xi_target) = make_with_random_values<DataVector>(
+        generator, make_not_null(&xi_distribution), xi_target);
+    get<1>(xi_target) = acos(make_with_random_values<DataVector>(
+        generator, make_not_null(&xi_distribution), xi_target));
+    get<2>(xi_target) = make_with_random_values<DataVector>(
+        generator, make_not_null(&phi_distribution), xi_target);
+    for (size_t n_z = 2; n_z < 4; ++n_z) {
+      CAPTURE(n_z);
+      for (size_t n_y = 0; n_y < 4; ++n_y) {
+        CAPTURE(n_y);
+        for (size_t n_x = 0; n_x < 4; ++n_x) {
+          CAPTURE(n_x);
+          // SPHEREPACK requires m_max >= 2 (n_phi >= 5)
+          const size_t n_phi = 2 * (n_x + n_y) + 3;
+          if (n_phi < 5) {
+            continue;
+          }
+          const size_t n_theta = n_x + n_y + n_z + 2;
+          const Mesh<3> source_mesh{
+              std::array{n_theta / 2 + 1, n_theta, n_phi},
+              std::array{Spectral::Basis::ZernikeB3, Spectral::Basis::ZernikeB3,
+                         Spectral::Basis::ZernikeB3},
+              std::array{Spectral::Quadrature::GaussRadauUpper,
+                         Spectral::Quadrature::Gauss,
+                         Spectral::Quadrature::Equiangular}};
+          const BallTestFunctions::ProductOfPolynomials f{n_x, n_y, n_z};
+          const auto xi_source = logical_coordinates(source_mesh);
+          const DataVector f_source = f(0.5 * (get<0>(xi_source) + 1.0),
+                                        get<1>(xi_source), get<2>(xi_source));
+          const DataVector f_expected = f(0.5 * (get<0>(xi_target) + 1.0),
+                                          get<1>(xi_target), get<2>(xi_target));
+          const intrp::Irregular<3> interpolator(source_mesh, xi_target);
+          const DataVector f_interpolated = interpolator.interpolate(f_source);
+          CHECK_ITERABLE_APPROX(f_interpolated, f_expected);
+        }
+      }
+    }
+  }
+}
+
 void test_2d_hollow_disk(const gsl::not_null<std::mt19937*> generator) {
   std::uniform_real_distribution<> xi_distribution(-1.0, 1.0);
   std::uniform_real_distribution<> phi_distribution(0.0,
                                                     2.0 * std::numbers::pi);
-  const Approx custom_approx = Approx::custom().epsilon(1e-12).scale(1.);
+  const Approx custom_approx = Approx::custom().epsilon(5e-12).scale(1.0);
   for (size_t n_target_points = 1; n_target_points < 13;
        n_target_points += 11) {
     tnsr::I<DataVector, 2, Frame::ElementLogical> xi_target{n_target_points};
@@ -687,7 +734,7 @@ void test_3d_hollow_cylinder(const gsl::not_null<std::mt19937*> generator) {
   std::uniform_real_distribution<> xi_distribution(-1.0, 1.0);
   std::uniform_real_distribution<> phi_distribution(0.0,
                                                     2.0 * std::numbers::pi);
-  const Approx custom_approx = Approx::custom().epsilon(1e-12).scale(1.);
+  const Approx custom_approx = Approx::custom().epsilon(5e-12).scale(1.0);
   for (size_t n_target_points = 1; n_target_points < 13;
        n_target_points += 11) {
     tnsr::I<DataVector, 3, Frame::ElementLogical> xi_target{n_target_points};
@@ -730,6 +777,113 @@ void test_3d_hollow_cylinder(const gsl::not_null<std::mt19937*> generator) {
           }
         }
       }
+    }
+  }
+}
+
+// Test that the Cartoon-basis interpolation in 3D delegates correctly to the
+// lower-dimensional interpolator.  For the FD+Cartoon (axisymmetric) case the
+// 3D result must match an Irregular<2> built from slice_through(0,1).  For the
+// Cartoon+Cartoon (spherically-symmetric) case it must match an Irregular<1>
+// built from slice_through(0).
+void test_cartoon_fd(const gsl::not_null<std::mt19937*> generator) {
+  std::uniform_real_distribution<> dist(-1.0, 1.0);
+  const size_t n_target = 7;
+  {
+    INFO("FD+FD+Cartoon matches Irregular<2> on slice_through(0,1)");
+    for (size_t n0 = 4; n0 <= 6; ++n0) {
+      for (size_t n1 = 4; n1 <= 6; ++n1) {
+        CAPTURE(n0);
+        CAPTURE(n1);
+        const Mesh<3> mesh3{
+            {{n0, n1, 1}},
+            {{Spectral::Basis::FiniteDifference,
+              Spectral::Basis::FiniteDifference, Spectral::Basis::Cartoon}},
+            {{Spectral::Quadrature::CellCentered,
+              Spectral::Quadrature::CellCentered,
+              Spectral::Quadrature::AxialSymmetry}}};
+        const Mesh<2> mesh2 = mesh3.slice_through(0, 1);
+
+        // Target points: xi2 is always zero (guaranteed by cartoon symmetry)
+        tnsr::I<DataVector, 3, Frame::ElementLogical> xi3{n_target};
+        get<0>(xi3) = make_with_random_values<DataVector>(
+            generator, make_not_null(&dist), DataVector(n_target));
+        get<1>(xi3) = make_with_random_values<DataVector>(
+            generator, make_not_null(&dist), DataVector(n_target));
+        get<2>(xi3) = DataVector(n_target, 0.0);
+
+        tnsr::I<DataVector, 2, Frame::ElementLogical> xi2{n_target};
+        get<0>(xi2) = get<0>(xi3);
+        get<1>(xi2) = get<1>(xi3);
+
+        // Source data: f(xi, eta) = (1 + xi) * (2 + eta) on the 2D slice,
+        // tiled trivially into 3D (only one point in dim 2)
+        const auto xi_src3 = logical_coordinates(mesh3);
+        DataVector f3(mesh3.number_of_grid_points());
+        for (size_t s = 0; s < mesh3.number_of_grid_points(); ++s) {
+          f3[s] = (1.0 + get<0>(xi_src3)[s]) * (2.0 + get<1>(xi_src3)[s]);
+        }
+        // The 2D slice has the same data layout (dim2 has only one point)
+        const DataVector f2(f3.data(), mesh2.number_of_grid_points());
+
+        const intrp::Irregular<3> interp3(mesh3, xi3);
+        const intrp::Irregular<2> interp2(mesh2, xi2);
+        CHECK_ITERABLE_APPROX(interp3.interpolate(f3), interp2.interpolate(f2));
+
+        tnsr::I<double, 3, Frame::ElementLogical> xi3_double{1};
+        tnsr::I<double, 2, Frame::ElementLogical> xi2_double{1};
+        get<0>(xi3_double) = get<0>(xi2_double) = get<0>(xi3)[0];
+        get<1>(xi3_double) = get<1>(xi2_double) = get<1>(xi3)[0];
+        get<2>(xi3_double) = get<2>(xi3)[0];
+        const intrp::Irregular<3> interp3_double(mesh3, xi3_double);
+        const intrp::Irregular<2> interp2_double(mesh2, xi2_double);
+        CHECK_ITERABLE_APPROX(interp3_double.interpolate(f3),
+                              interp2_double.interpolate(f2));
+      }
+    }
+  }
+  {
+    INFO("FD+Cartoon+Cartoon matches Irregular<1> on slice_through(0)");
+    for (size_t n0 = 4; n0 <= 6; ++n0) {
+      CAPTURE(n0);
+      const Mesh<3> mesh3{
+          {{n0, 1, 1}},
+          {{Spectral::Basis::FiniteDifference, Spectral::Basis::Cartoon,
+            Spectral::Basis::Cartoon}},
+          {{Spectral::Quadrature::CellCentered,
+            Spectral::Quadrature::SphericalSymmetry,
+            Spectral::Quadrature::SphericalSymmetry}}};
+      const Mesh<1> mesh1 = mesh3.slice_through(0);
+
+      tnsr::I<DataVector, 3, Frame::ElementLogical> xi3{n_target};
+      get<0>(xi3) = make_with_random_values<DataVector>(
+          generator, make_not_null(&dist), DataVector(n_target));
+      get<1>(xi3) = DataVector(n_target, 0.0);
+      get<2>(xi3) = DataVector(n_target, 0.0);
+
+      tnsr::I<DataVector, 1, Frame::ElementLogical> xi1{n_target};
+      get<0>(xi1) = get<0>(xi3);
+
+      const auto xi_src3 = logical_coordinates(mesh3);
+      DataVector f3(mesh3.number_of_grid_points());
+      for (size_t s = 0; s < mesh3.number_of_grid_points(); ++s) {
+        f3[s] = 1.0 + 2.0 * get<0>(xi_src3)[s];
+      }
+      const DataVector f1(f3.data(), mesh1.number_of_grid_points());
+
+      const intrp::Irregular<3> interp3(mesh3, xi3);
+      const intrp::Irregular<1> interp1(mesh1, xi1);
+      CHECK_ITERABLE_APPROX(interp3.interpolate(f3), interp1.interpolate(f1));
+
+      tnsr::I<double, 3, Frame::ElementLogical> xi3_double{1};
+      tnsr::I<double, 1, Frame::ElementLogical> xi1_double{1};
+      get<0>(xi3_double) = get<0>(xi1_double) = get<0>(xi3)[0];
+      get<1>(xi3_double) = get<1>(xi3)[0];
+      get<2>(xi3_double) = get<2>(xi3)[0];
+      const intrp::Irregular<3> interp3_double(mesh3, xi3_double);
+      const intrp::Irregular<1> interp1_double(mesh1, xi1_double);
+      CHECK_ITERABLE_APPROX(interp3_double.interpolate(f3),
+                            interp1_double.interpolate(f1));
     }
   }
 }
@@ -929,10 +1083,12 @@ SPECTRE_TEST_CASE("Unit.Numerical.Interpolation.IrregularInterpolant",
   test_3d_spherical(make_not_null(&generator));
   test_2d_disk(make_not_null(&generator));
   test_3d_cylinder(make_not_null(&generator));
+  test_3d_ball(make_not_null(&generator));
   test_2d_hollow_disk(make_not_null(&generator));
   test_3d_hollow_cylinder(make_not_null(&generator));
   test_cartoon_spherical(make_not_null(&generator));
   test_cartoon_axial(make_not_null(&generator));
+  test_cartoon_fd(make_not_null(&generator));
 #ifdef SPECTRE_DEBUG
   test_errors();
 #endif

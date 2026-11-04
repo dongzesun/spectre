@@ -25,6 +25,7 @@
 #include "Evolution/DgSubcell/CartesianFluxDivergence.hpp"
 #include "Evolution/DgSubcell/ComputeBoundaryTerms.hpp"
 #include "Evolution/DgSubcell/CorrectPackagedData.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Projection.hpp"
 #include "Evolution/DgSubcell/ReconstructionOrder.hpp"
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
@@ -52,6 +53,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/TimeDerivativeTerms.hpp"
 #include "NumericalAlgorithms/FiniteDifference/PartialDerivatives.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "NumericalAlgorithms/Spectral/Parity.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/DerivSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ExtrinsicCurvature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/SpatialDerivOfLapse.hpp"
@@ -86,7 +88,7 @@ struct ComputeTimeDerivImpl<
     tmpl::list<GrmhdArgumentSourceTags...>, System> {
   template <class DbTagsList>
   static void apply(
-      const gsl::not_null<db::DataBox<DbTagsList>*> box,
+      const gsl::not_null<db::DataBox<DbTagsList>*> box, const size_t comp_dim,
       const tnsr::I<DataVector, 3, Frame::Inertial>& inertial_coords,
       const Scalar<DataVector>& cell_centered_det_inv_jacobian,
       const InverseJacobian<DataVector, 3, Frame::ElementLogical,
@@ -120,8 +122,9 @@ struct ComputeTimeDerivImpl<
                              temporary_tags,
                          ::gh::Tags::ConstraintGamma0>,
         extra_tags_for_grmhd,
-        tmpl::list<Tags::TraceReversedStressEnergy, Tags::FourVelocityOneForm,
-                   Tags::ComovingMagneticFieldOneForm>>>;
+        tmpl::list<
+            Tags::TraceReversedStressEnergy, Tags::FourVelocityOneForm,
+            grmhd::ValenciaDivClean::Tags::ComovingMagneticFieldOneForm>>>;
     Variables<temporary_tags> temp_tags{subcell_mesh.number_of_grid_points()};
     const auto temp_tags_ptr = make_not_null(&temp_tags);
 
@@ -170,9 +173,10 @@ struct ComputeTimeDerivImpl<
           subcell_mesh.number_of_grid_points()};
       for (size_t i = 0; i < 3; i++) {
         mesh_velocity_subcell.value().get(i) =
-            evolution::dg::subcell::fd::project(mesh_velocity_dg.value().get(i),
-                                                dg_mesh,
-                                                subcell_mesh.extents());
+            evolution::dg::subcell::fd::project(
+                mesh_velocity_dg.value().get(i), dg_mesh,
+                subcell_mesh.extents(),
+                i == 0 ? Spectral::Parity::Odd : Spectral::Parity::Even);
       }
     }
 
@@ -311,7 +315,7 @@ struct ComputeTimeDerivImpl<
       const DataVector div_mesh_velocity_subcell =
           evolution::dg::subcell::fd::project(
               div_mesh_velocity_dg.value().get(), dg_mesh,
-              subcell_mesh.extents());
+              subcell_mesh.extents(), Spectral::Parity::Even);
       tmpl::for_each<tmpl::list<GrmhdDtTags...>>(
           [&dt_vars_ptr, &div_mesh_velocity_subcell,
            &evolved_vars](auto evolved_var_tag_v) {
@@ -371,7 +375,8 @@ struct ComputeTimeDerivImpl<
     trace_reversed_stress_energy(
         get<Tags::TraceReversedStressEnergy>(temp_tags_ptr),
         get<Tags::FourVelocityOneForm>(temp_tags_ptr),
-        get<Tags::ComovingMagneticFieldOneForm>(temp_tags_ptr),
+        get<grmhd::ValenciaDivClean::Tags::ComovingMagneticFieldOneForm>(
+            temp_tags_ptr),
 
         get<hydro::Tags::RestMassDensity<DataVector>>(evolved_vars, temp_tags,
                                                       primitive_vars),
@@ -408,21 +413,34 @@ struct ComputeTimeDerivImpl<
         get<Tags::TraceReversedStressEnergy>(temp_tags),
         get<gr::Tags::Lapse<DataVector>>(temp_tags));
 
-    for (size_t dim = 0; dim < 3; ++dim) {
+    for (size_t dim = 0; dim < comp_dim; ++dim) {
       const auto& boundary_correction_in_axis =
           gsl::at(boundary_corrections, dim);
       const double inverse_delta = gsl::at(one_over_delta_xi, dim);
       EXPAND_PACK_LEFT_TO_RIGHT([&dt_vars_ptr, &boundary_correction_in_axis,
                                  &cell_centered_det_inv_jacobian, dim,
-                                 inverse_delta, &subcell_mesh]() {
+                                 inverse_delta, &subcell_mesh, &inertial_coords,
+                                 comp_dim, time, &functions_of_time, &box]() {
         auto& dt_var = *get<::Tags::dt<GrmhdDtTags>>(dt_vars_ptr);
         const auto& var_correction =
             get<GrmhdDtTags>(boundary_correction_in_axis);
         for (size_t i = 0; i < dt_var.size(); ++i) {
-          evolution::dg::subcell::add_cartesian_flux_divergence(
-              make_not_null(&dt_var[i]), inverse_delta,
-              get(cell_centered_det_inv_jacobian), var_correction[i],
-              subcell_mesh.extents(), dim);
+          if (comp_dim == 3) {
+            evolution::dg::subcell::add_cartesian_flux_divergence(
+                make_not_null(&dt_var[i]), inverse_delta,
+                get(cell_centered_det_inv_jacobian), var_correction[i],
+                subcell_mesh.extents(), dim);
+
+          } else {
+            evolution::dg::subcell::add_cartoon_cartesian_flux_divergence(
+                make_not_null(&dt_var[i]), inverse_delta,
+                get(cell_centered_det_inv_jacobian), var_correction[i],
+                subcell_mesh.extents(), dim, inertial_coords,
+                get<domain::Tags::ElementMap<3, Frame::Grid>>(*box),
+                get<domain::CoordinateMaps::Tags::CoordinateMap<
+                    3, Frame::Grid, Frame::Inertial>>(*box),
+                time, functions_of_time);
+          }
         }
       }());
     }
@@ -463,12 +481,9 @@ struct TimeDerivative {
     const Mesh<3>& dg_mesh = db::get<domain::Tags::Mesh<3>>(*box);
     const Mesh<3>& subcell_mesh =
         db::get<evolution::dg::subcell::Tags::Mesh<3>>(*box);
-    ASSERT(
-        subcell_mesh == Mesh<3>(subcell_mesh.extents(0), subcell_mesh.basis(0),
-                                subcell_mesh.quadrature(0)),
-        "The subcell/FD mesh must be isotropic for the FD time derivative but "
-        "got "
-            << subcell_mesh);
+    const size_t comp_dim =
+        evolution::dg::subcell::fd::get_computational_dim(subcell_mesh);
+    evolution::dg::subcell::fd::verify_subcell_mesh(subcell_mesh);
     const size_t num_pts = subcell_mesh.number_of_grid_points();
     const size_t reconstructed_num_pts =
         (subcell_mesh.extents(0) + 1) *
@@ -565,7 +580,7 @@ struct TimeDerivative {
         db::get<evolution::dg::subcell::Tags::GhostDataForReconstruction<3>>(
             *box),
         recons.ghost_zone_size() * 2, subcell_mesh,
-        cell_centered_logical_to_inertial_inv_jacobian);
+        cell_centered_logical_to_inertial_inv_jacobian, inertial_coords);
 
     // Now package the data and compute the correction
     //
@@ -644,7 +659,7 @@ struct TimeDerivative {
               reconstructed_num_pts};
 
           // Compute fluxes on faces
-          for (size_t i = 0; i < 3; ++i) {
+          for (size_t i = 0; i < comp_dim; ++i) {
             auto& vars_upper_face = gsl::at(package_data_argvars_upper_face, i);
             auto& vars_lower_face = gsl::at(package_data_argvars_lower_face, i);
             grmhd::ValenciaDivClean::subcell::compute_fluxes(
@@ -654,8 +669,7 @@ struct TimeDerivative {
 
             // Build extents of mesh shifted by half a grid cell in direction i
             const unsigned long& num_subcells_1d = subcell_mesh.extents(0);
-            Index<3> face_mesh_extents(std::array<size_t, 3>{
-                num_subcells_1d, num_subcells_1d, num_subcells_1d});
+            Index<3> face_mesh_extents = subcell_mesh.extents();
             face_mesh_extents[i] = num_subcells_1d + 1;
             // Add moving mesh corrections to the fluxes, if needed
             std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>
@@ -671,7 +685,9 @@ struct TimeDerivative {
                 mesh_velocity_on_face.value().get(j) =
                     evolution::dg::subcell::fd::project_to_faces(
                         mesh_velocity_dg.value().get(j), dg_mesh,
-                        face_mesh_extents, i);
+                        face_mesh_extents, i,
+                        j == 0 ? Spectral::Parity::Odd
+                               : Spectral::Parity::Even);
               }
 
               tmpl::for_each<grmhd_evolved_vars_tags>(
@@ -723,11 +739,14 @@ struct TimeDerivative {
             for (size_t j = 0; j < 3; j++) {
               lower_outward_conormal.get(j) =
                   evolution::dg::subcell::fd::project_to_faces(
-                      inv_jacobian_dg.get(i, j), dg_mesh, face_mesh_extents, i);
+                      inv_jacobian_dg.get(i, j), dg_mesh, face_mesh_extents, i,
+                      (i == 0) != (j == 0) ? Spectral::Parity::Odd
+                                           : Spectral::Parity::Even);
             }
             const auto det_inv_jacobian_face =
                 evolution::dg::subcell::fd::project_to_faces(
-                    get(det_inv_jacobian_dg), dg_mesh, face_mesh_extents, i);
+                    get(det_inv_jacobian_dg), dg_mesh, face_mesh_extents, i,
+                    Spectral::Parity::Even);
 
             const Scalar<DataVector> normalization{sqrt(get(
                 dot_product(lower_outward_conormal, lower_outward_conormal,
@@ -815,7 +834,7 @@ struct TimeDerivative {
     detail::ComputeTimeDerivImpl<
         gh_variables_tags, gh_temporary_tags, gh_gradient_tags, gh_extra_tags,
         grmhd_evolved_vars_tags, grmhd_source_tags, grmhd_source_argument_tags,
-        System>::apply(box, inertial_coords,
+        System>::apply(box, comp_dim, inertial_coords,
                        db::get<evolution::dg::subcell::fd::Tags::
                                    DetInverseJacobianLogicalToInertial>(*box),
                        cell_centered_logical_to_inertial_inv_jacobian,

@@ -18,6 +18,8 @@ endif()
 option(SPECTRE_OPTIMIZE_SIZE "Optimize for executable size instead of speed"
   ${_SPECTRE_OPTIMIZE_SIZE_DEFAULT})
 
+option(SPECTRE_DEBUG_Og "Compile Debug builds with -Og instead of -O0" OFF)
+
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(SPECTRE_DEBUG ON)
 endif()
@@ -39,6 +41,10 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DSPECTRE_DEBUG")
 
 if(${SPECTRE_OPTIMIZE_SIZE})
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Oz")
+elseif(${SPECTRE_DEBUG_Og})
+  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Og")
+  set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Og")
+  set(CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} -Og")
 endif()
 
 if(NOT ${DEBUG_SYMBOLS})
@@ -52,31 +58,64 @@ if(${DEBUG_SYMBOLS})
     APPEND PROPERTY INTERFACE_COMPILE_OPTIONS -g)
 endif(${DEBUG_SYMBOLS})
 
+set(_NO_AVX512 "")
+if((NOT APPLE OR NOT "${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "arm64")
+    # sometimes ARM architectures use the name "aarch64"
+    AND NOT "${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "aarch64"
+  )
+  # The -mno-avx512f flag is necessary to avoid a Blaze 3.8 bug. The flag
+  # should be re-enabled when we can insist on Blaze 3.9 which will include
+  # a fix that allows this vectorization flag again.
+  set(_NO_AVX512 "-mno-avx512f")
+endif()
+
+# Check whether -march=native is supported before adding it to SpectreFlags.
+# This avoids using the flag on compilers that reject it, such as clang on
+# arm64 Linux.
+function(_spectre_check_native_architecture_flag LANGUAGE XTYPE SOURCE_FILE
+         FLAG_VARIABLE)
+  set(${FLAG_VARIABLE} "" PARENT_SCOPE)
+  execute_process(
+    COMMAND
+    bash -c
+    "LC_ALL=POSIX ${CMAKE_${LANGUAGE}_COMPILER} -Werror \
+-march=native -x ${XTYPE} -c ${SOURCE_FILE} -o /dev/null"
+    RESULT_VARIABLE RESULT
+    ERROR_VARIABLE ERROR_FROM_COMPILATION
+    OUTPUT_QUIET)
+  if(${RESULT} EQUAL 0)
+    set(${FLAG_VARIABLE} "-march=native" PARENT_SCOPE)
+  endif()
+endfunction()
+
 # Always compile only for the current architecture. This can be overridden
 # by passing `-D OVERRIDE_ARCH=THE_ARCHITECTURE` to CMake
 if(NOT "${OVERRIDE_ARCH}" STREQUAL "OFF")
+  if(NOT APPLE)
+    set_property(TARGET SpectreFlags
+      APPEND PROPERTY
+      INTERFACE_COMPILE_OPTIONS
+      $<$<COMPILE_LANGUAGE:C>:-march=${OVERRIDE_ARCH} ${_NO_AVX512}>
+      $<$<COMPILE_LANGUAGE:CXX>:-march=${OVERRIDE_ARCH} ${_NO_AVX512}>
+      $<$<COMPILE_LANGUAGE:Fortran>:-march=${OVERRIDE_ARCH} ${_NO_AVX512}>)
+  endif()
+else()
+  _spectre_check_native_architecture_flag(
+    C c ${_CHECK_CXX_FLAGS_SOURCE} _SPECTRE_C_NATIVE_ARCHITECTURE_FLAG)
+  _spectre_check_native_architecture_flag(
+    CXX c++ ${_CHECK_CXX_FLAGS_SOURCE} _SPECTRE_CXX_NATIVE_ARCHITECTURE_FLAG)
+  _spectre_check_native_architecture_flag(
+    Fortran f95 ${_CHECK_FORTRAN_FLAGS_SOURCE}
+    _SPECTRE_FORTRAN_NATIVE_ARCHITECTURE_FLAG)
   set_property(TARGET SpectreFlags
       APPEND PROPERTY
       INTERFACE_COMPILE_OPTIONS
-      # The -mno-avx512f flag is necessary to avoid a Blaze 3.8 bug. The flag
-      # should be re-enabled when we can insist on Blaze 3.9 which will include
-      # a fix that allows this vectorization flag again.
-      $<$<COMPILE_LANGUAGE:C>:-march=${OVERRIDE_ARCH} -mno-avx512f>
-      $<$<COMPILE_LANGUAGE:CXX>:-march=${OVERRIDE_ARCH} -mno-avx512f>
-      $<$<COMPILE_LANGUAGE:Fortran>:-march=${OVERRIDE_ARCH} -mno-avx512f>)
-else()
-  # Apple Silicon Macs do not support the -march flag or the -mno-avx512f flag
-  if((NOT APPLE OR NOT "${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "arm64")
-    # sometimes ARM architectures use the name "aarch64"
-    AND NOT "${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "aarch64"
-    )
-    set_property(TARGET SpectreFlags
-        APPEND PROPERTY
-        INTERFACE_COMPILE_OPTIONS
-        $<$<COMPILE_LANGUAGE:C>:-march=native -mno-avx512f>
-        $<$<COMPILE_LANGUAGE:CXX>:-march=native -mno-avx512f>
-        $<$<COMPILE_LANGUAGE:Fortran>:-march=native -mno-avx512f>)
-  endif()
+      $<$<COMPILE_LANGUAGE:C>:${_SPECTRE_C_NATIVE_ARCHITECTURE_FLAG}>
+      $<$<COMPILE_LANGUAGE:C>:${_NO_AVX512}>
+      $<$<COMPILE_LANGUAGE:CXX>:${_SPECTRE_CXX_NATIVE_ARCHITECTURE_FLAG}>
+      $<$<COMPILE_LANGUAGE:CXX>:${_NO_AVX512}>
+      $<$<COMPILE_LANGUAGE:Fortran>:${_SPECTRE_FORTRAN_NATIVE_ARCHITECTURE_FLAG}>
+      $<$<COMPILE_LANGUAGE:Fortran>:${_NO_AVX512}>)
 endif()
 
 # We are getting multiple types of linker warnings on macOS:

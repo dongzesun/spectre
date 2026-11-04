@@ -1,0 +1,1156 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#include "Framework/TestingFramework.hpp"
+
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "DataStructures/ApplyMatrices.hpp"
+#include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/DataVector.hpp"
+#include "DataStructures/Matrix.hpp"
+#include "DataStructures/Tensor/Tensor.hpp"
+#include "DataStructures/Variables.hpp"
+#include "Domain/CoordinateMaps/CoordinateMap.hpp"
+#include "Domain/CoordinateMaps/CoordinateMap.tpp"
+#include "Domain/CoordinateMaps/Identity.hpp"
+#include "Domain/Creators/DomainCreator.hpp"
+#include "Domain/Creators/OptionTags.hpp"
+#include "Domain/Creators/Tags/Domain.hpp"
+#include "Domain/Domain.hpp"
+#include "Evolution/Tags/Filter.hpp"
+#include "Framework/TestCreation.hpp"
+#include "Framework/TestHelpers.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Filter.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Hypercube.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Hypercube.tpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/None.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/None.tpp"
+#include "NumericalAlgorithms/Spectral/Basis.hpp"
+#include "NumericalAlgorithms/Spectral/Filtering.hpp"
+#include "NumericalAlgorithms/Spectral/MaximumNumberOfPoints.hpp"
+#include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "NumericalAlgorithms/Spectral/MinimumNumberOfPoints.hpp"
+#include "NumericalAlgorithms/Spectral/Parity.hpp"
+#include "NumericalAlgorithms/Spectral/ParityFromSymmetry.hpp"
+#include "NumericalAlgorithms/Spectral/Quadrature.hpp"
+#include "Utilities/GetOutput.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/MakeArray.hpp"
+#include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
+#include "Utilities/StdArrayHelpers.hpp"
+#include "Utilities/TMPL.hpp"
+
+namespace {
+using namespace std::string_literals;
+
+// Blocks 0-2 do filtering (if enabled). Block 3 doesn't
+constexpr size_t num_blocks = 4;
+
+namespace Tags {
+struct ScalarVar : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+
+template <size_t Dim>
+struct VectorVar : db::SimpleTag {
+  using type = tnsr::I<DataVector, Dim>;
+};
+}  // namespace Tags
+
+template <size_t Dim>
+using TagList = tmpl::list<Tags::ScalarVar, Tags::VectorVar<Dim>>;
+
+template <size_t Dim>
+using HypercubeFilter = Filters::Hypercube<Dim, TagList<Dim>>;
+
+std::vector<std::string> domain_block_names() {
+  std::vector<std::string> block_names(num_blocks);
+  for (size_t i = 0; i < num_blocks; ++i) {
+    block_names[i] = "Block" + get_output(i);
+  }
+  return block_names;
+}
+
+std::unordered_map<std::string, std::unordered_set<std::string>>
+domain_block_groups() {
+  std::unordered_map<std::string, std::unordered_set<std::string>> groups{};
+  groups["Group1"] = std::unordered_set<std::string>{{"Block1"s}};
+  groups["Group2"] = std::unordered_set<std::string>{{"Block1"s}, {"Block2"s}};
+  return groups;
+}
+
+template <size_t Dim>
+Domain<Dim> make_domain() {
+  using Identity = domain::CoordinateMaps::Identity<Dim>;
+  using Map =
+      domain::CoordinateMap<Frame::BlockLogical, Frame::Inertial, Identity>;
+  register_classes_with_charm(tmpl::list<Map>{});
+  std::vector<std::unique_ptr<
+      domain::CoordinateMapBase<Frame::BlockLogical, Frame::Inertial, Dim>>>
+      maps{num_blocks};
+  for (size_t i = 0; i < num_blocks; ++i) {
+    maps[i] = std::make_unique<Map>(Identity{});
+  }
+  return Domain<Dim>{
+      std::move(maps), {}, domain_block_names(), domain_block_groups()};
+}
+
+template <size_t Dim>
+class TestCreator : public DomainCreator<Dim> {
+ public:
+  explicit TestCreator(const bool use_block_names = true)
+      : use_block_names_(use_block_names) {}
+
+  Domain<Dim> create_domain() const override { return make_domain<Dim>(); }
+  std::vector<std::string> block_names() const override {
+    return use_block_names_ ? domain_block_names() : std::vector<std::string>{};
+  }
+  std::unordered_map<std::string, std::unordered_set<std::string>>
+  block_groups() const override {
+    return use_block_names_
+               ? domain_block_groups()
+               : std::unordered_map<std::string,
+                                    std::unordered_set<std::string>>{};
+  }
+  std::vector<DirectionMap<
+      Dim, std::unique_ptr<domain::BoundaryConditions::BoundaryCondition>>>
+  external_boundary_conditions() const override {
+    ERROR("");
+  }
+  std::vector<std::array<size_t, Dim>> initial_extents() const override {
+    ERROR("");
+  }
+  std::vector<std::array<size_t, Dim>> initial_refinement_levels()
+      const override {
+    ERROR("");
+  }
+  auto functions_of_time(const std::unordered_map<std::string, double>&
+                         /*initial_expiration_times*/
+                         = {}) const
+      -> std::unordered_map<
+          std::string,
+          std::unique_ptr<domain::FunctionsOfTime::FunctionOfTime>> override {
+    ERROR("");
+  }
+
+ private:
+  bool use_block_names_;
+};
+
+template <size_t Dim>
+struct Metavars {
+  static constexpr size_t volume_dim = Dim;
+  struct factory_creation {
+    using factory_classes = tmpl::map<
+        tmpl::pair<::DomainCreator<Dim>, tmpl::list<TestCreator<Dim>>>>;
+  };
+};
+
+template <size_t Dim>
+void test_construction_and_accessors() {
+  INFO("Construction and accessors");
+  CAPTURE(Dim);
+  const std::vector<std::string> blocks{"Block0", "Group1"};
+  const std::optional<std::vector<std::string>> blocks_opt{blocks};
+
+  const auto filter =
+      HypercubeFilter<Dim>(16, true, blocks_opt, false, true, std::nullopt, 3);
+
+  CHECK_FALSE(filter.need_jacobians());
+  // Before set_blocks_to_filter the resolved IDs are not available.
+  CHECK_FALSE(filter.blocks_to_filter().has_value());
+
+  // After resolution: Block0->0, Group1 expands to Block1->1 -> sorted {0,1}.
+  auto filter_resolved = filter;
+  filter_resolved.set_blocks_to_filter(domain_block_names(),
+                                       domain_block_groups());
+  REQUIRE(filter_resolved.blocks_to_filter().has_value());
+  // NOLINTBEGIN(bugprone-unchecked-optional-access)
+  CHECK(filter_resolved.blocks_to_filter().value() ==
+        std::vector<size_t>{0, 1});
+  // NOLINTEND(bugprone-unchecked-optional-access)
+
+  CHECK_FALSE(filter.apply_volume_filter_on_substep());
+  CHECK(filter.apply_boundary_filter_on_substep());
+
+  // volume_filter_every_n_steps is nullopt -> always false
+  for (const size_t step : {size_t{0}, size_t{1}, size_t{7}, size_t{42}}) {
+    CHECK_FALSE(filter.apply_volume_filter_on_this_step(step));
+  }
+  // boundary_filter_every_n_steps == 3 -> step % 3 == 0
+  CHECK(filter.apply_boundary_filter_on_this_step(0));
+  CHECK_FALSE(filter.apply_boundary_filter_on_this_step(1));
+  CHECK_FALSE(filter.apply_boundary_filter_on_this_step(2));
+  CHECK(filter.apply_boundary_filter_on_this_step(3));
+  CHECK(filter.apply_boundary_filter_on_this_step(6));
+
+  // Filter without any blocks restriction
+  const auto unrestricted =
+      HypercubeFilter<Dim>(8, true, std::nullopt, true, false, 1, std::nullopt);
+  CHECK_FALSE(unrestricted.blocks_to_filter().has_value());
+  CHECK(unrestricted.apply_volume_filter_on_substep());
+  CHECK_FALSE(unrestricted.apply_boundary_filter_on_substep());
+  // every_n_steps == 1 -> always true
+  CHECK(unrestricted.apply_volume_filter_on_this_step(0));
+  CHECK(unrestricted.apply_volume_filter_on_this_step(1));
+  CHECK(unrestricted.apply_volume_filter_on_this_step(99));
+
+  // Filter disabled
+  const auto disabled =
+      HypercubeFilter<Dim>(8, false, std::nullopt, true, true, 1, 1);
+  CHECK_FALSE(disabled.apply_volume_filter_on_substep());
+  CHECK_FALSE(disabled.apply_boundary_filter_on_substep());
+  CHECK_FALSE(disabled.apply_volume_filter_on_this_step(0));
+  CHECK_FALSE(disabled.apply_volume_filter_on_this_step(1));
+  CHECK_FALSE(disabled.apply_volume_filter_on_this_step(99));
+
+  // Equality / inequality: each constructor parameter independently flips.
+  const auto base =
+      HypercubeFilter<Dim>(4, true, blocks_opt, false, false, 2, 5);
+  CHECK(base == HypercubeFilter<Dim>(4, true, blocks_opt, false, false, 2, 5));
+  CHECK_FALSE(base !=
+              HypercubeFilter<Dim>(4, true, blocks_opt, false, false, 2, 5));
+  CHECK(base != HypercubeFilter<Dim>(5, true, blocks_opt, false, false, 2, 5));
+  CHECK(base != HypercubeFilter<Dim>(4, false, blocks_opt, false, false, 2, 5));
+  CHECK(base !=
+        HypercubeFilter<Dim>(4, true, std::nullopt, false, false, 2, 5));
+  CHECK(base != HypercubeFilter<Dim>(4, true, blocks_opt, true, false, 2, 5));
+  CHECK(base != HypercubeFilter<Dim>(4, true, blocks_opt, false, true, 2, 5));
+  CHECK(base != HypercubeFilter<Dim>(4, true, blocks_opt, false, false,
+                                     std::nullopt, 5));
+  CHECK(base != HypercubeFilter<Dim>(4, true, blocks_opt, false, false, 2,
+                                     std::nullopt));
+
+  // Duplicate block names rejected at construction time.
+  CHECK_THROWS_WITH(
+      (HypercubeFilter<Dim>{
+          16, true,
+          std::optional<std::vector<std::string>>{{"Block0", "Block0"}}, false,
+          false, std::nullopt, std::nullopt}),
+      Catch::Matchers::ContainsSubstring("Duplicate block name"));
+}
+
+template <size_t Dim>
+void test_pup_round_trip() {
+  INFO("Serialization");
+  CAPTURE(Dim);
+  const auto filter = HypercubeFilter<Dim>(
+      8, true, std::optional<std::vector<std::string>>{{"Block0", "Group2"}},
+      true, false, 4, std::nullopt);
+  ::test_serialization(filter);
+
+  // Round-trip through the abstract base pointer.
+  using Base = Filters::Filter<Dim, TagList<Dim>>;
+  using Derived = HypercubeFilter<Dim>;
+  register_classes_with_charm<Derived>();
+  const std::unique_ptr<Base> base = std::make_unique<Derived>(filter);
+  const std::unique_ptr<Base> pupped_base = serialize_and_deserialize(base);
+  REQUIRE(dynamic_cast<const Derived*>(pupped_base.get()) != nullptr);
+  CHECK(dynamic_cast<const Derived&>(*pupped_base) == filter);
+}
+
+// Build the analytic post-filter expectation by directly invoking
+// Spectral::filtering::exponential_filter with the same alpha (36) and
+// half_power that Hypercube uses internally.
+template <size_t Dim, size_t MatrixDim>
+Variables<TagList<Dim>> expected_filtered(
+    const Mesh<MatrixDim>& mesh, const Variables<TagList<Dim>>& initial,
+    const unsigned half_power) {
+  std::array<Matrix, MatrixDim> filter_matrices{};
+  for (size_t d = 0; d < MatrixDim; ++d) {
+    gsl::at(filter_matrices, d) = Spectral::filtering::exponential_filter(
+        mesh.slice_through(d), 36.0, half_power);
+  }
+  return apply_matrices(filter_matrices, initial, mesh.extents());
+}
+
+template <size_t Dim>
+Variables<TagList<Dim>> deterministic_vars(const Mesh<Dim>& mesh) {
+  Variables<TagList<Dim>> vars(mesh.number_of_grid_points());
+  for (size_t i = 0; i < mesh.number_of_grid_points(); ++i) {
+    get(get<Tags::ScalarVar>(vars))[i] = (pow(i, 3) * 0.5) + 1.25;
+    for (size_t d = 0; d < Dim; ++d) {
+      get<Tags::VectorVar<Dim>>(vars).get(d)[i] =
+          static_cast<double>(d) + (pow(i, 3) * 0.75);
+    }
+  }
+  return vars;
+}
+
+template <size_t FaceDim, size_t Dim>
+Variables<TagList<Dim>> deterministic_vars(const Mesh<FaceDim>& mesh) {
+  Variables<TagList<Dim>> vars(mesh.number_of_grid_points());
+  for (size_t i = 0; i < mesh.number_of_grid_points(); ++i) {
+    get(get<Tags::ScalarVar>(vars))[i] = (pow(i, 2) * 0.25) + 0.5;
+    for (size_t d = 0; d < Dim; ++d) {
+      get<Tags::VectorVar<Dim>>(vars).get(d)[i] =
+          static_cast<double>(d) + 1.0 + (pow(i, 2) * 0.4);
+    }
+  }
+  return vars;
+}
+
+// All apply_* tests for a given `Hypercube<Dim, TagList>` instantiation must
+// share a single `half_power_` because `Hypercube::filter_matrix` caches
+// matrices in a per-instantiation static cache that is keyed by the first
+// observed `half_power_`. Mixing half_power values across calls in the same
+// process aborts with "Filter was cached with half power = ...". Each Dim
+// gets its own static cache, but for cleanliness we use the same value
+// throughout the suite.
+constexpr unsigned kFilterHalfPower = 4u;
+
+template <size_t Dim, Spectral::Basis BasisType,
+          Spectral::Quadrature QuadratureType>
+void test_apply_in_volume() {
+  INFO("apply_in_volume");
+  CAPTURE(Dim);
+  CAPTURE(BasisType);
+  CAPTURE(QuadratureType);
+  const Approx custom_approx = Approx::custom().epsilon(5.0e-13);
+
+  const size_t max_pts =
+      BasisType == Spectral::Basis::Fourier
+          ? Spectral::maximum_number_of_points<BasisType, QuadratureType> /
+                (3 * Dim)
+          : Spectral::maximum_number_of_points<BasisType, QuadratureType> / Dim;
+  for (size_t num_pts =
+           Spectral::minimum_number_of_points<BasisType, QuadratureType>;
+       num_pts < max_pts; ++num_pts) {
+    if constexpr (BasisType == Spectral::Basis::Fourier) {
+      if (num_pts % 2 == 0) {
+        continue;
+      }
+    }
+    CAPTURE(num_pts);
+    const Mesh<Dim> mesh(num_pts, BasisType, QuadratureType);
+    const auto initial_vars = deterministic_vars<Dim>(mesh);
+
+    // The Hypercube class itself is unconditional in apply_in_volume —
+    // the cadence/enable gating lives in the driving action. Verify
+    // that calling apply_in_volume always rescales the modes,
+    // regardless of how `enable` is set.
+    for (const bool enable : {true, false}) {
+      CAPTURE(enable);
+      const auto filter =
+          HypercubeFilter<Dim>(kFilterHalfPower, enable, std::nullopt, false,
+                               false, std::nullopt, std::nullopt);
+      auto vars = initial_vars;
+      filter.apply_in_volume(make_not_null(&vars), mesh, std::nullopt,
+                             std::nullopt);
+      CHECK(vars.is_owning());
+      const auto expected =
+          expected_filtered<Dim, Dim>(mesh, initial_vars, kFilterHalfPower);
+      CHECK_VARIABLES_CUSTOM_APPROX(vars, expected, custom_approx);
+
+      auto backing_vars = initial_vars;
+      auto view = backing_vars.template reference_with_different_prefixes<
+          Variables<TagList<Dim>>>();
+      const auto* const original_data = backing_vars.data();
+      REQUIRE_FALSE(view.is_owning());
+      filter.apply_in_volume(make_not_null(&view), mesh, std::nullopt,
+                             std::nullopt);
+      CHECK_FALSE(view.is_owning());
+      CHECK(view.data() == original_data);
+      CHECK_VARIABLES_CUSTOM_APPROX(backing_vars, expected, custom_approx);
+    }
+  }
+}
+
+template <size_t Dim>
+Variables<TagList<Dim>> filter_boundary_with_reference_check(
+    const HypercubeFilter<Dim>& filter, const Mesh<Dim - 1>& face_mesh,
+    const Variables<TagList<Dim>>& initial_face_vars) {
+  auto face_vars = initial_face_vars;
+  filter.apply_on_boundary(make_not_null(&face_vars), face_mesh, std::nullopt,
+                           std::nullopt);
+  CHECK(face_vars.is_owning());
+
+  auto backing_vars = initial_face_vars;
+  auto view = backing_vars.template reference_with_different_prefixes<
+      Variables<TagList<Dim>>>();
+  const auto* const original_data = backing_vars.data();
+  REQUIRE_FALSE(view.is_owning());
+  filter.apply_on_boundary(make_not_null(&view), face_mesh, std::nullopt,
+                           std::nullopt);
+  CHECK_FALSE(view.is_owning());
+  CHECK(view.data() == original_data);
+  CHECK_VARIABLES_CUSTOM_APPROX(backing_vars, face_vars,
+                                Approx::custom().epsilon(5.0e-13));
+  return face_vars;
+}
+
+template <size_t Dim, Spectral::Basis BasisType,
+          Spectral::Quadrature QuadratureType>
+void test_apply_on_boundary() {
+  static_assert(Dim >= 2,
+                "Boundary filtering requires a non-degenerate face mesh.");
+  INFO("apply_on_boundary");
+  CAPTURE(Dim);
+  CAPTURE(BasisType);
+  CAPTURE(QuadratureType);
+  const Approx custom_approx = Approx::custom().epsilon(5.0e-13);
+
+  const size_t max_pts =
+      BasisType == Spectral::Basis::Fourier
+          ? Spectral::maximum_number_of_points<BasisType, QuadratureType> /
+                (3 * Dim)
+          : Spectral::maximum_number_of_points<BasisType, QuadratureType> / Dim;
+  for (size_t num_pts =
+           Spectral::minimum_number_of_points<BasisType, QuadratureType>;
+       num_pts < max_pts; ++num_pts) {
+    if constexpr (BasisType == Spectral::Basis::Fourier) {
+      if (num_pts % 2 == 0) {
+        continue;
+      }
+    }
+    CAPTURE(num_pts);
+    const Mesh<Dim> volume_mesh(num_pts, BasisType, QuadratureType);
+    const Mesh<Dim - 1> face_mesh = volume_mesh.slice_away(0);
+    const auto initial_face_vars = deterministic_vars<Dim - 1, Dim>(face_mesh);
+
+    const auto filter =
+        HypercubeFilter<Dim>(kFilterHalfPower, true, std::nullopt, false, false,
+                             std::nullopt, std::nullopt);
+    const auto face_vars = filter_boundary_with_reference_check(
+        filter, face_mesh, initial_face_vars);
+    const auto expected = expected_filtered<Dim, Dim - 1>(
+        face_mesh, initial_face_vars, kFilterHalfPower);
+    CHECK_VARIABLES_CUSTOM_APPROX(face_vars, expected, custom_approx);
+  }
+}
+
+// Reference implementation for parity-aware filtering: `ParityDim` uses a
+// parity-dependent exponential_filter, every other direction uses the ordinary
+// (parity-independent) filter. Applied per tensor component based on each
+// component's parity. `IncludeZ` selects the symmetry used to assign component
+// parities: `false` for ZernikeB1, `true` for HalfFourier
+template <bool IncludeZ, size_t LocalDim, size_t VarDim>
+Variables<TagList<VarDim>> expected_filtered_with_parity(
+    const Mesh<LocalDim>& mesh, const Variables<TagList<VarDim>>& initial,
+    const unsigned half_power, const size_t parity_dimension) {
+  std::array<Matrix, LocalDim> filter_even{};
+  std::array<Matrix, LocalDim> filter_odd{};
+  gsl::at(filter_even, parity_dimension) =
+      Spectral::filtering::exponential_filter(
+          mesh.slice_through(parity_dimension), 36.0, half_power,
+          Spectral::Parity::Even);
+  gsl::at(filter_odd, parity_dimension) =
+      Spectral::filtering::exponential_filter(
+          mesh.slice_through(parity_dimension), 36.0, half_power,
+          Spectral::Parity::Odd);
+  for (size_t d = 0; d < LocalDim; ++d) {
+    if (d == parity_dimension) {
+      continue;
+    }
+    const Matrix f = Spectral::filtering::exponential_filter(
+        mesh.slice_through(d), 36.0, half_power);
+    gsl::at(filter_even, d) = f;
+    gsl::at(filter_odd, d) = f;
+  }
+  auto result = initial;
+  tmpl::for_each<TagList<VarDim>>([&](auto tag_v) {
+    using tag = tmpl::type_from<decltype(tag_v)>;
+    const auto& in_tensor = get<tag>(initial);
+    auto& out_tensor = get<tag>(result);
+    constexpr auto parities =
+        Spectral::make_component_parity_array<typename tag::type, IncludeZ>();
+    for (size_t i = 0; i < in_tensor.size(); ++i) {
+      const auto& f = gsl::at(parities, i) == Spectral::Parity::Even
+                          ? filter_even
+                          : filter_odd;
+      out_tensor[i] = apply_matrices(f, in_tensor[i], mesh.extents());
+    }
+  });
+  return result;
+}
+
+// Verifies that the filter genuinely selects the parity-appropriate (Even vs
+// Odd) matrix for each tensor component in `parity_dimension`. Each component
+// must match the correct-parity filter, confirming the parity selection is
+// actually exercised rather than a no-op. Requires both an even- and an
+// odd-parity component to be present in the test data.
+template <bool IncludeZ, size_t LocalDim, size_t VarDim>
+void check_parity_selection(const Mesh<LocalDim>& mesh,
+                            const Variables<TagList<VarDim>>& initial,
+                            const Variables<TagList<VarDim>>& filtered,
+                            const unsigned half_power,
+                            const size_t parity_dimension,
+                            Approx custom_approx) {
+  const Matrix even_matrix = Spectral::filtering::exponential_filter(
+      mesh.slice_through(parity_dimension), 36.0, half_power,
+      Spectral::Parity::Even);
+  const Matrix odd_matrix = Spectral::filtering::exponential_filter(
+      mesh.slice_through(parity_dimension), 36.0, half_power,
+      Spectral::Parity::Odd);
+  // The Even and Odd filters must differ, otherwise the parity selection below
+  // would be vacuous.
+  CHECK_FALSE(even_matrix == odd_matrix);
+  std::array<Matrix, LocalDim> correct_filter{};
+  for (size_t d = 0; d < LocalDim; ++d) {
+    if (d == parity_dimension) {
+      continue;
+    }
+    gsl::at(correct_filter, d) = Spectral::filtering::exponential_filter(
+        mesh.slice_through(d), 36.0, half_power);
+  }
+  bool checked_even = false;
+  bool checked_odd = false;
+  tmpl::for_each<TagList<VarDim>>([&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+    const auto& in_tensor = get<Tag>(initial);
+    const auto& filtered_tensor = get<Tag>(filtered);
+    constexpr auto parities =
+        Spectral::make_component_parity_array<typename Tag::type, IncludeZ>();
+    for (size_t i = 0; i < in_tensor.size(); ++i) {
+      const bool is_even = gsl::at(parities, i) == Spectral::Parity::Even;
+      gsl::at(correct_filter, parity_dimension) =
+          is_even ? even_matrix : odd_matrix;
+      const DataVector correct_result =
+          apply_matrices(correct_filter, in_tensor[i], mesh.extents());
+      CHECK_ITERABLE_CUSTOM_APPROX(filtered_tensor[i], correct_result,
+                                   custom_approx);
+      // The opposite-parity filter must give a different answer, so that the
+      // check above really does pin down which matrix was used.
+      gsl::at(correct_filter, parity_dimension) =
+          is_even ? odd_matrix : even_matrix;
+      const DataVector wrong_result =
+          apply_matrices(correct_filter, in_tensor[i], mesh.extents());
+      CHECK_FALSE(filtered_tensor[i] == wrong_result);
+      (is_even ? checked_even : checked_odd) = true;
+    }
+  });
+  // Ensure both parities were actually exercised by the test data.
+  CHECK(checked_even);
+  CHECK(checked_odd);
+}
+
+void test_apply_zernikeb1_volume() {
+  INFO("apply_in_volume ZernikeB1");
+  const Approx custom_approx = Approx::custom().epsilon(5.0e-13);
+
+  // CartoonSphere2D innermost block: (ZernikeB1, Cartoon, Cartoon).
+  // Cartoon directions are 1-point (identity filter).
+  for (size_t n_r = 2; n_r <= 8; ++n_r) {
+    CAPTURE(n_r);
+    const Mesh<3> mesh{std::array<size_t, 3>{n_r, 1, 1},
+                       std::array<Spectral::Basis, 3>{
+                           Spectral::Basis::ZernikeB1, Spectral::Basis::Cartoon,
+                           Spectral::Basis::Cartoon},
+                       std::array<Spectral::Quadrature, 3>{
+                           Spectral::Quadrature::GaussRadauUpper,
+                           Spectral::Quadrature::AxialSymmetry,
+                           Spectral::Quadrature::SphericalSymmetry}};
+    const auto initial_vars = deterministic_vars<3>(mesh);
+    const auto filter =
+        HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt, false, false,
+                           std::nullopt, std::nullopt);
+    auto vars = initial_vars;
+    filter.apply_in_volume(make_not_null(&vars), mesh, std::nullopt,
+                           std::nullopt);
+    const auto expected = expected_filtered_with_parity<false>(
+        mesh, initial_vars, kFilterHalfPower, 0);
+    CHECK_VARIABLES_CUSTOM_APPROX(vars, expected, custom_approx);
+  }
+
+  // CartoonCylinder2D innermost block: (ZernikeB1, Legendre, Cartoon).
+  // The Legendre direction has multiple grid points and a non-trivial filter,
+  // verifying that the non-ZernikeB1 dimension is actually filtered.
+  for (size_t n_r = 2; n_r <= 6; ++n_r) {
+    for (size_t n_z = 2; n_z <= 5; ++n_z) {
+      CAPTURE(n_r);
+      CAPTURE(n_z);
+      const Mesh<3> mesh{
+          std::array<size_t, 3>{n_r, n_z, 1},
+          std::array<Spectral::Basis, 3>{Spectral::Basis::ZernikeB1,
+                                         Spectral::Basis::Legendre,
+                                         Spectral::Basis::Cartoon},
+          std::array<Spectral::Quadrature, 3>{
+              Spectral::Quadrature::GaussRadauUpper,
+              Spectral::Quadrature::GaussLobatto,
+              Spectral::Quadrature::AxialSymmetry}};
+      const auto initial_vars = deterministic_vars<3>(mesh);
+      const auto filter =
+          HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt, false, false,
+                             std::nullopt, std::nullopt);
+      auto vars = initial_vars;
+      filter.apply_in_volume(make_not_null(&vars), mesh, std::nullopt,
+                             std::nullopt);
+      const auto expected = expected_filtered_with_parity<false>(
+          mesh, initial_vars, kFilterHalfPower, 0);
+      CHECK_VARIABLES_CUSTOM_APPROX(vars, expected, custom_approx);
+
+      // Confirm the Legendre (direction 1) filter is actually applied:
+      // filtering only the ZernikeB1 direction (dir 0) leaves the Legendre
+      // direction untouched, so the full result must differ from that
+      // dir-0-only result.
+      const Matrix empty{};
+      const Matrix even_matrix = Spectral::filtering::exponential_filter(
+          mesh.slice_through(0), 36.0, kFilterHalfPower,
+          Spectral::Parity::Even);
+      auto dir0_only_filter = make_array<3>(std::cref(empty));
+      gsl::at(dir0_only_filter, 0) = std::cref(even_matrix);
+      const DataVector scalar_dir0_only = apply_matrices(
+          dir0_only_filter, get(get<Tags::ScalarVar>(initial_vars)),
+          mesh.extents());
+      CHECK_FALSE(get(get<Tags::ScalarVar>(vars)) == scalar_dir0_only);
+    }
+  }
+}
+
+void test_apply_zernikeb1_boundary() {
+  INFO("apply_on_boundary ZernikeB1");
+  const Approx custom_approx = Approx::custom().epsilon(5.0e-13);
+
+  // Boundary face of a CartoonSphere2D innermost block obtained by slicing
+  // away a Cartoon direction: face mesh is (ZernikeB1, Cartoon).
+  for (size_t n_r = 2; n_r <= 8; ++n_r) {
+    CAPTURE(n_r);
+    const Mesh<3> volume_mesh{
+        std::array<size_t, 3>{n_r, 1, 1},
+        std::array<Spectral::Basis, 3>{Spectral::Basis::ZernikeB1,
+                                       Spectral::Basis::Cartoon,
+                                       Spectral::Basis::Cartoon},
+        std::array<Spectral::Quadrature, 3>{
+            Spectral::Quadrature::GaussRadauUpper,
+            Spectral::Quadrature::AxialSymmetry,
+            Spectral::Quadrature::SphericalSymmetry}};
+    // Slice away a Cartoon direction; face mesh is (ZernikeB1, Cartoon).
+    const Mesh<2> face_mesh = volume_mesh.slice_away(2);
+    const auto initial_face_vars = deterministic_vars<2, 3>(face_mesh);
+    const auto filter =
+        HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt, false, false,
+                           std::nullopt, std::nullopt);
+    const auto face_vars = filter_boundary_with_reference_check(
+        filter, face_mesh, initial_face_vars);
+    const auto expected = expected_filtered_with_parity<false>(
+        face_mesh, initial_face_vars, kFilterHalfPower, 0);
+    CHECK_VARIABLES_CUSTOM_APPROX(face_vars, expected, custom_approx);
+    check_parity_selection<false>(face_mesh, initial_face_vars, face_vars,
+                                  kFilterHalfPower, 0, custom_approx);
+  }
+
+  // Boundary face of a CartoonCylinder2D innermost block obtained by slicing
+  // away the Cartoon direction: face mesh is (ZernikeB1, Legendre), verifying
+  // that the Legendre direction is filtered on the boundary too.
+  for (size_t n_r = 2; n_r <= 6; ++n_r) {
+    for (size_t n_z = 2; n_z <= 5; ++n_z) {
+      CAPTURE(n_r);
+      CAPTURE(n_z);
+      const Mesh<3> volume_mesh{
+          std::array<size_t, 3>{n_r, n_z, 1},
+          std::array<Spectral::Basis, 3>{Spectral::Basis::ZernikeB1,
+                                         Spectral::Basis::Legendre,
+                                         Spectral::Basis::Cartoon},
+          std::array<Spectral::Quadrature, 3>{
+              Spectral::Quadrature::GaussRadauUpper,
+              Spectral::Quadrature::GaussLobatto,
+              Spectral::Quadrature::AxialSymmetry}};
+      // Slice away the Cartoon direction; face mesh is (ZernikeB1, Legendre).
+      const Mesh<2> face_mesh = volume_mesh.slice_away(2);
+      const auto initial_face_vars = deterministic_vars<2, 3>(face_mesh);
+      const auto filter =
+          HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt, false, false,
+                             std::nullopt, std::nullopt);
+      const auto face_vars = filter_boundary_with_reference_check(
+          filter, face_mesh, initial_face_vars);
+      const auto expected = expected_filtered_with_parity<false>(
+          face_mesh, initial_face_vars, kFilterHalfPower, 0);
+      CHECK_VARIABLES_CUSTOM_APPROX(face_vars, expected, custom_approx);
+
+      // Confirm the Legendre (direction 1) filter is applied on the boundary
+      // too: filtering only the ZernikeB1 direction (dir 0) leaves the Legendre
+      // direction untouched, so the full result must differ from it.
+      const Matrix empty{};
+      const Matrix even_matrix = Spectral::filtering::exponential_filter(
+          face_mesh.slice_through(0), 36.0, kFilterHalfPower,
+          Spectral::Parity::Even);
+      auto dir0_only_filter = make_array<2>(std::cref(empty));
+      gsl::at(dir0_only_filter, 0) = std::cref(even_matrix);
+      const DataVector scalar_dir0_only = apply_matrices(
+          dir0_only_filter, get(get<Tags::ScalarVar>(initial_face_vars)),
+          face_mesh.extents());
+      CHECK_FALSE(get(get<Tags::ScalarVar>(face_vars)) == scalar_dir0_only);
+    }
+  }
+
+#ifdef SPECTRE_DEBUG
+  {
+    const Mesh<2> face_mesh{
+        std::array<size_t, 2>{3, 4},
+        std::array<Spectral::Basis, 2>{Spectral::Basis::Legendre,
+                                       Spectral::Basis::ZernikeB1},
+        std::array<Spectral::Quadrature, 2>{
+            Spectral::Quadrature::GaussLobatto,
+            Spectral::Quadrature::GaussRadauUpper}};
+    auto face_vars = deterministic_vars<2, 3>(face_mesh);
+    const auto filter =
+        HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt, false, false,
+                           std::nullopt, std::nullopt);
+    CHECK_THROWS_WITH(
+        filter.apply_on_boundary(make_not_null(&face_vars), face_mesh,
+                                 std::nullopt, std::nullopt),
+        Catch::Matchers::ContainsSubstring(
+            "ZernikeB1 is only supported in direction 0"));
+  }
+#endif  // SPECTRE_DEBUG
+}
+
+Mesh<3> half_fourier_volume_mesh(const size_t n_r, const size_t n_phi) {
+  return Mesh<3>{
+      std::array<size_t, 3>{n_r, n_phi, 1},
+      std::array<Spectral::Basis, 3>{Spectral::Basis::Legendre,
+                                     Spectral::Basis::HalfFourier,
+                                     Spectral::Basis::Cartoon},
+      std::array<Spectral::Quadrature, 3>{Spectral::Quadrature::GaussLobatto,
+                                          Spectral::Quadrature::Equiangular,
+                                          Spectral::Quadrature::AxialSymmetry}};
+}
+
+void test_apply_half_fourier_volume() {
+  INFO("apply_in_volume HalfFourier");
+  const Approx custom_approx = Approx::custom().epsilon(5.0e-13);
+
+  for (size_t n_r = 2; n_r <= 6; ++n_r) {
+    for (size_t n_phi = 2; n_phi <= 7; ++n_phi) {
+      CAPTURE(n_r);
+      CAPTURE(n_phi);
+      const Mesh<3> mesh = half_fourier_volume_mesh(n_r, n_phi);
+      const auto initial_vars = deterministic_vars<3>(mesh);
+      const auto filter =
+          HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt, false, false,
+                             std::nullopt, std::nullopt);
+      auto vars = initial_vars;
+      filter.apply_in_volume(make_not_null(&vars), mesh, std::nullopt,
+                             std::nullopt);
+      const auto expected = expected_filtered_with_parity<true>(
+          mesh, initial_vars, kFilterHalfPower, 1);
+      CHECK_VARIABLES_CUSTOM_APPROX(vars, expected, custom_approx);
+      check_parity_selection<true>(mesh, initial_vars, vars, kFilterHalfPower,
+                                   1, custom_approx);
+
+      // The parity assignment must use the (x, z) -> (-x, -z) symmetry, not
+      // the x -> -x symmetry that ZernikeB1 uses. For a 3-vector the two
+      // disagree on the z-component, so the IncludeZ = false reference must
+      // differ from what the filter produced.
+      const auto wrong_symmetry_expected = expected_filtered_with_parity<false>(
+          mesh, initial_vars, kFilterHalfPower, 1);
+      CHECK_FALSE(get<Tags::VectorVar<3>>(vars).get(2) ==
+                  get<Tags::VectorVar<3>>(wrong_symmetry_expected).get(2));
+
+      // Confirm the Legendre (direction 0) filter is actually applied:
+      // filtering only the HalfFourier direction leaves direction 0 untouched,
+      // so the full result must differ from that direction-1-only result.
+      const Matrix empty{};
+      const Matrix even_matrix = Spectral::filtering::exponential_filter(
+          mesh.slice_through(1), 36.0, kFilterHalfPower,
+          Spectral::Parity::Even);
+      auto dir1_only_filter = make_array<3>(std::cref(empty));
+      gsl::at(dir1_only_filter, 1) = std::cref(even_matrix);
+      const DataVector scalar_dir1_only = apply_matrices(
+          dir1_only_filter, get(get<Tags::ScalarVar>(initial_vars)),
+          mesh.extents());
+      CHECK_FALSE(get(get<Tags::ScalarVar>(vars)) == scalar_dir1_only);
+    }
+  }
+}
+
+void test_apply_half_fourier_boundary() {
+  INFO("apply_on_boundary HalfFourier");
+  const Approx custom_approx = Approx::custom().epsilon(5.0e-13);
+
+  for (size_t n_r = 2; n_r <= 5; ++n_r) {
+    for (size_t n_phi = 2; n_phi <= 6; ++n_phi) {
+      CAPTURE(n_r);
+      CAPTURE(n_phi);
+      const Mesh<3> volume_mesh = half_fourier_volume_mesh(n_r, n_phi);
+
+      for (const auto [sliced_away_dimension, parity_dimension] :
+           std::array<std::array<size_t, 2>, 2>{{{0, 0}, {2, 1}}}) {
+        CAPTURE(sliced_away_dimension);
+        CAPTURE(parity_dimension);
+        const Mesh<2> face_mesh = volume_mesh.slice_away(sliced_away_dimension);
+        const auto initial_face_vars = deterministic_vars<2, 3>(face_mesh);
+        const auto filter =
+            HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt, false,
+                               false, std::nullopt, std::nullopt);
+        const auto face_vars = filter_boundary_with_reference_check(
+            filter, face_mesh, initial_face_vars);
+        const auto expected = expected_filtered_with_parity<true>(
+            face_mesh, initial_face_vars, kFilterHalfPower, parity_dimension);
+        CHECK_VARIABLES_CUSTOM_APPROX(face_vars, expected, custom_approx);
+        check_parity_selection<true>(face_mesh, initial_face_vars, face_vars,
+                                     kFilterHalfPower, parity_dimension,
+                                     custom_approx);
+      }
+    }
+  }
+}
+
+template <size_t Dim>
+void test_invoke_apply() {
+  test_apply_in_volume<Dim, Spectral::Basis::Legendre,
+                       Spectral::Quadrature::Gauss>();
+  test_apply_in_volume<Dim, Spectral::Basis::Legendre,
+                       Spectral::Quadrature::GaussLobatto>();
+  test_apply_in_volume<Dim, Spectral::Basis::Chebyshev,
+                       Spectral::Quadrature::Gauss>();
+  test_apply_in_volume<Dim, Spectral::Basis::Chebyshev,
+                       Spectral::Quadrature::GaussLobatto>();
+  test_apply_in_volume<Dim, Spectral::Basis::Fourier,
+                       Spectral::Quadrature::Equiangular>();
+
+  if constexpr (Dim >= 2) {
+    test_apply_on_boundary<Dim, Spectral::Basis::Legendre,
+                           Spectral::Quadrature::Gauss>();
+    test_apply_on_boundary<Dim, Spectral::Basis::Legendre,
+                           Spectral::Quadrature::GaussLobatto>();
+    test_apply_on_boundary<Dim, Spectral::Basis::Chebyshev,
+                           Spectral::Quadrature::Gauss>();
+    test_apply_on_boundary<Dim, Spectral::Basis::Chebyshev,
+                           Spectral::Quadrature::GaussLobatto>();
+    test_apply_on_boundary<Dim, Spectral::Basis::Fourier,
+                           Spectral::Quadrature::Equiangular>();
+  }
+}
+
+template <size_t Dim>
+void test_option_parsing() {
+  INFO("Option parsing");
+  CAPTURE(Dim);
+  using Filter = HypercubeFilter<Dim>;
+  using tags = tmpl::list<OptionTags::Filter<Filter>,
+                          domain::OptionTags::DomainCreator<Dim>>;
+
+  // Full option set with explicit blocks.
+  Options::Parser<tags> parser("");
+  parser.parse(
+      "DomainCreator:\n"
+      "  TestCreator\n"
+      "Filtering:\n"
+      "  Hypercube:\n"
+      "    HalfPower: 16\n"
+      "    Enable: True\n"
+      "    BlocksToFilter:\n"
+      "      - Block0\n"
+      "      - Group1\n"
+      "    VolumeFilterOnSubstep: False\n"
+      "    BoundaryCorrectionFilterOnSubstep: True\n"
+      "    VolumeFilterEveryNSteps: 5\n"
+      "    BoundaryCorrectionFilterEveryNSteps: None\n");
+
+  const auto parsed =
+      parser.template get<OptionTags::Filter<Filter>, Metavars<Dim>>();
+  const auto expected = HypercubeFilter<Dim>(
+      16, true, std::optional<std::vector<std::string>>{{"Block0", "Group1"}},
+      false, true, 5, std::nullopt);
+  CHECK(parsed == expected);
+  CHECK_FALSE(parsed != expected);
+
+  // BlocksToFilter: All -> nullopt.
+  Options::Parser<tags> all_parser("");
+  all_parser.parse(
+      "DomainCreator:\n"
+      "  TestCreator\n"
+      "Filtering:\n"
+      "  Hypercube:\n"
+      "    HalfPower: 4\n"
+      "    Enable: False\n"
+      "    BlocksToFilter: All\n"
+      "    VolumeFilterOnSubstep: True\n"
+      "    BoundaryCorrectionFilterOnSubstep: False\n"
+      "    VolumeFilterEveryNSteps: None\n"
+      "    BoundaryCorrectionFilterEveryNSteps: 7\n");
+  const auto all_parsed =
+      all_parser.template get<OptionTags::Filter<Filter>, Metavars<Dim>>();
+  CHECK_FALSE(all_parsed.blocks_to_filter().has_value());
+  // Enable: false disables scheduling regardless of other settings
+  CHECK_FALSE(all_parsed.apply_volume_filter_on_substep());
+  CHECK_FALSE(all_parsed.apply_boundary_filter_on_substep());
+  CHECK_FALSE(all_parsed.apply_volume_filter_on_this_step(0));
+  CHECK_FALSE(all_parsed.apply_boundary_filter_on_this_step(0));
+  CHECK_FALSE(all_parsed.apply_boundary_filter_on_this_step(7));
+  CHECK_FALSE(all_parsed.apply_boundary_filter_on_this_step(8));
+
+  // Duplicate block names parsed via the Options framework -> PARSE_ERROR.
+  Options::Parser<tags> dup_parser("");
+  dup_parser.parse(
+      "DomainCreator:\n"
+      "  TestCreator\n"
+      "Filtering:\n"
+      "  Hypercube:\n"
+      "    HalfPower: 4\n"
+      "    Enable: True\n"
+      "    BlocksToFilter:\n"
+      "      - Block0\n"
+      "      - Block0\n"
+      "    VolumeFilterOnSubstep: False\n"
+      "    BoundaryCorrectionFilterOnSubstep: False\n"
+      "    VolumeFilterEveryNSteps: None\n"
+      "    BoundaryCorrectionFilterEveryNSteps: None\n");
+  CHECK_THROWS_WITH(
+      (dup_parser.template get<OptionTags::Filter<Filter>, Metavars<Dim>>()),
+      Catch::Matchers::ContainsSubstring("Duplicate block name"));
+
+  // Invalid block name caught by set_blocks_to_filter.
+  auto invalid_filter = HypercubeFilter<Dim>(
+      4, true, std::optional<std::vector<std::string>>{{"NotABlock"}}, false,
+      false, std::nullopt, std::nullopt);
+  CHECK_THROWS_AS(invalid_filter.set_blocks_to_filter(domain_block_names(),
+                                                      domain_block_groups()),
+                  std::invalid_argument);
+
+  // Domain that doesn't expose block names but a filter does -> ERROR.
+  CHECK_THROWS_WITH(
+      HypercubeFilter<Dim>(4, true,
+                           std::optional<std::vector<std::string>>{{"Block0"}},
+                           false, false, std::nullopt, std::nullopt)
+          .set_blocks_to_filter({}, {}),
+      Catch::Matchers::ContainsSubstring("doesn't use block names"));
+
+  // Block-only and group-only specifications resolve without throwing.
+  CHECK_NOTHROW(
+      HypercubeFilter<Dim>(4, true,
+                           std::optional<std::vector<std::string>>{{"Block0"}},
+                           false, false, std::nullopt, std::nullopt)
+          .set_blocks_to_filter(domain_block_names(), domain_block_groups()));
+  CHECK_NOTHROW(
+      HypercubeFilter<Dim>(4, true,
+                           std::optional<std::vector<std::string>>{{"Group1"}},
+                           false, false, std::nullopt, std::nullopt)
+          .set_blocks_to_filter(domain_block_names(), domain_block_groups()));
+}
+
+void test_supports_mesh() {
+  INFO("supports_mesh");
+  // Reuse kFilterHalfPower so the static cache stays consistent across tests.
+  const auto f1 = HypercubeFilter<1>(kFilterHalfPower, true, std::nullopt,
+                                     false, false, std::nullopt, std::nullopt);
+  const auto f2 = HypercubeFilter<2>(kFilterHalfPower, true, std::nullopt,
+                                     false, false, std::nullopt, std::nullopt);
+  const auto f3 = HypercubeFilter<3>(kFilterHalfPower, true, std::nullopt,
+                                     false, false, std::nullopt, std::nullopt);
+
+  // All valid (Basis, Quadrature) pairs.
+  CHECK(f1.supports_mesh(
+      Mesh<1>{3, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss}));
+  CHECK(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::Legendre,
+                                 Spectral::Quadrature::GaussLobatto}));
+  CHECK(f1.supports_mesh(
+      Mesh<1>{3, Spectral::Basis::Chebyshev, Spectral::Quadrature::Gauss}));
+  CHECK(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::Chebyshev,
+                                 Spectral::Quadrature::GaussLobatto}));
+  CHECK(f1.supports_mesh(
+      Mesh<1>{4, Spectral::Basis::Fourier, Spectral::Quadrature::Equiangular}));
+  CHECK(f1.supports_mesh(Mesh<1>{1, Spectral::Basis::Cartoon,
+                                 Spectral::Quadrature::AxialSymmetry}));
+  CHECK(f1.supports_mesh(Mesh<1>{1, Spectral::Basis::Cartoon,
+                                 Spectral::Quadrature::SphericalSymmetry}));
+
+  // Invalid cross-combos: wrong quadrature for the basis.
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::Legendre,
+                                       Spectral::Quadrature::AxialSymmetry}));
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{
+      3, Spectral::Basis::Legendre, Spectral::Quadrature::SphericalSymmetry}));
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::Chebyshev,
+                                       Spectral::Quadrature::AxialSymmetry}));
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{
+      3, Spectral::Basis::Chebyshev, Spectral::Quadrature::SphericalSymmetry}));
+  CHECK_FALSE(f1.supports_mesh(
+      Mesh<1>{1, Spectral::Basis::Cartoon, Spectral::Quadrature::Gauss}));
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{1, Spectral::Basis::Cartoon,
+                                       Spectral::Quadrature::GaussLobatto}));
+  CHECK_FALSE(f1.supports_mesh(
+      Mesh<1>{4, Spectral::Basis::Fourier, Spectral::Quadrature::Gauss}));
+
+  // Unsupported basis entirely.
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::FiniteDifference,
+                                       Spectral::Quadrature::CellCentered}));
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::SphericalHarmonic,
+                                       Spectral::Quadrature::Gauss}));
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{4, Spectral::Basis::SphericalHarmonic,
+                                       Spectral::Quadrature::Equiangular}));
+  // ZernikeB1 with the correct quadrature is now supported.
+  CHECK(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::ZernikeB1,
+                                 Spectral::Quadrature::GaussRadauUpper}));
+  // ZernikeB1 with wrong quadrature is not supported.
+  CHECK_FALSE(f1.supports_mesh(
+      Mesh<1>{3, Spectral::Basis::ZernikeB1, Spectral::Quadrature::Gauss}));
+  // ZernikeB2/B3 are not supported.
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::ZernikeB2,
+                                       Spectral::Quadrature::GaussRadauUpper}));
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{3, Spectral::Basis::ZernikeB3,
+                                       Spectral::Quadrature::GaussRadauUpper}));
+
+  // Multi-dim: all dims valid -> true.
+  CHECK(f2.supports_mesh(
+      Mesh<2>{3, Spectral::Basis::Legendre, Spectral::Quadrature::Gauss}));
+  CHECK(f3.supports_mesh(Mesh<3>{3, Spectral::Basis::Chebyshev,
+                                 Spectral::Quadrature::GaussLobatto}));
+  // ZernikeB1 + Cartoon: the typical CartoonSphere2D innermost block mesh.
+  CHECK(f3.supports_mesh(
+      Mesh<3>{std::array<size_t, 3>{4, 1, 1},
+              std::array<Spectral::Basis, 3>{Spectral::Basis::ZernikeB1,
+                                             Spectral::Basis::Cartoon,
+                                             Spectral::Basis::Cartoon},
+              std::array<Spectral::Quadrature, 3>{
+                  Spectral::Quadrature::GaussRadauUpper,
+                  Spectral::Quadrature::AxialSymmetry,
+                  Spectral::Quadrature::SphericalSymmetry}}));
+  // ZernikeB1 is only supported in direction 0; a non-zero direction -> false.
+  CHECK_FALSE(f3.supports_mesh(Mesh<3>{
+      std::array<size_t, 3>{3, 4, 1},
+      std::array<Spectral::Basis, 3>{Spectral::Basis::Legendre,
+                                     Spectral::Basis::ZernikeB1,
+                                     Spectral::Basis::Cartoon},
+      std::array<Spectral::Quadrature, 3>{
+          Spectral::Quadrature::Gauss, Spectral::Quadrature::GaussRadauUpper,
+          Spectral::Quadrature::AxialSymmetry}}));
+
+  // HalfFourier is only supported in direction 1, which is where the
+  // `AngularCartoonSphere2D` block mesh (Legendre, HalfFourier, Cartoon) puts
+  // it.
+  CHECK(f3.supports_mesh(Mesh<3>{
+      std::array<size_t, 3>{4, 5, 1},
+      std::array<Spectral::Basis, 3>{Spectral::Basis::Legendre,
+                                     Spectral::Basis::HalfFourier,
+                                     Spectral::Basis::Cartoon},
+      std::array<Spectral::Quadrature, 3>{
+          Spectral::Quadrature::GaussLobatto, Spectral::Quadrature::Equiangular,
+          Spectral::Quadrature::AxialSymmetry}}));
+  // HalfFourier in any other direction -> false, because `apply_in_volume`
+  // only dispatches the parity-aware path on direction 1.
+  CHECK_FALSE(f1.supports_mesh(Mesh<1>{5, Spectral::Basis::HalfFourier,
+                                       Spectral::Quadrature::Equiangular}));
+  CHECK_FALSE(f3.supports_mesh(Mesh<3>{
+      std::array<size_t, 3>{5, 4, 1},
+      std::array<Spectral::Basis, 3>{Spectral::Basis::HalfFourier,
+                                     Spectral::Basis::Legendre,
+                                     Spectral::Basis::Cartoon},
+      std::array<Spectral::Quadrature, 3>{
+          Spectral::Quadrature::Equiangular, Spectral::Quadrature::GaussLobatto,
+          Spectral::Quadrature::AxialSymmetry}}));
+  // HalfFourier with the wrong quadrature -> false.
+  CHECK_FALSE(f2.supports_mesh(Mesh<2>{
+      std::array<size_t, 2>{4, 5},
+      std::array<Spectral::Basis, 2>{Spectral::Basis::Legendre,
+                                     Spectral::Basis::HalfFourier},
+      std::array<Spectral::Quadrature, 2>{Spectral::Quadrature::GaussLobatto,
+                                          Spectral::Quadrature::Gauss}}));
+
+  // Multi-dim: one unsupported dim -> false.
+  CHECK_FALSE(f2.supports_mesh(Mesh<2>{
+      std::array<size_t, 2>{3, 3},
+      std::array<Spectral::Basis, 2>{Spectral::Basis::Legendre,
+                                     Spectral::Basis::FiniteDifference},
+      std::array<Spectral::Quadrature, 2>{
+          Spectral::Quadrature::Gauss, Spectral::Quadrature::CellCentered}}));
+  CHECK_FALSE(f3.supports_mesh(Mesh<3>{
+      std::array<size_t, 3>{3, 3, 3},
+      std::array<Spectral::Basis, 3>{Spectral::Basis::Legendre,
+                                     Spectral::Basis::Chebyshev,
+                                     Spectral::Basis::Legendre},
+      std::array<Spectral::Quadrature, 3>{
+          Spectral::Quadrature::Gauss, Spectral::Quadrature::GaussLobatto,
+          Spectral::Quadrature::AxialSymmetry}}));
+}
+
+template <size_t Dim>
+void test_is_equal() {
+  INFO("is_equal");
+  CAPTURE(Dim);
+  using Base = Filters::Filter<Dim, TagList<Dim>>;
+  const std::optional<std::vector<std::string>> blocks{
+      std::vector<std::string>{"Block0", "Group1"}};
+
+  const auto a =
+      HypercubeFilter<Dim>(8, true, blocks, false, false, 2, std::nullopt);
+  const auto b =
+      HypercubeFilter<Dim>(8, true, blocks, false, false, 2, std::nullopt);
+  const auto c =
+      HypercubeFilter<Dim>(16, true, blocks, false, false, 2, std::nullopt);
+
+  CHECK(a.is_equal(b));
+  CHECK(b.is_equal(a));
+  CHECK_FALSE(a.is_equal(c));
+
+  // Different concrete type returns false.
+  const Filters::None<Dim, TagList<Dim>> none_filter{};
+  CHECK_FALSE(a.is_equal(none_filter));
+
+  // Via abstract base pointer (the primary AMR use case).
+  const std::unique_ptr<Base> pa = std::make_unique<HypercubeFilter<Dim>>(a);
+  const std::unique_ptr<Base> pb = std::make_unique<HypercubeFilter<Dim>>(b);
+  const std::unique_ptr<Base> pc = std::make_unique<HypercubeFilter<Dim>>(c);
+  const std::unique_ptr<Base> pnone =
+      std::make_unique<Filters::None<Dim, TagList<Dim>>>(none_filter);
+  CHECK(pa->is_equal(*pb));
+  CHECK_FALSE(pa->is_equal(*pc));
+  CHECK_FALSE(pa->is_equal(*pnone));
+}
+
+void test_cartoon() {
+  INFO("Cartoon basis");
+  // Cartoon meshes are 1-point and the resulting 1x1 filter matrix is the
+  // identity, so the data should pass through unchanged regardless of
+  // half_power. Reuse `kFilterHalfPower` so `Hypercube<1, ...>::filter_matrix`
+  // shares its static cache with `test_apply_in_volume<1, ...>`.
+  const auto filter =
+      HypercubeFilter<1>(kFilterHalfPower, true, std::nullopt, false, false,
+                         std::nullopt, std::nullopt);
+  for (const auto quadrature : {Spectral::Quadrature::AxialSymmetry,
+                                Spectral::Quadrature::SphericalSymmetry}) {
+    CAPTURE(quadrature);
+    const Mesh<1> mesh{1, Spectral::Basis::Cartoon, quadrature};
+    Variables<TagList<1>> vars(mesh.number_of_grid_points());
+    get(get<Tags::ScalarVar>(vars))[0] = 3.14;
+    get<Tags::VectorVar<1>>(vars).get(0)[0] = -2.71;
+    const auto initial = vars;
+    filter.apply_in_volume(make_not_null(&vars), mesh, std::nullopt,
+                           std::nullopt);
+    CHECK(get(get<Tags::ScalarVar>(vars))[0] ==
+          approx(get(get<Tags::ScalarVar>(initial))[0]));
+    CHECK(get<Tags::VectorVar<1>>(vars).get(0)[0] ==
+          approx(get<Tags::VectorVar<1>>(initial).get(0)[0]));
+  }
+}
+}  // namespace
+
+SPECTRE_TEST_CASE("Unit.Numerical.LinearOperators.Filter.Cube",
+                  "[NumericalAlgorithms][LinearOperators][Unit]") {
+  test_construction_and_accessors<1>();
+  test_construction_and_accessors<2>();
+  test_construction_and_accessors<3>();
+
+  test_pup_round_trip<1>();
+  test_pup_round_trip<2>();
+  test_pup_round_trip<3>();
+
+  test_is_equal<1>();
+  test_is_equal<2>();
+  test_is_equal<3>();
+
+  tmpl::for_each<tmpl::make_sequence<tmpl::size_t<1>, 3>>([](auto dim_v) {
+    constexpr size_t Dim = tmpl::type_from<decltype(dim_v)>::value;
+    test_invoke_apply<Dim>();
+  });
+
+  test_option_parsing<1>();
+  test_option_parsing<2>();
+  test_option_parsing<3>();
+
+  test_supports_mesh();
+  test_cartoon();
+  test_apply_zernikeb1_volume();
+  test_apply_zernikeb1_boundary();
+  test_apply_half_fourier_volume();
+  test_apply_half_fourier_boundary();
+}

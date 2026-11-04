@@ -17,7 +17,9 @@ set(LIBRARY_SOURCES
   Test_QuadrupoleFormula.cpp
   Test_SoundSpeedSquared.cpp
   Test_SpecificEnthalpy.cpp
+  Test_SpecificEntropy.cpp
   Test_StressEnergy.cpp
+  Test_StressTrace.cpp
   Test_Tags.cpp
   Test_Temperature.cpp
   Test_TestHelpers.cpp

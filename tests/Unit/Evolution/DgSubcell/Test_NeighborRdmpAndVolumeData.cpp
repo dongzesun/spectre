@@ -12,26 +12,132 @@
 #include "DataStructures/ApplyMatrices.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Matrix.hpp"
+#include "DataStructures/Tags/TempTensor.hpp"
+#include "DataStructures/Variables.hpp"
 #include "Domain/Structure/Direction.hpp"
+#include "Domain/Structure/DirectionMap.hpp"
+#include "Domain/Structure/DirectionalId.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Neighbors.hpp"
 #include "Domain/Structure/OrientationMap.hpp"
 #include "Domain/Structure/OrientationMapHelpers.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Evolution/DgSubcell/GhostData.hpp"
 #include "Evolution/DgSubcell/Matrices.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/NeighborRdmpAndVolumeData.hpp"
+#include "Evolution/DgSubcell/Projection.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
+#include "Evolution/DgSubcell/SliceData.hpp"
 #include "Evolution/DgSubcell/SliceTensor.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "NumericalAlgorithms/Spectral/Parity.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/TMPL.hpp"
 
 namespace {
+// Tag list used as meta parameter for insert_*_volume_data in `test()`, which
+// only uses Legendre meshes and so never needs per-component parity
+using TestTagList = tmpl::list<>;
+
+// Nontrivial-parity tensors for ZernikeB1 test
+using ParityTagList = tmpl::list<::Tags::TempScalar<0>, ::Tags::TempI<0, 3>>;
+
+// Check that the result agrees with projecting the neighbor's entire volume
+// and then slicing off the ghost zones facing us, which is what the neighbor
+// itself computes when it is doing FD
+void test_ghost_data_matches_projected_volume(const Mesh<3>& neighbor_dg_mesh,
+                                              const Direction<3>& direction) {
+  CAPTURE(neighbor_dg_mesh);
+  CAPTURE(direction);
+  constexpr size_t Dim = 3;
+  constexpr size_t number_of_components =
+      Variables<ParityTagList>::number_of_independent_components;
+  const size_t number_of_rdmp_vars = 2;
+  const size_t number_of_ghost_zones = 3;
+
+  const Mesh<Dim> subcell_mesh =
+      evolution::dg::subcell::fd::mesh(neighbor_dg_mesh);
+  const DirectionalId<Dim> neighbor_id{direction, ElementId<Dim>{1}};
+  DirectionMap<Dim, Neighbors<Dim>> neighbors{};
+  neighbors.insert(std::pair{
+      direction, Neighbors<Dim>{{neighbor_id.id()},
+                                OrientationMap<Dim>::create_aligned()}});
+  const Element<Dim> element{ElementId<Dim>{0}, neighbors,
+                             domain::topologies::hypercube<Dim>};
+
+  DataVector received_dg_data{
+      (number_of_components * neighbor_dg_mesh.number_of_grid_points()) +
+      (2 * number_of_rdmp_vars)};
+  alg::iota(received_dg_data, 1.0);
+
+  // The neighbor is in our `direction`, so we are in its `direction.opposite()`
+  // and it is those ghost zones of the neighbor that we need.
+  const DataVector dg_volume_data{
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      const_cast<double*>(received_dg_data.data()),
+      number_of_components * neighbor_dg_mesh.number_of_grid_points()};
+  const DataVector projected_volume_data = evolution::dg::subcell::fd::project(
+      dg_volume_data, neighbor_dg_mesh, subcell_mesh.extents(),
+      ParityTagList{});
+  const auto sliced_volume_data = evolution::dg::subcell::slice_data(
+      projected_volume_data, subcell_mesh.extents(), number_of_ghost_zones,
+      {direction.opposite()}, 0, {});
+  const DataVector& expected_ghost_data =
+      sliced_volume_data.at(direction.opposite());
+
+  DirectionalIdMap<Dim, evolution::dg::subcell::GhostData> neighbor_data{};
+  evolution::dg::subcell::RdmpTciData rdmp_tci_data{
+      .max_variables_values =
+          DataVector{number_of_rdmp_vars, std::numeric_limits<double>::min()},
+      .min_variables_values =
+          DataVector{number_of_rdmp_vars, std::numeric_limits<double>::max()}};
+  evolution::dg::subcell::insert_neighbor_rdmp_and_volume_data(
+      make_not_null(&rdmp_tci_data), make_not_null(&neighbor_data),
+      received_dg_data, number_of_rdmp_vars, neighbor_id, neighbor_dg_mesh,
+      element, subcell_mesh, number_of_ghost_zones, {}, ParityTagList{});
+
+  REQUIRE(neighbor_data.contains(neighbor_id));
+  const DataVector& ghost_data =
+      neighbor_data.at(neighbor_id).neighbor_ghost_data_for_reconstruction();
+  REQUIRE(ghost_data.size() == expected_ghost_data.size());
+  CHECK_ITERABLE_APPROX(ghost_data, expected_ghost_data);
+}
+
+void test_neighbor_on_symmetry_axis() {
+  const Mesh<3> cartoon_axis_dg_mesh{
+      {{6, 6, 1}},
+      {Spectral::Basis::ZernikeB1, Spectral::Basis::Legendre,
+       Spectral::Basis::Cartoon},
+      {Spectral::Quadrature::GaussRadauUpper,
+       Spectral::Quadrature::GaussLobatto,
+       Spectral::Quadrature::AxialSymmetry}};
+  const Mesh<3> cartoon_dg_mesh{
+      {{6, 6, 1}},
+      {Spectral::Basis::Legendre, Spectral::Basis::Legendre,
+       Spectral::Basis::Cartoon},
+      {Spectral::Quadrature::GaussLobatto, Spectral::Quadrature::GaussLobatto,
+       Spectral::Quadrature::AxialSymmetry}};
+  REQUIRE(evolution::dg::subcell::fd::mesh(cartoon_axis_dg_mesh) ==
+          evolution::dg::subcell::fd::mesh(cartoon_dg_mesh));
+
+  // There are no neighbors in the cartoon (zeta) dimension. Dimension 0 is the
+  // ZernikeB1 dimension, where the ghost zones must be projected with the
+  // parity-dependent ghost zone matrices, while for dimension 1 the ZernikeB1
+  // dimension is projected in full.
+  for (const auto& direction :
+       {Direction<3>::lower_xi(), Direction<3>::upper_xi(),
+        Direction<3>::lower_eta(), Direction<3>::upper_eta()}) {
+    test_ghost_data_matches_projected_volume(cartoon_dg_mesh, direction);
+    test_ghost_data_matches_projected_volume(cartoon_axis_dg_mesh, direction);
+  }
+}
+
 template <size_t Dim>
 void test() {
   CAPTURE(Dim);
@@ -133,7 +239,8 @@ void test() {
                               2 * number_of_rdmp_vars};
   alg::iota(received_dg_data, *std::prev(received_fd_data.end()) + 1.0);
 
-  const Element<Dim> element{ElementId<Dim>{0}, neighbors};
+  const Element<Dim> element{ElementId<Dim>{0}, neighbors,
+                             domain::topologies::hypercube<Dim>};
 
   DataVector expected_neighbor_data_from_upper_xi{received_fd_data.size() -
                                                   2 * number_of_rdmp_vars};
@@ -162,11 +269,13 @@ void test() {
     auto projection_matrices =
         make_array<Dim>(std::cref(evolution::dg::subcell::fd::projection_matrix(
             dg_mesh.slice_through(0), subcell_mesh.extents(0),
-            Spectral::Quadrature::CellCentered)));
+            Spectral::Quadrature::CellCentered,
+            Spectral::Parity::Uninitialized)));
     projection_matrices[0] =
         std::cref(evolution::dg::subcell::fd::projection_matrix(
             dg_mesh.slice_through(0), subcell_mesh.extents(0),
-            number_of_ghost_zones, Side::Upper));
+            number_of_ghost_zones, Side::Upper,
+            Spectral::Parity::Uninitialized));
 
     DataVector expected_data{subcell_mesh.extents().slice_away(0).product() *
                              number_of_ghost_zones};
@@ -188,7 +297,7 @@ void test() {
       subcell_mesh,  // neighbor mesh is the same as my mesh since both are
                      // doing subcell
       element, subcell_mesh, number_of_ghost_zones,
-      neighbor_dg_to_fd_interpolants);
+      neighbor_dg_to_fd_interpolants, TestTagList{});
 
   const auto get_neighbor_data =
       [&neighbor_data](const auto mortar_id) -> const DataVector& {
@@ -215,7 +324,8 @@ void test() {
   evolution::dg::subcell::insert_neighbor_rdmp_and_volume_data(
       make_not_null(&rdmp_tci_data), make_not_null(&neighbor_data),
       received_dg_data, number_of_rdmp_vars, lower_xi_id, dg_mesh, element,
-      subcell_mesh, number_of_ghost_zones, neighbor_dg_to_fd_interpolants);
+      subcell_mesh, number_of_ghost_zones, neighbor_dg_to_fd_interpolants,
+      TestTagList{});
 
   {
     DataVector expected_max_rdmp_tci_data{number_of_rdmp_vars};
@@ -249,7 +359,7 @@ void test() {
     evolution::dg::subcell::insert_neighbor_rdmp_and_volume_data(
         make_not_null(&rdmp_tci_data), make_not_null(&neighbor_data),
         aligned_received_dg_data, number_of_rdmp_vars, upper_eta_id, dg_mesh,
-        element, subcell_mesh, number_of_ghost_zones, {});
+        element, subcell_mesh, number_of_ghost_zones, {}, TestTagList{});
 
     DataVector expected_max_rdmp_tci_data{number_of_rdmp_vars};
     DataVector expected_min_rdmp_tci_data{number_of_rdmp_vars};
@@ -274,11 +384,13 @@ void test() {
     auto projection_matrices =
         make_array<Dim>(std::cref(evolution::dg::subcell::fd::projection_matrix(
             dg_mesh.slice_through(0), subcell_mesh.extents(0),
-            Spectral::Quadrature::CellCentered)));
+            Spectral::Quadrature::CellCentered,
+            Spectral::Parity::Uninitialized)));
     projection_matrices[1] =
         std::cref(evolution::dg::subcell::fd::projection_matrix(
             dg_mesh.slice_through(0), subcell_mesh.extents(0),
-            number_of_ghost_zones, Side::Lower));
+            number_of_ghost_zones, Side::Lower,
+            Spectral::Parity::Uninitialized));
 
     DataVector view_aligned_received_dg_data(aligned_received_dg_data.data(),
                                              dg_mesh.number_of_grid_points());
@@ -296,7 +408,7 @@ void test() {
     evolution::dg::subcell::insert_or_update_neighbor_volume_data<false>(
         make_not_null(&neighbor_data), get_neighbor_data(lower_xi_id),
         number_of_rdmp_vars, lower_xi_id, subcell_mesh, element, subcell_mesh,
-        number_of_ghost_zones, neighbor_dg_to_fd_interpolants);
+        number_of_ghost_zones, neighbor_dg_to_fd_interpolants, TestTagList{});
     CHECK(get_neighbor_data(lower_xi_id).data() == expected_pointer);
   }
 
@@ -316,16 +428,18 @@ void test() {
     evolution::dg::subcell::insert_or_update_neighbor_volume_data<false>(
         make_not_null(&neighbor_data), get_neighbor_data(upper_zeta_id), 0,
         upper_zeta_id, dg_mesh, element, subcell_mesh, number_of_ghost_zones,
-        neighbor_dg_to_fd_interpolants);
+        neighbor_dg_to_fd_interpolants, TestTagList{});
 
     auto projection_matrices =
         make_array<Dim>(std::cref(evolution::dg::subcell::fd::projection_matrix(
             dg_mesh.slice_through(0), subcell_mesh.extents(0),
-            Spectral::Quadrature::CellCentered)));
+            Spectral::Quadrature::CellCentered,
+            Spectral::Parity::Uninitialized)));
     projection_matrices[2] =
         std::cref(evolution::dg::subcell::fd::projection_matrix(
             dg_mesh.slice_through(0), subcell_mesh.extents(0),
-            number_of_ghost_zones, Side::Lower));
+            number_of_ghost_zones, Side::Lower,
+            Spectral::Parity::Uninitialized));
 
     DataVector expected_data{subcell_mesh.extents().slice_away(0).product() *
                              number_of_ghost_zones};
@@ -346,12 +460,13 @@ void test() {
     evolution::dg::subcell::insert_or_update_neighbor_volume_data<false>(
         make_not_null(&neighbor_data), get_neighbor_data(lower_zeta_id), 0,
         lower_zeta_id, dg_mesh, element, subcell_mesh, number_of_ghost_zones,
-        neighbor_dg_to_fd_interpolants);
+        neighbor_dg_to_fd_interpolants, TestTagList{});
 
     projection_matrices[2] =
         std::cref(evolution::dg::subcell::fd::projection_matrix(
             dg_mesh.slice_through(0), subcell_mesh.extents(0),
-            number_of_ghost_zones, Side::Upper));
+            number_of_ghost_zones, Side::Upper,
+            Spectral::Parity::Uninitialized));
 
     DataVector oriented_data{unaligned_received_dg_data.size()};
     orient_variables(make_not_null(&oriented_data), unaligned_received_dg_data,
@@ -372,7 +487,7 @@ void test() {
           DataVector{}, number_of_rdmp_vars,
           DirectionalId<Dim>{Direction<Dim>::upper_xi(), ElementId<Dim>{1}},
           subcell_mesh, element, subcell_mesh, number_of_ghost_zones,
-          neighbor_dg_to_fd_interpolants),
+          neighbor_dg_to_fd_interpolants, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "received_neighbor_subcell_data must be non-empty"));
 
@@ -381,7 +496,7 @@ void test() {
           make_not_null(&neighbor_data), DataVector{}, number_of_rdmp_vars,
           DirectionalId<Dim>{Direction<Dim>::upper_xi(), ElementId<Dim>{1}},
           subcell_mesh, element, subcell_mesh, number_of_ghost_zones,
-          neighbor_dg_to_fd_interpolants),
+          neighbor_dg_to_fd_interpolants, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "neighbor_subcell_data must be non-empty"));
   CHECK_THROWS_WITH(
@@ -389,7 +504,7 @@ void test() {
           make_not_null(&neighbor_data), DataVector{}, number_of_rdmp_vars,
           DirectionalId<Dim>{Direction<Dim>::upper_xi(), ElementId<Dim>{1}},
           subcell_mesh, element, subcell_mesh, number_of_ghost_zones,
-          neighbor_dg_to_fd_interpolants),
+          neighbor_dg_to_fd_interpolants, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "neighbor_subcell_data must be non-empty"));
 
@@ -400,7 +515,7 @@ void test() {
           Mesh<Dim>{5, Spectral::Basis::FiniteDifference,
                     Spectral::Quadrature::CellCentered},
           element, subcell_mesh, number_of_ghost_zones,
-          neighbor_dg_to_fd_interpolants),
+          neighbor_dg_to_fd_interpolants, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "must be the same if we are both doing subcell."));
   CHECK_THROWS_WITH(
@@ -410,7 +525,7 @@ void test() {
           Mesh<Dim>{5, Spectral::Basis::FiniteDifference,
                     Spectral::Quadrature::CellCentered},
           element, subcell_mesh, number_of_ghost_zones,
-          neighbor_dg_to_fd_interpolants),
+          neighbor_dg_to_fd_interpolants, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "must be the same if we are both doing subcell."));
 
@@ -420,7 +535,7 @@ void test() {
           lower_xi_id, dg_mesh, element,
           Mesh<Dim>{4, Spectral::Basis::Legendre,
                     Spectral::Quadrature::GaussLobatto},
-          number_of_ghost_zones, neighbor_dg_to_fd_interpolants),
+          number_of_ghost_zones, neighbor_dg_to_fd_interpolants, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "Neighbor subcell mesh computed from the neighbor DG mesh "));
   CHECK_THROWS_WITH(
@@ -429,7 +544,7 @@ void test() {
           lower_xi_id, dg_mesh, element,
           Mesh<Dim>{4, Spectral::Basis::Legendre,
                     Spectral::Quadrature::GaussLobatto},
-          number_of_ghost_zones, neighbor_dg_to_fd_interpolants),
+          number_of_ghost_zones, neighbor_dg_to_fd_interpolants, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "Neighbor subcell mesh computed from the neighbor DG mesh "));
 
@@ -438,7 +553,7 @@ void test() {
           make_not_null(&neighbor_data),
           DataVector{2 * number_of_rdmp_vars + 1, 0.0}, number_of_rdmp_vars,
           lower_xi_id, dg_mesh, element, subcell_mesh, number_of_ghost_zones,
-          {}),
+          {}, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "The number of DG volume grid points times the number of variables"));
   CHECK_THROWS_WITH(
@@ -446,20 +561,31 @@ void test() {
           make_not_null(&neighbor_data),
           DataVector{2 * number_of_rdmp_vars + 1, 0.0}, number_of_rdmp_vars,
           lower_xi_id, dg_mesh, element, subcell_mesh, number_of_ghost_zones,
-          {}),
+          {}, TestTagList{}),
       Catch::Matchers::ContainsSubstring(
           "The number of DG volume grid points times the number of variables"));
 
   if constexpr (Dim > 1) {
+    // A neighbor that is doing FD sends us its subcell mesh, which must be a
+    // valid subcell mesh. A neighbor that is doing DG sends us its DG mesh,
+    // which is only required to project to our subcell mesh, so it is checked
+    // against `fd::mesh` instead (see the anisotropic DG mesh below).
     Mesh<Dim> non_uniform_mesh{};
+    Mesh<Dim> non_uniform_dg_mesh{};
     if constexpr (Dim == 2) {
       non_uniform_mesh = Mesh<2>{{{4, 5}},
-                                 Spectral::Basis::Legendre,
-                                 Spectral::Quadrature::GaussLobatto};
+                                 Spectral::Basis::FiniteDifference,
+                                 Spectral::Quadrature::CellCentered};
+      non_uniform_dg_mesh = Mesh<2>{{{4, 5}},
+                                    Spectral::Basis::Legendre,
+                                    Spectral::Quadrature::GaussLobatto};
     } else if constexpr (Dim == 3) {
       non_uniform_mesh = Mesh<3>{{{4, 5, 6}},
-                                 Spectral::Basis::Legendre,
-                                 Spectral::Quadrature::GaussLobatto};
+                                 Spectral::Basis::FiniteDifference,
+                                 Spectral::Quadrature::CellCentered};
+      non_uniform_dg_mesh = Mesh<3>{{{4, 5, 6}},
+                                    Spectral::Basis::Legendre,
+                                    Spectral::Quadrature::GaussLobatto};
     }
     CHECK_THROWS_WITH(
         evolution::dg::subcell::insert_or_update_neighbor_volume_data<true>(
@@ -467,18 +593,46 @@ void test() {
             number_of_rdmp_vars,
             DirectionalId<Dim>{Direction<Dim>::upper_xi(), ElementId<Dim>{1}},
             non_uniform_mesh, element, subcell_mesh, number_of_ghost_zones,
-            neighbor_dg_to_fd_interpolants),
+            neighbor_dg_to_fd_interpolants, TestTagList{}),
         Catch::Matchers::ContainsSubstring(
-            "The neighbor mesh must be uniform but is"));
+            "The neighbor subcell mesh must have isotropic basis"));
     CHECK_THROWS_WITH(
         evolution::dg::subcell::insert_or_update_neighbor_volume_data<false>(
             make_not_null(&neighbor_data), received_fd_data,
             number_of_rdmp_vars,
             DirectionalId<Dim>{Direction<Dim>::upper_xi(), ElementId<Dim>{1}},
             non_uniform_mesh, element, subcell_mesh, number_of_ghost_zones,
-            neighbor_dg_to_fd_interpolants),
+            neighbor_dg_to_fd_interpolants, TestTagList{}),
         Catch::Matchers::ContainsSubstring(
-            "The neighbor mesh must be uniform but is"));
+            "The neighbor subcell mesh must have isotropic basis"));
+    CHECK_THROWS_WITH(
+        evolution::dg::subcell::insert_or_update_neighbor_volume_data<true>(
+            make_not_null(&neighbor_data), received_dg_data,
+            number_of_rdmp_vars,
+            DirectionalId<Dim>{Direction<Dim>::upper_xi(), ElementId<Dim>{1}},
+            non_uniform_dg_mesh, element, subcell_mesh, number_of_ghost_zones,
+            neighbor_dg_to_fd_interpolants, TestTagList{}),
+        Catch::Matchers::ContainsSubstring(
+            "Neighbor subcell mesh computed from the neighbor DG mesh "));
+    if constexpr (Dim == 3) {
+      const Mesh<3> non_uniform_cartoon_mesh{
+          {{4, 5, 1}},
+          {Spectral::Basis::FiniteDifference, Spectral::Basis::FiniteDifference,
+           Spectral::Basis::Cartoon},
+          {Spectral::Quadrature::CellCentered,
+           Spectral::Quadrature::CellCentered,
+           Spectral::Quadrature::AxialSymmetry}};
+      CHECK_THROWS_WITH(
+          evolution::dg::subcell::insert_or_update_neighbor_volume_data<false>(
+              make_not_null(&neighbor_data), received_fd_data,
+              number_of_rdmp_vars,
+              DirectionalId<Dim>{Direction<Dim>::upper_xi(), ElementId<Dim>{1}},
+              non_uniform_cartoon_mesh, element, subcell_mesh,
+              number_of_ghost_zones, neighbor_dg_to_fd_interpolants,
+              TestTagList{}),
+          Catch::Matchers::ContainsSubstring(
+              "The non-cartoon neighbor subcell sub-mesh must have isotropic"));
+    }
   }
 #endif
 }
@@ -489,4 +643,5 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.NeighborRdmpAndVolumeData",
   test<1>();
   test<2>();
   test<3>();
+  test_neighbor_on_symmetry_axis();
 }

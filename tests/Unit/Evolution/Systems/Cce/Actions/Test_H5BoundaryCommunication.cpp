@@ -26,6 +26,7 @@
 #include "Evolution/Systems/Cce/Components/WorldtubeBoundary.hpp"
 #include "Evolution/Systems/Cce/IntegrandInputSteps.hpp"
 #include "Evolution/Systems/Cce/OptionTags.hpp"
+#include "Evolution/Systems/Cce/System.hpp"
 #include "Evolution/Systems/Cce/Tags.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Framework/TestHelpers.hpp"
@@ -41,6 +42,7 @@
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/KerrSchild.hpp"
 #include "Time/AdvanceTime.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/Tags/StepperErrorEstimatesEnabled.hpp"
 #include "Time/TimeSteppers/AdamsBashforth.hpp"
@@ -108,9 +110,7 @@ struct mock_characteristic_evolution {
 
   using initialize_action_list = tmpl::list<
       Actions::InitializeCharacteristicEvolutionVariables<Metavariables>,
-      Actions::InitializeCharacteristicEvolutionTime<
-          typename Metavariables::evolved_coordinates_variables_tag,
-          typename Metavariables::evolved_swsh_tags, false>,
+      Actions::InitializeCharacteristicEvolutionTime,
       // advance the time so that the current `TimeStepId` is valid without
       // having to perform self-start.
       ::Actions::MutateApply<AdvanceTime<Tags::CceEvolutionPrefix>>,
@@ -140,11 +140,9 @@ struct mock_characteristic_evolution {
 };
 
 struct test_metavariables {
-  using evolved_swsh_tags = tmpl::list<Tags::BondiJ>;
+  using system = System<false>;
   using evolved_swsh_dt_tags = tmpl::list<Tags::BondiH>;
   using cce_step_choosers = tmpl::list<>;
-  using evolved_coordinates_variables_tag = ::Tags::Variables<
-      tmpl::list<Tags::CauchyCartesianCoords, Tags::InertialRetardedTime>>;
   using cce_boundary_communication_tags =
       Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>;
   using cce_boundary_component = H5WorldtubeBoundary<test_metavariables>;
@@ -239,7 +237,8 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.Cce.Actions.H5BoundaryCommunication",
        Tags::EndTimeFromFile::create_from_options(end_time, filename, false),
        start_time, number_of_radial_points,
        static_cast<std::unique_ptr<LtsTimeStepper>>(
-           std::make_unique<::TimeSteppers::AdamsBashforth>(3))}};
+           std::make_unique<::TimeSteppers::AdamsBashforth>(3)),
+       LtsMode::Conservative}};
 
   // create the test file, because on initialization the manager will need
   // to get basic data out of the file
@@ -317,18 +316,20 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.Cce.Actions.H5BoundaryCommunication",
           .epsilon(std::numeric_limits<double>::epsilon() * 1.0e4)
           .scale(1.0);
 
-  tmpl::for_each<
-      Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>>(
-      [&expected_boundary_variables, &runner,
-       &angular_derivative_approx](auto tag_v) {
-        using tag = typename decltype(tag_v)::type;
-        INFO(db::tag_name<tag>());
-        const auto& test_lhs =
-            ActionTesting::get_databox_tag<evolution_component, tag>(runner, 0);
-        const auto& test_rhs = get<tag>(expected_boundary_variables);
-        CHECK_ITERABLE_CUSTOM_APPROX(test_lhs, test_rhs,
-                                     angular_derivative_approx);
-      });
+  // `Du<Dr<BondiJ>>` is not populated by `create_bondi_boundary_data` (the
+  // "expected" side here), so it would compare NaN-vs-NaN; exclude it.
+  using tags_to_compare = tmpl::list_difference<
+      Tags::characteristic_worldtube_boundary_tags<Tags::BoundaryValue>,
+      tmpl::list<Tags::BoundaryValue<Tags::Du<Tags::Dr<Tags::BondiJ>>>>>;
+  tmpl::for_each<tags_to_compare>([&expected_boundary_variables, &runner,
+                                   &angular_derivative_approx](auto tag_v) {
+    using tag = typename decltype(tag_v)::type;
+    INFO(db::tag_name<tag>());
+    const auto& test_lhs =
+        ActionTesting::get_databox_tag<evolution_component, tag>(runner, 0);
+    const auto& test_rhs = get<tag>(expected_boundary_variables);
+    CHECK_ITERABLE_CUSTOM_APPROX(test_lhs, test_rhs, angular_derivative_approx);
+  });
   if (file_system::check_if_file_exists(filename)) {
     file_system::rm(filename, true);
   }

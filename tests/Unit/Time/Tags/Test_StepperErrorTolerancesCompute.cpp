@@ -3,17 +3,23 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <typeindex>
+#include <typeinfo>
+#include <unordered_map>
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
+#include "DataStructures/DataBox/TagName.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "DataStructures/VariablesTag.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
+#include "Options/String.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/EventsAndTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/LogicalTriggers.hpp"
@@ -21,13 +27,12 @@
 #include "ParallelAlgorithms/EventsAndTriggers/Trigger.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/WhenToCheck.hpp"
 #include "Time/ChangeSlabSize/Event.hpp"
+#include "Time/RequestsStepperErrorTolerances.hpp"
 #include "Time/StepChoosers/Constant.hpp"
-#include "Time/StepChoosers/ErrorControl.hpp"
-#include "Time/StepChoosers/FixedLtsRatio.hpp"
 #include "Time/StepChoosers/LimitIncrease.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/StepperErrorTolerances.hpp"
-#include "Time/Tags/StepChoosers.hpp"
+#include "Time/Tags/LtsStepChoosers.hpp"
 #include "Time/Tags/StepperErrorEstimatesEnabled.hpp"
 #include "Time/Tags/StepperErrorTolerances.hpp"
 #include "Time/Tags/StepperErrorTolerancesCompute.hpp"
@@ -35,7 +40,9 @@
 #include "Time/Tags/VariableOrderAlgorithm.hpp"
 #include "Time/TimeSteppers/AdamsBashforth.hpp"
 #include "Time/TimeSteppers/LtsTimeStepper.hpp"
+#include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Time/VariableOrderAlgorithm.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
@@ -43,6 +50,9 @@
 #include "Utilities/TMPL.hpp"
 
 class DataVector;
+namespace PUP {
+class er;
+}  // namespace PUP
 namespace Parallel {
 template <typename Metavariables>
 class GlobalCache;
@@ -87,6 +97,68 @@ class OtherEvent : public Event {
 
 PUP::able::PUP_ID OtherEvent::my_PUP_ID = 0;  // NOLINT
 
+template <typename Tag>
+class ToleranceRequest : public StepChooser<StepChooserUse::Slab>,
+                         public StepChooser<StepChooserUse::LtsStep>,
+                         public RequestsStepperErrorTolerances {
+ public:
+  ToleranceRequest() = default;
+  explicit ToleranceRequest(CkMigrateMessage* /*unused*/) {}
+  using PUP::able::register_constructor;
+  WRAPPED_PUPable_decl_template(ToleranceRequest);  // NOLINT
+
+  static std::string name() {
+    return "ToleranceRequest(" + db::tag_name<Tag>() + ")";
+  }
+
+  struct AbsoluteTolerance {
+    using type = double;
+    static constexpr Options::String help{"Target absolute tolerance"};
+    static type lower_bound() { return 0.0; }
+  };
+
+  struct RelativeTolerance {
+    using type = double;
+    static constexpr Options::String help{"Target relative tolerance"};
+    static type lower_bound() { return 0.0; }
+  };
+
+  static constexpr Options::String help{"help"};
+  using options = tmpl::list<AbsoluteTolerance, RelativeTolerance>;
+
+  ToleranceRequest(const double absolute_tolerance,
+                   const double relative_tolerance)
+      : absolute_tolerance_{absolute_tolerance},
+        relative_tolerance_{relative_tolerance} {}
+
+  using argument_tags = tmpl::list<>;
+
+  TimeStepRequest operator()(const double /*previous_step*/) const {
+    return {};
+  }
+
+  bool uses_local_data() const override { return true; }
+  bool can_be_delayed() const override { return true; }
+  bool must_set_step_size() const override { return true; }
+
+  std::unordered_map<std::type_index, StepperErrorTolerances> tolerances()
+      const override {
+    return {{typeid(Tag),
+             {.estimates = StepperErrorTolerances::Estimates::StepperOrder,
+              .absolute = absolute_tolerance_,
+              .relative = relative_tolerance_}}};
+  }
+
+  void pup(PUP::er& /*p*/) override { ERROR(""); }
+
+ private:
+  double absolute_tolerance_ = std::numeric_limits<double>::signaling_NaN();
+  double relative_tolerance_ = std::numeric_limits<double>::signaling_NaN();
+};
+
+template <typename Tag>
+PUP::able::PUP_ID ToleranceRequest<Tag>::my_PUP_ID = 0;  // NOLINT
+
 struct EvolvedVar1 : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
@@ -95,26 +167,16 @@ struct EvolvedVar2 : db::SimpleTag {
   using type = tnsr::i<DataVector, 2>;
 };
 
-struct EvolvedVar3 : db::SimpleTag {
-  using type = Scalar<DataVector>;
-};
+using EvolvedVariablesTag = Tags::Variables<tmpl::list<EvolvedVar1>>;
 
-using EvolvedVariablesTag =
-    Tags::Variables<tmpl::list<EvolvedVar1, EvolvedVar2>>;
-
-using AltEvolvedVariablesTag = Tags::Variables<tmpl::list<EvolvedVar3>>;
-
-struct ErrorControlSelecter {
-  static std::string name() { return "SelectorLabel"; }
-};
+using AltEvolvedVariablesTag = Tags::Variables<tmpl::list<EvolvedVar2>>;
 
 struct Metavariables {
   template <typename Use>
   using step_choosers =
       tmpl::list<StepChoosers::LimitIncrease, StepChoosers::Constant,
-                 StepChoosers::ErrorControl<Use, EvolvedVariablesTag>,
-                 StepChoosers::ErrorControl<Use, AltEvolvedVariablesTag,
-                                            ErrorControlSelecter>>;
+                 ToleranceRequest<EvolvedVariablesTag>,
+                 ToleranceRequest<AltEvolvedVariablesTag>>;
 
   struct factory_creation
       : tt::ConformsTo<Options::protocols::FactoryCreation> {
@@ -123,8 +185,7 @@ struct Metavariables {
         tmpl::pair<StepChooser<StepChooserUse::LtsStep>,
                    step_choosers<StepChooserUse::LtsStep>>,
         tmpl::pair<StepChooser<StepChooserUse::Slab>,
-                   tmpl::push_back<step_choosers<StepChooserUse::Slab>,
-                                   StepChoosers::FixedLtsRatio>>,
+                   step_choosers<StepChooserUse::Slab>>,
         tmpl::pair<Trigger, tmpl::list<Triggers::Always>>>;
   };
 };
@@ -132,11 +193,11 @@ struct Metavariables {
 SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
                   "[Unit][Time]") {
   TestHelpers::db::test_compute_tag<
-      Tags::StepperErrorEstimatesEnabledCompute<true>>(
+      Tags::StepperErrorEstimatesEnabledCompute<>>(
       "StepperErrorEstimatesEnabled");
   TestHelpers::db::test_compute_tag<
-      Tags::StepperErrorTolerancesCompute<EvolvedVariablesTag, true>>(
-      "StepperErrorTolerances(Variables(EvolvedVar1,EvolvedVar2))");
+      Tags::StepperErrorTolerancesCompute<EvolvedVariablesTag>>(
+      "StepperErrorTolerances(Variables(EvolvedVar1))");
 
   {
     INFO("Compute tag LTS test");
@@ -145,18 +206,15 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
           all_orders ? StepperErrorTolerances::Estimates::AllOrders
                      : StepperErrorTolerances::Estimates::StepperOrder;
 
-      db::mutate<Tags::StepChoosers,
+      db::mutate<Tags::LtsStepChoosers,
                  Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers,
+          [](const gsl::not_null<Tags::LtsStepChoosers::type*> choosers,
              const gsl::not_null<EventsAndTriggers*> events) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
+            *choosers = TestHelpers::test_creation<Tags::LtsStepChoosers::type,
                                                    Metavariables>(
-                "- ErrorControl:\n"
-                "    SafetyFactor: 0.95\n"
+                "- ToleranceRequest(Variables(EvolvedVar1)):\n"
                 "    AbsoluteTolerance: 1.0e-5\n"
                 "    RelativeTolerance: 1.0e-4\n"
-                "    MaxFactor: 2.1\n"
-                "    MinFactor: 0.5\n"
                 "- LimitIncrease:\n"
                 "    Factor: 2\n"
                 "- Constant: 0.5");
@@ -171,9 +229,9 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
       CHECK(db::get<Tags::StepperErrorTolerances<AltEvolvedVariablesTag>>(*box)
                 .estimates == StepperErrorTolerances::Estimates::None);
 
-      db::mutate<Tags::StepChoosers>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
+      db::mutate<Tags::LtsStepChoosers>(
+          [](const gsl::not_null<Tags::LtsStepChoosers::type*> choosers) {
+            *choosers = TestHelpers::test_creation<Tags::LtsStepChoosers::type,
                                                    Metavariables>(
                 "- LimitIncrease:\n"
                 "    Factor: 2\n"
@@ -186,9 +244,9 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
       CHECK(db::get<Tags::StepperErrorTolerances<AltEvolvedVariablesTag>>(*box)
                 .estimates == StepperErrorTolerances::Estimates::None);
 
-      db::mutate<Tags::StepChoosers>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
+      db::mutate<Tags::LtsStepChoosers>(
+          [](const gsl::not_null<Tags::LtsStepChoosers::type*> choosers) {
+            *choosers = TestHelpers::test_creation<Tags::LtsStepChoosers::type,
                                                    Metavariables>("");
           },
           box);
@@ -198,22 +256,16 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
       CHECK(db::get<Tags::StepperErrorTolerances<AltEvolvedVariablesTag>>(*box)
                 .estimates == StepperErrorTolerances::Estimates::None);
 
-      db::mutate<Tags::StepChoosers>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
+      db::mutate<Tags::LtsStepChoosers>(
+          [](const gsl::not_null<Tags::LtsStepChoosers::type*> choosers) {
+            *choosers = TestHelpers::test_creation<Tags::LtsStepChoosers::type,
                                                    Metavariables>(
-                "- ErrorControl:\n"
-                "    SafetyFactor: 0.95\n"
+                "- ToleranceRequest(Variables(EvolvedVar1)):\n"
                 "    AbsoluteTolerance: 1.0e-5\n"
                 "    RelativeTolerance: 1.0e-4\n"
-                "    MaxFactor: 2.1\n"
-                "    MinFactor: 0.5\n"
-                "- ErrorControl:\n"
-                "    SafetyFactor: 0.8\n"
+                "- ToleranceRequest(Variables(EvolvedVar1)):\n"
                 "    AbsoluteTolerance: 1.0e-5\n"
                 "    RelativeTolerance: 1.0e-4\n"
-                "    MaxFactor: 1.1\n"
-                "    MinFactor: 0.1\n"
                 "- LimitIncrease:\n"
                 "    Factor: 2\n"
                 "- Constant: 0.5");
@@ -227,22 +279,16 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
       CHECK(db::get<Tags::StepperErrorTolerances<AltEvolvedVariablesTag>>(*box)
                 .estimates == StepperErrorTolerances::Estimates::None);
 
-      db::mutate<Tags::StepChoosers>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
+      db::mutate<Tags::LtsStepChoosers>(
+          [](const gsl::not_null<Tags::LtsStepChoosers::type*> choosers) {
+            *choosers = TestHelpers::test_creation<Tags::LtsStepChoosers::type,
                                                    Metavariables>(
-                "- ErrorControl:\n"
-                "    SafetyFactor: 0.95\n"
+                "- ToleranceRequest(Variables(EvolvedVar1)):\n"
                 "    AbsoluteTolerance: 1.0e-5\n"
                 "    RelativeTolerance: 1.0e-4\n"
-                "    MaxFactor: 2.1\n"
-                "    MinFactor: 0.5\n"
-                "- ErrorControl(SelectorLabel):\n"
-                "    SafetyFactor: 0.8\n"
+                "- ToleranceRequest(Variables(EvolvedVar2)):\n"
                 "    AbsoluteTolerance: 1.0e-5\n"
                 "    RelativeTolerance: 1.0e-8\n"
-                "    MaxFactor: 1.1\n"
-                "    MinFactor: 0.1\n"
                 "- LimitIncrease:\n"
                 "    Factor: 2\n"
                 "- Constant: 0.5");
@@ -258,22 +304,16 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
                                                 .absolute = 1.0e-5,
                                                 .relative = 1.0e-8});
 
-      db::mutate<Tags::StepChoosers>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
+      db::mutate<Tags::LtsStepChoosers>(
+          [](const gsl::not_null<Tags::LtsStepChoosers::type*> choosers) {
+            *choosers = TestHelpers::test_creation<Tags::LtsStepChoosers::type,
                                                    Metavariables>(
-                "- ErrorControl:\n"
-                "    SafetyFactor: 0.95\n"
+                "- ToleranceRequest(Variables(EvolvedVar1)):\n"
                 "    AbsoluteTolerance: 1.0e-5\n"
                 "    RelativeTolerance: 1.0e-4\n"
-                "    MaxFactor: 2.1\n"
-                "    MinFactor: 0.5\n"
-                "- ErrorControl:\n"
-                "    SafetyFactor: 0.8\n"
+                "- ToleranceRequest(Variables(EvolvedVar1)):\n"
                 "    AbsoluteTolerance: 1.0e-5\n"
                 "    RelativeTolerance: 1.0e-8\n"
-                "    MaxFactor: 1.1\n"
-                "    MinFactor: 0.1\n"
                 "- LimitIncrease:\n"
                 "    Factor: 2\n"
                 "- Constant: 0.5");
@@ -281,16 +321,15 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
           box);
       CHECK_THROWS_WITH(
           db::get<Tags::StepperErrorTolerances<EvolvedVariablesTag>>(*box),
-          Catch::Matchers::ContainsSubstring("All ErrorControl events for ") and
-              Catch::Matchers::ContainsSubstring("EvolvedVar1") and
-              Catch::Matchers::ContainsSubstring(
-                  " must use the same tolerances."));
+          Catch::Matchers::ContainsSubstring(
+              "All time stepping error tolerances for one set of variables "
+              "must be the same"));
 
-      db::mutate<Tags::StepChoosers,
+      db::mutate<Tags::LtsStepChoosers,
                  Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers,
+          [](const gsl::not_null<Tags::LtsStepChoosers::type*> choosers,
              const gsl::not_null<EventsAndTriggers*> events) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
+            *choosers = TestHelpers::test_creation<Tags::LtsStepChoosers::type,
                                                    Metavariables>("");
             *events =
                 TestHelpers::test_creation<EventsAndTriggers, Metavariables>(
@@ -305,45 +344,10 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
                     "        StepChoosers:\n"
                     "          - LimitIncrease:\n"
                     "              Factor: 2\n"
-                    "          - FixedLtsRatio:\n"
-                    "              StepChoosers:\n"
-                    "                - Constant: 0.5");
-          },
-          box);
-      CHECK_FALSE(db::get<Tags::StepperErrorEstimatesEnabled>(*box));
-      CHECK(db::get<Tags::StepperErrorTolerances<EvolvedVariablesTag>>(*box)
-                .estimates == StepperErrorTolerances::Estimates::None);
-      CHECK(db::get<Tags::StepperErrorTolerances<AltEvolvedVariablesTag>>(*box)
-                .estimates == StepperErrorTolerances::Estimates::None);
-
-      db::mutate<Tags::StepChoosers,
-                 Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>>(
-          [](const gsl::not_null<Tags::StepChoosers::type*> choosers,
-             const gsl::not_null<EventsAndTriggers*> events) {
-            *choosers = TestHelpers::test_creation<Tags::StepChoosers::type,
-                                                   Metavariables>("");
-            *events =
-                TestHelpers::test_creation<EventsAndTriggers, Metavariables>(
-                    "- Trigger: Always\n"
-                    "  Events:\n"
-                    "    - OtherEvent\n"
-                    "- Trigger: Always\n"
-                    "  Events:\n"
-                    "    - OtherEvent\n"
-                    "    - ChangeSlabSize:\n"
-                    "        DelayChange: 0\n"
-                    "        StepChoosers:\n"
-                    "          - LimitIncrease:\n"
-                    "              Factor: 2\n"
-                    "          - FixedLtsRatio:\n"
-                    "              StepChoosers:\n"
-                    "                - ErrorControl:\n"
-                    "                    SafetyFactor: 0.95\n"
-                    "                    AbsoluteTolerance: 1.0e-5\n"
-                    "                    RelativeTolerance: 1.0e-4\n"
-                    "                    MaxFactor: 2.1\n"
-                    "                    MinFactor: 0.5\n"
-                    "                - Constant: 0.5");
+                    "          - ToleranceRequest(Variables(EvolvedVar1)):\n"
+                    "              AbsoluteTolerance: 1.0e-5\n"
+                    "              RelativeTolerance: 1.0e-4\n"
+                    "          - Constant: 0.5");
           },
           box);
       CHECK(db::get<Tags::StepperErrorEstimatesEnabled>(*box));
@@ -357,16 +361,15 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
 
     auto box = db::create<
         db::AddSimpleTags<
-            Tags::StepChoosers,
+            Tags::LtsStepChoosers,
             Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>,
             Tags::ConcreteTimeStepper<LtsTimeStepper>,
             Tags::VariableOrderAlgorithm>,
         tmpl::push_back<
             time_stepper_ref_tags<LtsTimeStepper>,
-            Tags::StepperErrorEstimatesEnabledCompute<true>,
-            Tags::StepperErrorTolerancesCompute<EvolvedVariablesTag, true>,
-            Tags::StepperErrorTolerancesCompute<AltEvolvedVariablesTag,
-                                                true>>>();
+            Tags::StepperErrorEstimatesEnabledCompute<>,
+            Tags::StepperErrorTolerancesCompute<EvolvedVariablesTag>,
+            Tags::StepperErrorTolerancesCompute<AltEvolvedVariablesTag>>>();
 
     db::mutate<Tags::ConcreteTimeStepper<LtsTimeStepper>,
                Tags::VariableOrderAlgorithm>(
@@ -405,12 +408,24 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
     INFO("Compute tag GTS test");
     auto box = db::create<
         db::AddSimpleTags<
-            Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>>,
+            Tags::LtsStepChoosers,
+            Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>,
+            Tags::ConcreteTimeStepper<TimeStepper>,
+            Tags::VariableOrderAlgorithm>,
         db::AddComputeTags<
-            Tags::StepperErrorEstimatesEnabledCompute<false>,
-            Tags::StepperErrorTolerancesCompute<EvolvedVariablesTag, false>,
-            Tags::StepperErrorTolerancesCompute<AltEvolvedVariablesTag,
-                                                false>>>();
+            time_stepper_ref_tags<TimeStepper>,
+            Tags::StepperErrorEstimatesEnabledCompute<>,
+            Tags::StepperErrorTolerancesCompute<EvolvedVariablesTag>,
+            Tags::StepperErrorTolerancesCompute<AltEvolvedVariablesTag>>>();
+    db::mutate<Tags::ConcreteTimeStepper<TimeStepper>,
+               Tags::VariableOrderAlgorithm>(
+        [](const gsl::not_null<std::unique_ptr<TimeStepper>*> time_stepper,
+           const gsl::not_null<VariableOrderAlgorithm*> vo_algorithm) {
+          *time_stepper = std::make_unique<TimeSteppers::AdamsBashforth>(4);
+          *vo_algorithm = VariableOrderAlgorithm(4_st);
+        },
+        make_not_null(&box));
+
     db::mutate<Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>>(
         [](const gsl::not_null<EventsAndTriggers*> events) {
           *events =
@@ -426,12 +441,9 @@ SPECTRE_TEST_CASE("Unit.Time.Tags.StepperErrorTolerancesCompute",
                   "        StepChoosers:\n"
                   "          - LimitIncrease:\n"
                   "              Factor: 2\n"
-                  "          - ErrorControl:\n"
-                  "              SafetyFactor: 0.95\n"
+                  "          - ToleranceRequest(Variables(EvolvedVar1)):\n"
                   "              AbsoluteTolerance: 1.0e-5\n"
                   "              RelativeTolerance: 1.0e-4\n"
-                  "              MaxFactor: 2.1\n"
-                  "              MinFactor: 0.5\n"
                   "          - Constant: 0.5");
         },
         make_not_null(&box));

@@ -12,6 +12,7 @@
 
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
 #include "DataStructures/SliceVariables.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/Magnitude.hpp"
 #include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -54,7 +55,6 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace elliptic::dg {
 
@@ -464,6 +464,9 @@ struct InitializeFacesAndMortars : tt::ConformsTo<::amr::protocols::Projector> {
     const auto& element_id = element.id();
     for (const auto& [direction, neighbors] : element.neighbors()) {
       const auto face_mesh = mesh.slice_away(direction.dimension());
+      ASSERT(element.face_types().at(direction) !=
+                 domain::FaceType::MultipleNonconforming,
+             "This code needs updating to handle nonconforming blocks.\n");
       for (const auto& neighbor_id : neighbors) {
         const auto& orientation = neighbors.orientation(neighbor_id);
         const ::dg::MortarId<Dim> mortar_id{direction, neighbor_id};

@@ -50,13 +50,14 @@ EventsAndTriggersAtSteps:
 
 Cce:
   Evolution:
+    LocalTimeStepping: Conservative
     TimeStepper:
       AdamsBashforth:
         Order: 3
     VariableOrderAlgorithm:
       GoalOrder: 3
     MinimumTimeStep: 1e-7
-    StepChoosers:
+    LtsStepChoosers:
       - Constant: 0.4
       - LimitIncrease:
           Factor: 2
@@ -68,6 +69,14 @@ Cce:
   StartTime: 0.0
   EndTime: 5.0
   ExtractionRadius: 40.0
+
+  # The first-hypersurface initialization for J may be specified here just as
+  # in a standard CCE run, or set to 'FromAnalyticSolution' to use the
+  # initialization provided by the analytic solution.
+  InitializeJ: FromAnalyticSolution
+
+  # Used only by initial-data generators that require Du(Dr(J)).
+  DuDrJStencilStep: 0.05
 
   AnalyticSolution:
     LinearizedBondiSachs:

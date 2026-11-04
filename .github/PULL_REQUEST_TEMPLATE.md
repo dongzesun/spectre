@@ -8,8 +8,9 @@ At a high level, describe what this PR does.
 
 <!--
 If this PR makes changes that other people should be aware of when upgrading
-their code, describe what they should do between the two UPGRADE INSTRUCTIONS
-lines below.
+their code, such as adding new input file options, describe what users should
+do between the two UPGRADE INSTRUCTIONS lines below.  PRs that do not require
+any action should leave this blank.
 -->
 <!-- UPGRADE INSTRUCTIONS -->
 
@@ -24,6 +25,11 @@ lines below.
   [code review guide](https://spectre-code.org/code_review_guide.html).
 - [ ] The PR lists upgrade instructions and is labeled `bugfix` or
   `new feature` if appropriate.
+- [ ] If a coding agent was used, have a co-author trailer of the form
+      "Co-Authored-By: <agent name> <agent email>" as the last line of the
+      commit, e.g. "Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+      "Co-Authored-by: Codex <noreply@openai.com>", or
+      "Co-Authored-By: GitHub Copilot CLI <noreply@microsoft.com>".
 
 ### Further comments
 

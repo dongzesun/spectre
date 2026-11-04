@@ -20,11 +20,16 @@ ResourceInfo:
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.002
+  InitialTimeStep: &initial_time_step 0.002
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper:
     AdamsBashforth:
       Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 Amr:
   Criteria:
@@ -34,7 +39,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: Auto
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Quiet
@@ -98,17 +105,19 @@ EvolutionSystem:
         Width: 1.0
         Center: [0.0]
 
-Filtering:
-  ExpFilter0:
-    Alpha: 36.0
-    HalfPower: 64
-    Enable: false
-    BlocksToFilter: All
-
 SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: Gauss
+    Filtering:
+      - Hypercube:
+          HalfPower: 64
+          Enable: false
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
   BoundaryCorrection:
     AveragedUpwindPenalty:
 
@@ -133,6 +142,8 @@ EventsAndTriggersAtSlabs:
             - Name: Error(Phi)
               NormType: L2Norm
               Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   - Trigger:
       Slabs:
         EvenlySpaced:
@@ -158,6 +169,8 @@ EventsAndTriggersAtSlabs:
           Values: [5]
     Events:
       - Completion
+
+EventsAndTriggersAtSteps:
 
 EventsAndDenseTriggers:
 

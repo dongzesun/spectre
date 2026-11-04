@@ -10,12 +10,14 @@
 #include <unordered_set>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
@@ -30,6 +32,7 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/Tags/NeighborMesh.hpp"
 #include "Evolution/DgSubcell/Actions/ReconstructionCommunication.hpp"
@@ -57,23 +60,24 @@
 #include "Evolution/DiscontinuousGalerkin/BoundaryData.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarDataHolder.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarInfo.hpp"
-#include "Evolution/DiscontinuousGalerkin/TimeSteppingPolicy.hpp"
+#include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Parallel/Phase.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Slab.hpp"
 #include "Time/Tags/HistoryEvolvedVariables.hpp"
 #include "Time/Tags/TimeStepId.hpp"
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Numeric.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 class DummyReconstructor {
@@ -132,7 +136,8 @@ struct component {
                      ::domain::Tags::ElementMap<Dim, Frame::Grid>>,
           tmpl::list<>>,
       evolution::dg::subcell::Tags::ExtensionDirections<Dim>,
-      evolution::dg::subcell::Tags::SubcellOptions<Dim>>>;
+      evolution::dg::subcell::Tags::SubcellOptions<Dim>,
+      evolution::dg::Tags::OnlyDgBlockIds<Dim>>>;
 
   using phase_dependent_action_list = tmpl::list<Parallel::PhaseActions<
       Parallel::Phase::Initialization,
@@ -174,6 +179,10 @@ struct Metavariables {
         const db::DataBox<DbTagsList>& box) {
       return db::get<Tags::Reconstructor>(box).ghost_zone_size();
     }
+
+    struct GhostVariables {
+      using ghost_variables_tag_list = tmpl::list<Var1>;
+    };
   };
 
   struct GhostDataMutator {
@@ -281,7 +290,8 @@ void test(const bool use_cell_centered_flux) {
     neighbors[Direction<Dim>::lower_eta()] =
         Neighbors<Dim>{{south_id}, orientation};
   }
-  const Element<Dim> element{self_id, neighbors};
+  const Element<Dim> element{self_id, neighbors,
+                             domain::topologies::hypercube<Dim>};
 
   using NeighborDataMap =
       DirectionalIdMap<Dim, evolution::dg::subcell::GhostData>;
@@ -322,16 +332,16 @@ void test(const bool use_cell_centered_flux) {
   MortarData mortar_data{};
   MortarMesh mortar_mesh{};
   MortarNextId mortar_next_id{};
-  mortar_info[east_neighbor_id] = evolution::dg::MortarInfo<Dim>{
-      {.time_stepping_policy = evolution::dg::TimeSteppingPolicy::EqualRate}};
+  mortar_info[east_neighbor_id] =
+      evolution::dg::MortarInfo<Dim>{{.time_stepping_policy = LtsMode::Off}};
   mortar_data[east_neighbor_id] = {};
   mortar_mesh[east_neighbor_id] = {dg_mesh.slice_away(0)};
   mortar_next_id[east_neighbor_id] = {};
   if constexpr (Dim > 1) {
     const DirectionalId<Dim> south_neighbor_id{Direction<Dim>::lower_eta(),
                                                south_id};
-    mortar_info[south_neighbor_id] = evolution::dg::MortarInfo<Dim>{
-        {.time_stepping_policy = evolution::dg::TimeSteppingPolicy::EqualRate}};
+    mortar_info[south_neighbor_id] =
+        evolution::dg::MortarInfo<Dim>{{.time_stepping_policy = LtsMode::Off}};
     mortar_data[south_neighbor_id] = {};
     mortar_mesh[south_neighbor_id] = {dg_mesh.slice_away(1)};
     mortar_next_id[south_neighbor_id] = {};
@@ -375,7 +385,8 @@ void test(const bool use_cell_centered_flux) {
            Interps{},
            Interps{},
            ExtensionDirs{},
-           SubcellOptions{}});
+           SubcellOptions{},
+           std::vector<size_t>{}});
       ++neighbor_tci_decision;
     }
   }
@@ -385,7 +396,7 @@ void test(const bool use_cell_centered_flux) {
   SubcellOptions subcell_options(
       4.0, 1, 2.0e-3, 2.0e-4, false, false,
       evolution::dg::subcell::fd::ReconstructionMethod::DimByDim, false,
-      std::nullopt, ::fd::DerivativeOrder::Two, 1, 1, 1);
+      ::fd::DerivativeOrder::Two, 1, 1, 1);
   const int self_tci_decision = 100;
   ActionTesting::emplace_array_component_and_initialize<comp>(
       &runner, ActionTesting::NodeId{0}, ActionTesting::LocalCoreId{0}, self_id,
@@ -399,7 +410,8 @@ void test(const bool use_cell_centered_flux) {
        typename domain::Tags::NeighborMesh<Dim>::type{},
        typename evolution::dg::subcell::Tags::MeshForGhostData<Dim>::type{},
        cell_centered_flux, fd_to_neighbor_fd_interpolants,
-       neighbor_dg_to_fd_interpolants, extension_directions, subcell_options});
+       neighbor_dg_to_fd_interpolants, extension_directions, subcell_options,
+       std::vector<size_t>{}});
 
   using ghost_data_tag =
       evolution::dg::subcell::Tags::GhostDataForReconstruction<Dim>;
@@ -481,14 +493,15 @@ void test(const bool use_cell_centered_flux) {
             comp, evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
                       Dim, UseNodegroupDgElements>>(runner, east_id)
             .messages;
-    CHECK_ITERABLE_APPROX(
-        expected_east_data,
-        east_data.at(time_step_id)
-            .at(DirectionalId<Dim>{Direction<Dim>::lower_xi(), self_id})
-            .ghost_cell_data.value());
-    CHECK(east_data.at(time_step_id)
-              .at(DirectionalId<Dim>{Direction<Dim>::lower_xi(), self_id})
-              .tci_status == self_tci_decision);
+    const auto east_message =
+        alg::find_if(east_data.at(time_step_id), [&](const auto& entry) {
+          return entry.first ==
+                 DirectionalId<Dim>{Direction<Dim>::lower_xi(), self_id};
+        });
+    REQUIRE(east_message != east_data.at(time_step_id).end());
+    CHECK_ITERABLE_APPROX(expected_east_data,
+                          east_message->second.ghost_cell_data.value());
+    CHECK(east_message->second.tci_status == self_tci_decision);
   }
   if constexpr (Dim > 1) {
     const auto direction = Direction<Dim>::lower_eta();
@@ -534,15 +547,14 @@ void test(const bool use_cell_centered_flux) {
             comp, evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
                       Dim, UseNodegroupDgElements>>(runner, south_id)
             .messages;
-    CHECK(
-        expected_south_data ==
-        south_data.at(time_step_id)
-            .at(DirectionalId<Dim>{orientation(direction.opposite()), self_id})
-            .ghost_cell_data.value());
-    CHECK(
-        south_data.at(time_step_id)
-            .at(DirectionalId<Dim>{orientation(direction.opposite()), self_id})
-            .tci_status == self_tci_decision);
+    const auto south_message =
+        alg::find_if(south_data.at(time_step_id), [&](const auto& entry) {
+          return entry.first ==
+                 DirectionalId<Dim>{orientation(direction.opposite()), self_id};
+        });
+    REQUIRE(south_message != south_data.at(time_step_id).end());
+    CHECK(expected_south_data == south_message->second.ghost_cell_data.value());
+    CHECK(south_message->second.tci_status == self_tci_decision);
   }
 
   // Set the inbox data on self_id and then check that it gets processed
@@ -692,7 +704,8 @@ Element<Dim> create_element(const std::vector<Block<Dim>>& blocks,
             : blocks[self_block_id].neighbors().at(direction).orientation(
                   neighbor_id.block_id())};
   }
-  return Element<Dim>{self_id, std::move(neighbors)};
+  return Element<Dim>{self_id, std::move(neighbors),
+                      domain::topologies::hypercube<Dim>};
 }
 
 void add_rdmp_data_to_datavector(
@@ -744,12 +757,16 @@ DataVector compute_expected_ghost_data(
     const auto& extender_id =
         element.neighbors().at(extender_direction).ids().begin();
     const auto& data_from_extender =
-        ActionTesting::get_inbox_tag<
-            comp, evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
-                      Dim, UseNodegroupDgElements>>(runner, element_id)
-            .messages.at(time_step_id)
-            .at(DirectionalId<Dim>{extender_direction, *extender_id})
-            .ghost_cell_data.value();
+        alg::find_if(
+            ActionTesting::get_inbox_tag<
+                comp, evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
+                          Dim, UseNodegroupDgElements>>(runner, element_id)
+                .messages.at(time_step_id),
+            [&](const auto& entry) {
+              return entry.first ==
+                     DirectionalId<Dim>{extender_direction, *extender_id};
+            })
+            ->second.ghost_cell_data.value();
 
     const DataVector relevant_ghost_data;
     const size_t ghost_data_size = data_from_extender.size() - rdmp_size;
@@ -932,7 +949,7 @@ void test_receive_and_send_data(const bool enable_extension,
   const SubcellOptions subcell_options(
       4.0, 1, 2.0e-3, 2.0e-4, enable_extension, enable_extension,
       evolution::dg::subcell::fd::ReconstructionMethod::DimByDim, false,
-      std::nullopt, ::fd::DerivativeOrder::Two, 1, 1, 1);
+      ::fd::DerivativeOrder::Two, 1, 1, 1);
   const ::Mesh<3> dg_mesh{6, Spectral::Basis::Legendre,
                           Spectral::Quadrature::GaussLobatto};
   const ::Mesh<3> subcell_mesh = evolution::dg::subcell::fd::mesh(dg_mesh);
@@ -992,8 +1009,7 @@ void test_receive_and_send_data(const bool enable_extension,
         neighbor_decision.insert(std::pair{mortar_id, 100});
 
         mortar_info[mortar_id] = evolution::dg::MortarInfo<Dim>{
-            {.time_stepping_policy =
-                 evolution::dg::TimeSteppingPolicy::EqualRate}};
+            {.time_stepping_policy = LtsMode::Off}};
         mortar_data[mortar_id] = {};
         mortar_mesh[mortar_id] = dg_mesh.slice_away(direction.dimension());
         mortar_next_id[mortar_id] = {};
@@ -1018,7 +1034,7 @@ void test_receive_and_send_data(const bool enable_extension,
          cell_centered_flux, fd_to_neighbor_fd_interpolants,
          neighbor_dg_to_fd_interpolants, dg_to_neighbor_fd_interpolants,
          ElementMap<3, Frame::Grid>{element_id, blocks[element_id.block_id()]},
-         extension_directions, subcell_options});
+         extension_directions, subcell_options, std::vector<size_t>{}});
   }
 
   // SetInterpolator
@@ -1095,12 +1111,14 @@ void test_receive_and_send_data(const bool enable_extension,
           orientation(direction.opposite());
       const auto& neighbor_element = *(id_to_element.at(*neighbor_id));
       const auto& ghost_data =
-          ActionTesting::get_inbox_tag<
-              comp, evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
-                        Dim, UseNodegroupDgElements>>(runner, element_id)
-              .messages.at(time_step_id)
-              .at(directional_id)
-              .ghost_cell_data.value();
+          alg::find_if(
+              ActionTesting::get_inbox_tag<
+                  comp,
+                  evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
+                      Dim, UseNodegroupDgElements>>(runner, element_id)
+                  .messages.at(time_step_id),
+              [&](const auto& entry) { return entry.first == directional_id; })
+              ->second.ghost_cell_data.value();
       const DataVector expected_ghost_data =
           compute_expected_ghost_data<Dim, UseNodegroupDgElements>(
               runner, neighbor_element, direction_from_neighbor, subcell_mesh,

@@ -8,14 +8,16 @@ add_spectre_library(${LIBRARY})
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
-  StrahlkorperCoefsInRingdownDistortedFrame.cpp
+  StrahlkorperCoefsAndCenters.cpp
+  MinimumAhCExcisionRadius.cpp
   )
 
 spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
-  StrahlkorperCoefsInRingdownDistortedFrame.hpp
+  StrahlkorperCoefsAndCenters.hpp
+  MinimumAhCExcisionRadius.hpp
   )
 
 target_link_libraries(
@@ -28,7 +30,8 @@ target_link_libraries(
   H5
   Spectral
   SphericalHarmonics
-  SphericalHarmonicsIO
+  Strahlkorper
+  StrahlkorperIO
   Utilities
   )
 

@@ -22,7 +22,11 @@
 #include "Evolution/DiscontinuousGalerkin/Actions/ComputeTimeDerivative.hpp"
 #include "Evolution/DiscontinuousGalerkin/CleanMortarHistory.hpp"
 #include "Evolution/DiscontinuousGalerkin/DgElementArray.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/FixedLtsRatio.hpp"
+#include "Evolution/DiscontinuousGalerkin/EqualRateLts/NonconformingEqualRateRegions.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/Mortars.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SetupEqualRateRegions.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SpectralFilters.hpp"
 #include "Evolution/Initialization/DgDomain.hpp"
 #include "Evolution/Initialization/Evolution.hpp"
 #include "Evolution/Initialization/NonconservativeSystem.hpp"
@@ -49,7 +53,6 @@
 #include "Evolution/Systems/ScalarTensor/Initialize.hpp"
 #include "Evolution/Systems/ScalarTensor/System.hpp"
 #include "Evolution/Systems/ScalarTensor/Tags.hpp"
-#include "Evolution/Tags/Filter.hpp"
 #include "Evolution/TypeTraits.hpp"
 #include "IO/Importers/Actions/RegisterWithElementDataReader.hpp"
 #include "IO/Importers/ElementDataReader.hpp"
@@ -59,7 +62,8 @@
 #include "IO/Observer/ObserverComponent.hpp"
 #include "IO/Observer/Tags.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags.hpp"
-#include "NumericalAlgorithms/LinearOperators/ExponentialFilter.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Factory.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Tag.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
 #include "Parallel/Algorithms/AlgorithmSingleton.hpp"
@@ -73,15 +77,14 @@
 #include "Parallel/Reduction.hpp"
 #include "ParallelAlgorithms/Actions/AddComputeTags.hpp"
 #include "ParallelAlgorithms/Actions/AddSimpleTags.hpp"
-#include "ParallelAlgorithms/Actions/FilterAction.hpp"
 #include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/Actions/InitializeItems.hpp"
 #include "ParallelAlgorithms/Actions/MemoryMonitor/ContributeMemoryData.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
 #include "ParallelAlgorithms/Actions/RandomizeVariables.hpp"
+#include "ParallelAlgorithms/Actions/SpectralFilter.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/Callbacks/FindApparentHorizon.hpp"
-#include "ParallelAlgorithms/ApparentHorizonFinder/InterpolationTarget.hpp"
+#include "ParallelAlgorithms/Events/ChangeFixedLtsRatio.hpp"
 #include "ParallelAlgorithms/Events/Completion.hpp"
 #include "ParallelAlgorithms/Events/Factory.hpp"
 #include "ParallelAlgorithms/Events/MonitorMemory.hpp"
@@ -94,17 +97,9 @@
 #include "ParallelAlgorithms/EventsAndTriggers/EventsAndTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/LogicalTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Trigger.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/CleanUpInterpolator.hpp"
 #include "ParallelAlgorithms/Interpolation/Actions/InitializeInterpolationTarget.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolationTargetReceiveVars.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorReceivePoints.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorReceiveVolumeData.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorRegisterElement.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/TryToInterpolate.hpp"
 #include "ParallelAlgorithms/Interpolation/Callbacks/ObserveTimeSeriesOnSurface.hpp"
-#include "ParallelAlgorithms/Interpolation/Events/Interpolate.hpp"
 #include "ParallelAlgorithms/Interpolation/InterpolationTarget.hpp"
-#include "ParallelAlgorithms/Interpolation/Interpolator.hpp"
 #include "ParallelAlgorithms/Interpolation/Tags.hpp"
 #include "PointwiseFunctions/AnalyticData/GhScalarTensor/Factory.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/Factory.hpp"
@@ -116,6 +111,7 @@
 #include "PointwiseFunctions/GeneralRelativity/DetAndInverseSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintDampingTags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintGammas.hpp"
+#include "PointwiseFunctions/GeneralRelativity/Psi4Imag.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Psi4Real.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Ricci.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Surfaces/Tags.hpp"
@@ -123,12 +119,13 @@
 #include "PointwiseFunctions/GeneralRelativity/WeylElectric.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/InitialData.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/Tags/InitialData.hpp"
+#include "PointwiseFunctions/MathFunctions/MathFunction.hpp"
 #include "PointwiseFunctions/ScalarTensor/ConstraintDampingTags.hpp"
 #include "PointwiseFunctions/ScalarTensor/ConstraintGammas.hpp"
 #include "PointwiseFunctions/ScalarTensor/ScalarCharge.hpp"
 #include "PointwiseFunctions/ScalarTensor/ScalarGaussBonnet/Tags.hpp"
-#include "PointwiseFunctions/ScalarTensor/SourceTags.hpp"
 #include "PointwiseFunctions/ScalarTensor/ScalarSource.hpp"
+#include "PointwiseFunctions/ScalarTensor/SourceTags.hpp"
 #include "PointwiseFunctions/ScalarTensor/StressEnergy.hpp"
 #include "Time/Actions/SelfStartActions.hpp"
 #include "Time/ChangeTimeStepperOrder.hpp"
@@ -139,7 +136,6 @@
 #include "Time/Tags/Time.hpp"
 #include "Time/TimeSequence.hpp"
 #include "Time/TimeSteppers/Factory.hpp"
-#include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Time/Triggers/TimeTriggers.hpp"
 #include "Time/UpdateU.hpp"
@@ -287,7 +283,8 @@ struct ObserverTags {
           gr::Tags::WeylElectric<DataVector, volume_dim, Frame::Inertial>,
           gr::Tags::WeylElectricScalar<DataVector>,
           gr::Tags::WeylMagneticScalar<DataVector>,
-          gr::Tags::Psi4RealCompute<Frame::Inertial>>>;
+          gr::Tags::Psi4RealCompute<Frame::Inertial>,
+          gr::Tags::Psi4ImagCompute<Frame::Inertial>>>;
   using non_tensor_compute_tags = tmpl::list<
       ::Events::Tags::ObserverMeshCompute<volume_dim>,
       ::Events::Tags::ObserverCoordinatesCompute<volume_dim, Frame::Inertial>,
@@ -344,7 +341,6 @@ struct ObserverTags {
                                           ::Frame::Inertial>>;
 };
 
-template <bool LocalTimeStepping>
 struct FactoryCreation : tt::ConformsTo<Options::protocols::FactoryCreation> {
   static constexpr size_t volume_dim = 3_st;
 
@@ -359,7 +355,8 @@ struct FactoryCreation : tt::ConformsTo<Options::protocols::FactoryCreation> {
                      Events::Completion, Events::MonitorMemory<volume_dim>,
                      typename detail::ObserverTags::field_observations,
                      Events::time_events<system>,
-                     dg::Events::ObserveTimeStepVolume<system>>>>,
+                     dg::Events::ObserveTimeStepVolume<system>,
+                     dg::Events::ChangeFixedLtsRatio<volume_dim>>>>,
       tmpl::pair<
           evolution::BoundaryCorrection,
           ScalarTensor::BoundaryCorrections::standard_boundary_corrections>,
@@ -367,23 +364,28 @@ struct FactoryCreation : tt::ConformsTo<Options::protocols::FactoryCreation> {
           ScalarTensor::BoundaryConditions::BoundaryCondition,
           ScalarTensor::BoundaryConditions::standard_boundary_conditions>,
       tmpl::pair<gh::gauges::GaugeCondition, gh::gauges::all_gauges>,
+      tmpl::pair<MathFunction<1, Frame::Inertial>, tmpl::list<>>,
       tmpl::pair<
           evolution::initial_data::InitialData,
           tmpl::push_back<initial_data_list, ScalarTensor::NumericInitialData>>,
-      tmpl::pair<LtsTimeStepper, TimeSteppers::lts_time_steppers>,
       tmpl::pair<PhaseChange, PhaseControl::factory_creatable_classes>,
       tmpl::pair<StepChooser<StepChooserUse::LtsStep>,
                  StepChoosers::standard_step_choosers<system>>,
-      tmpl::pair<
-          StepChooser<StepChooserUse::Slab>,
-          StepChoosers::standard_slab_choosers<system, LocalTimeStepping>>,
+      tmpl::pair<StepChooser<StepChooserUse::Slab>,
+                 tmpl::push_back<
+                     StepChoosers::standard_slab_choosers<system>,
+                     evolution::dg::StepChoosers::FixedLtsRatio<volume_dim>>>,
       tmpl::pair<TimeSequence<double>,
                  TimeSequences::all_time_sequences<double>>,
       tmpl::pair<TimeSequence<std::uint64_t>,
                  TimeSequences::all_time_sequences<std::uint64_t>>,
       tmpl::pair<TimeStepper, TimeSteppers::time_steppers>,
       tmpl::pair<Trigger, tmpl::append<Triggers::logical_triggers,
-                                       Triggers::time_triggers>>>;
+                                       Triggers::time_triggers>>,
+      tmpl::pair<Filters::Filter<volume_dim,
+                                 typename system::variables_tag::tags_list>,
+                 Filters::all_filters<
+                     volume_dim, typename system::variables_tag::tags_list>>>;
 };
 }  // namespace detail
 
@@ -393,16 +395,13 @@ struct ScalarTensorTemplateBase {
 
   static constexpr size_t volume_dim = 3_st;
   using system = ScalarTensor::System;
-  using TimeStepperBase = LtsTimeStepper;
 
-  static constexpr bool local_time_stepping =
-      TimeStepperBase::local_time_stepping;
   static constexpr bool use_dg_element_collection = false;
 
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& /*p*/) {}
 
-  using factory_creation = detail::FactoryCreation<local_time_stepping>;
+  using factory_creation = detail::FactoryCreation;
 
   using observed_reduction_data_tags =
       observers::collect_reduction_data_tags<tmpl::push_back<
@@ -431,61 +430,55 @@ struct ScalarTensorTemplateBase {
   using dg_registration_list =
       tmpl::list<observers::Actions::RegisterEventsWithObservers>;
 
+  using equal_rate_regions =
+      tmpl::list<evolution::dg::NonconformingEqualRateRegions<volume_dim>>;
+
   static constexpr auto default_phase_order =
       detail::make_default_phase_order();
 
   template <typename ControlSystems>
   using step_actions = tmpl::list<
       evolution::dg::Actions::ComputeTimeDerivative<
-          volume_dim, system, AllStepChoosers, local_time_stepping,
-          use_dg_element_collection>,
+          volume_dim, system, AllStepChoosers, use_dg_element_collection>,
       evolution::dg::Actions::ApplyBoundaryCorrectionsToTimeDerivative<
           volume_dim, use_dg_element_collection>,
       Actions::MutateApply<RecordTimeStepperData<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          tmpl::list<evolution::Actions::RunEventsAndDenseTriggers<tmpl::list<
-                         ::domain::CheckFunctionsOfTimeAreReadyPostprocessor<
-                             volume_dim>,
-                         evolution::dg::ApplyBoundaryCorrections<
-                             local_time_stepping, derived_metavars, volume_dim,
-                             true>>>,
-                     Actions::MutateApply<UpdateU<system, local_time_stepping>>,
-                     evolution::dg::Actions::ApplyLtsBoundaryCorrections<
-                         volume_dim, false, use_dg_element_collection>,
-                     Actions::MutateApply<ChangeTimeStepperOrder<system>>>,
-          tmpl::list<
-              evolution::Actions::RunEventsAndDenseTriggers<tmpl::list<>>,
-              control_system::Actions::LimitTimeStep<ControlSystems>,
-              Actions::MutateApply<UpdateU<system, local_time_stepping>>>>,
+      evolution::Actions::RunEventsAndDenseTriggers<tmpl::list<
+          ::domain::CheckFunctionsOfTimeAreReadyPostprocessor<volume_dim>,
+          evolution::dg::ApplyLtsDenseBoundaryCorrections<derived_metavars>>>,
+      control_system::Actions::LimitTimeStep<ControlSystems>,
+      Actions::MutateApply<UpdateU<system>>,
+      evolution::dg::Actions::ApplyLtsBoundaryCorrections<
+          volume_dim, use_dg_element_collection>,
+      Actions::MutateApply<ChangeTimeStepperOrder<system>>,
       Actions::MutateApply<CleanHistory<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
-          tmpl::list<>>,
-      // We allow for separate filtering of the system variables
-      dg::Actions::Filter<Filters::Exponential<0>,
-                          system::gh_system::variables_tag::tags_list>,
-      dg::Actions::Filter<Filters::Exponential<1>,
-                          system::scalar_system::variables_tag::tags_list>>;
+      Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
+      dg::Actions::SpectralFilter<volume_dim,
+                                  typename system::variables_tag::tags_list>>;
 
   template <bool UseControlSystems>
   using initialization_actions = tmpl::list<
       Initialization::Actions::InitializeItems<
-          Initialization::TimeStepping<derived_metavars, TimeStepperBase>,
+          Initialization::TimeStepping<derived_metavars, TimeStepper,
+                                       UseControlSystems, true>,
           evolution::dg::Initialization::Domain<derived_metavars,
-                                                UseControlSystems>,
-          Initialization::TimeStepperHistory<derived_metavars>>,
+                                                UseControlSystems>>,
       Initialization::Actions::NonconservativeSystem<system>,
+      Initialization::Actions::InitializeItems<
+          Initialization::TimeStepperHistory<system>>,
       Initialization::Actions::AddComputeTags<::Tags::DerivCompute<
           typename system::variables_tag, domain::Tags::Mesh<volume_dim>,
           domain::Tags::InverseJacobian<volume_dim, Frame::ElementLogical,
                                         Frame::Inertial>,
           typename system::gradient_variables>>,
       Initialization::Actions::AddComputeTags<
-          tmpl::push_back<StepChoosers::step_chooser_compute_tags<
-              ScalarTensorTemplateBase, local_time_stepping>>>,
+          StepChoosers::step_chooser_compute_tags<ScalarTensorTemplateBase>>,
       ::evolution::dg::Initialization::Mortars<volume_dim>,
+      evolution::dg::Initialization::Actions::SetupEqualRateRegions<
+          derived_metavars, volume_dim, equal_rate_regions>,
       evolution::Actions::InitializeRunEventsAndDenseTriggers,
+      Initialization::Actions::InitializeItems<
+          evolution::dg::Initialization::SpectralFilters<
+              volume_dim, typename system::variables_tag::tags_list>>,
       Parallel::Actions::TerminatePhase>;
 };

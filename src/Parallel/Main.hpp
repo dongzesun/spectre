@@ -16,6 +16,7 @@
 #include <tuple>
 #include <type_traits>
 
+#include "DataStructures/TaggedTuple.hpp"
 #include "Informer/InfoFromBuild.hpp"
 #include "Informer/Informer.hpp"
 #include "Options/ParseOptions.hpp"
@@ -48,9 +49,9 @@
 #include "Utilities/System/Exit.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 #include "Utilities/TypeTraits/CreateGetTypeAliasOrDefault.hpp"
 #include "Utilities/TypeTraits/CreateIsCallable.hpp"
+#include "Utilities/UtcTime.hpp"
 
 #include "Parallel/Main.decl.h"
 
@@ -91,7 +92,7 @@ class Main : public CBase_Main<Metavariables> {
   explicit Main(const Parallel::charmxx::
                     MainChareRegistrationConstructor& /*used_for_reg*/) {}
   ~Main() override {
-    (void)Parallel::charmxx::RegisterChare<
+    (void)&Parallel::charmxx::RegisterChare<
         Main<Metavariables>, CkIndex_Main<Metavariables>>::registrar;
   }
   Main(const Main&) = default;
@@ -183,22 +184,10 @@ class Main : public CBase_Main<Metavariables> {
   using singleton_component_list =
       tmpl::filter<component_list, Parallel::is_singleton<tmpl::_1>>;
 
-  template <typename ParallelComponent>
-  using parallel_component_options = Parallel::get_option_tags<
-      typename ParallelComponent::simple_tags_from_options, Metavariables>;
-  template <typename ArrayComponent>
-  using array_component_allocation_options =
-      Parallel::get_option_tags<typename ArrayComponent::array_allocation_tags,
-                                Metavariables>;
-  using option_list = tmpl::remove_duplicates<tmpl::flatten<tmpl::list<
-      Parallel::OptionTags::ResourceInfo<Metavariables>,
-      Parallel::get_option_tags<const_global_cache_tags, Metavariables>,
-      Parallel::get_option_tags<mutable_global_cache_tags, Metavariables>,
-      tmpl::transform<component_list,
-                      tmpl::bind<parallel_component_options, tmpl::_1>>,
-      tmpl::transform<
-          all_array_component_list,
-          tmpl::bind<array_component_allocation_options, tmpl::_1>>>>>;
+  using option_list = tmpl::push_front<
+      Parallel::get_option_tags<
+          Parallel::all_initialization_tags_t<Metavariables>, Metavariables>,
+      Parallel::OptionTags::ResourceInfo<Metavariables>>;
   using overlayable_option_list =
       Parallel::get_overlayable_option_list<Metavariables>;
 
@@ -248,7 +237,7 @@ class AtSyncIndicator : public CBase_AtSyncIndicator<Metavariables> {
   AtSyncIndicator(AtSyncIndicator&&) = default;
   AtSyncIndicator& operator=(AtSyncIndicator&&) = default;
   ~AtSyncIndicator() override {
-    (void)Parallel::charmxx::RegisterChare<
+    (void)&Parallel::charmxx::RegisterChare<
         AtSyncIndicator<Metavariables>,
         CkIndex_AtSyncIndicator<Metavariables>>::registrar;
   }
@@ -767,9 +756,20 @@ void Main<Metavariables>::execute_next_phase() {
       sys::abort("");
     }
 
-    const auto next_phase = PhaseControl::arbitrate_phase_change(
-        make_not_null(&phase_change_decision_data_), current_phase_,
-        *Parallel::local_branch(global_cache_proxy_));
+    std::optional<Parallel::Phase> next_phase{};
+    if (just_restored_from_checkpoint_) {
+      just_restored_from_checkpoint_ = false;
+      Parallel::printf("Restarting from checkpoint. Date and time: %s\n",
+                       utc_time());
+      next_phase.emplace(Parallel::Phase::UpdateOptionsAtRestartFromCheckpoint);
+    } else if (current_phase_ ==
+               Parallel::Phase::UpdateOptionsAtRestartFromCheckpoint) {
+      next_phase.emplace(Parallel::Phase::Restart);
+    } else {
+      next_phase = PhaseControl::arbitrate_phase_change(
+          make_not_null(&phase_change_decision_data_), current_phase_,
+          *Parallel::local_branch(global_cache_proxy_));
+    }
     if (next_phase.has_value()) {
       // Only print info if there was an actual phase change.
       if (current_phase_ != next_phase.value()) {
@@ -844,15 +844,9 @@ void Main<Metavariables>::execute_next_phase() {
 
   // We skip the reparsing and overlaying if there are no eligible tags
   if constexpr (tmpl::size<overlayable_option_list>::value > 0) {
-    // Make sure we only update the options the first time we run the phase
-    // UpdateOptionsAtRestartFromCheckpoint after restoring from checkpoint.
-    // Else, the code might try to update options each time the phase was
-    // encountered, even if there was no checkpoint/restart...
-    if (just_restored_from_checkpoint_ and
-        current_phase_ ==
-            Parallel::Phase::UpdateOptionsAtRestartFromCheckpoint) {
+    if (current_phase_ ==
+        Parallel::Phase::UpdateOptionsAtRestartFromCheckpoint) {
       update_const_global_cache_from_input_file();
-      just_restored_from_checkpoint_ = false;
     }
   }
 
@@ -893,7 +887,7 @@ void Main<Metavariables>::phase_change_reduction(
         reduction_data) {
   using tagged_tuple_type = std::decay_t<
       std::tuple_element_t<0, std::decay_t<decltype(reduction_data.data())>>>;
-  (void)Parallel::charmxx::RegisterPhaseChangeReduction<
+  (void)&Parallel::charmxx::RegisterPhaseChangeReduction<
       Metavariables, InvokeCombine, Tags...>::registrar;
   static_assert(tt::is_a_v<tuples::TaggedTuple, tagged_tuple_type>,
                 "The main chare expects a tagged tuple in the phase change "
@@ -1070,13 +1064,14 @@ void Main<Metavariables>::update_const_global_cache_from_input_file() {
   if (file_system::check_if_file_exists(input_file_for_reparse)) {
     parser_.template overlay_file<overlayable_option_list>(
         input_file_for_reparse);
-    const auto data_to_overlay =
-        parser_.template apply<overlayable_option_list,
-                               Metavariables>([](auto... args) {
-          return tuples::tagged_tuple_from_typelist<overlayable_option_list>(
+    const auto updated_options =
+        parser_.template apply<option_list, Metavariables>([](auto... args) {
+          return tuples::tagged_tuple_from_typelist<option_list>(
               std::move(args)...);
         });
-    global_cache_proxy_.overlay_cache_data(data_to_overlay);
+    auto new_global_cache_values = Parallel::create_from_options<Metavariables>(
+        updated_options, Parallel::get_overlayable_tag_list<Metavariables>{});
+    global_cache_proxy_.overlay_cache_data(std::move(new_global_cache_values));
     Parallel::printf("... success!\n");
   } else {
     Parallel::printf(

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesTag.hpp"
@@ -26,6 +27,7 @@
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/Actions/Initialize.hpp"
 #include "Evolution/DgSubcell/ActiveGrid.hpp"
@@ -48,6 +50,7 @@
 #include "Evolution/DgSubcell/Tags/TciCallsSinceRollback.hpp"
 #include "Evolution/DgSubcell/Tags/TciGridHistory.hpp"
 #include "Evolution/DgSubcell/Tags/TciStatus.hpp"
+#include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "Evolution/Initialization/SetVariables.hpp"
 #include "Evolution/Initialization/Tags.hpp"
 #include "Framework/ActionTesting.hpp"
@@ -65,7 +68,6 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace {
 struct Var1 : db::SimpleTag {
@@ -274,15 +276,14 @@ void test(const bool always_use_subcell, const bool interior_element,
       {std::unique_ptr<evolution::initial_data::InitialData>(
            std::make_unique<SystemAnalyticSolution>()),
        evolution::dg::subcell::SubcellOptions{
-           evolution::dg::subcell::SubcellOptions{
-               4.1, 1_st, 1.0e-3, 1.0e-4, always_use_subcell, false,
-               evolution::dg::subcell::fd::ReconstructionMethod::DimByDim,
-               false,
-               allow_subcell_in_block
-                   ? std::optional<std::vector<std::string>>{}
-                   : std::optional{std::vector<std::string>{"Block0"}},
-               ::fd::DerivativeOrder::Two, 1, 1, 1},
-           TestCreator<Dim>{}}}};
+           4.1, 1_st, 1.0e-3, 1.0e-4, always_use_subcell, false,
+           evolution::dg::subcell::fd::ReconstructionMethod::DimByDim, false,
+           ::fd::DerivativeOrder::Two, 1, 1, 1},
+       evolution::dg::compute_only_dg_block_ids(
+           allow_subcell_in_block
+               ? std::optional<std::vector<std::string>>{}
+               : std::optional{std::vector<std::string>{"Block0"}},
+           TestCreator<Dim>{})}};
   metavars::FdInitialDataTci::invoked = false;
   metavars::SetInitialRdmpData::invoked = false;
 
@@ -299,7 +300,8 @@ void test(const bool always_use_subcell, const bool interior_element,
       ++id_count;
     }
   }
-  const Element<Dim> element{self_id, neighbors};
+  const Element<Dim> element{self_id, neighbors,
+                             domain::topologies::hypercube<Dim>};
   const auto logical_coords = logical_coordinates(dg_mesh);
   const auto make_element_map = [](const auto& element_id) {
     return ElementMap<Dim, Frame::Grid>{
@@ -342,7 +344,8 @@ void test(const bool always_use_subcell, const bool interior_element,
           &runner, ActionTesting::NodeId{0}, ActionTesting::LocalCoreId{0},
           neighbor_id,
           {neighbor_time, dg_mesh,
-           Element<Dim>{neighbor_id, neighbor_neighbors},
+           Element<Dim>{neighbor_id, neighbor_neighbors,
+                        domain::topologies::hypercube<Dim>},
            clone_unique_ptrs(functions_of_time), logical_coords,
            make_element_map(neighbor_id), grid_to_inertial_map->get_clone(),
            Variables<tmpl::list<Var1>>{subcell_mesh.number_of_grid_points()},
@@ -649,6 +652,73 @@ void test(const bool always_use_subcell, const bool interior_element,
   CHECK_ITERABLE_APPROX(get<Var1>(vars), get<Var1>(expected_vars));
 }
 
+void test_cartoon() {
+  // Test that SetSubcellGrid does not ERROR for a 3D cartoon DG mesh even
+  // when persson_num_highest_modes >= extent for the Cartoon dimensions.
+  using metavars3 = Metavariables<3, false, true>;
+  using comp3 = Component<3, metavars3>;
+  metavars3::FdInitialDataTci::invoked = false;
+  metavars3::SetInitialRdmpData::invoked = false;
+
+  const Mesh<3> cartoon_dg_mesh{
+      {{5, 1, 1}},
+      {Spectral::Basis::Legendre, Spectral::Basis::Cartoon,
+       Spectral::Basis::Cartoon},
+      {Spectral::Quadrature::GaussLobatto,
+       Spectral::Quadrature::SphericalSymmetry,
+       Spectral::Quadrature::SphericalSymmetry}};
+  const Mesh<3> cartoon_subcell_mesh =
+      evolution::dg::subcell::fd::mesh(cartoon_dg_mesh);
+
+  // persson_num_highest_modes = 4 (passed as first arg to SubcellOptions).
+  // For Cartoon dims (extent 1): 4 >= 1 but Cartoon -> should not ERROR.
+  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)
+  ActionTesting::MockRuntimeSystem<metavars3> runner3{
+      {std::unique_ptr<evolution::initial_data::InitialData>(
+           std::make_unique<SystemAnalyticSolution>()),
+       evolution::dg::subcell::SubcellOptions{
+           4.1, 4_st, 1.0e-3, 1.0e-4, false, false,
+           evolution::dg::subcell::fd::ReconstructionMethod::DimByDim, false,
+           ::fd::DerivativeOrder::Two, 1, 1, 1},
+       evolution::dg::compute_only_dg_block_ids(
+           std::optional<std::vector<std::string>>{}, TestCreator<3>{})}};
+
+  const ElementId<3> self_id3{0};
+  const Element<3> isolated_element{
+      self_id3, {}, domain::topologies::hypercube<3>};
+  const auto logical_coords3 = logical_coordinates(cartoon_dg_mesh);
+  const auto make_element_map3 = [](const auto& element_id) {
+    return ElementMap<3, Frame::Grid>{
+        element_id,
+        domain::make_coordinate_map_base<Frame::BlockLogical, Frame::Grid>(
+            domain::CoordinateMaps::Identity<3>{})};
+  };
+  const auto grid_to_inertial_map3 =
+      domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
+          domain::CoordinateMaps::Identity<3>{});
+  const std::unordered_map<
+      std::string, std::unique_ptr<domain::FunctionsOfTime::FunctionOfTime>>
+      functions_of_time3{};
+
+  ActionTesting::emplace_array_component_and_initialize<comp3>(
+      &runner3, ActionTesting::NodeId{0}, ActionTesting::LocalCoreId{0},
+      self_id3,
+      {1.3, cartoon_dg_mesh, isolated_element,
+       clone_unique_ptrs(functions_of_time3), logical_coords3,
+       make_element_map3(self_id3), grid_to_inertial_map3->get_clone(),
+       Variables<tmpl::list<Var1>>{
+           cartoon_subcell_mesh.number_of_grid_points()},
+       Variables<tmpl::list<::Tags::dt<Var1>>>{
+           cartoon_subcell_mesh.number_of_grid_points()},
+       typename ::Tags::HistoryEvolvedVariables<
+           Tags::Variables<tmpl::list<Var1>>>::type{}});
+
+  ActionTesting::next_action<comp3>(make_not_null(&runner3), self_id3);
+  CHECK(ActionTesting::get_databox_tag<comp3,
+                                       evolution::dg::subcell::Tags::Mesh<3>>(
+            runner3, self_id3) == cartoon_subcell_mesh);
+}
+
 SPECTRE_TEST_CASE("Unit.Evolution.Subcell.Actions.Initialize",
                   "[Evolution][Unit]") {
   register_classes_with_charm<
@@ -680,5 +750,6 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.Actions.Initialize",
       }
     }
   }
+  test_cartoon();
 }
 }  // namespace

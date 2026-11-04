@@ -20,9 +20,9 @@
 #include "Domain/FunctionsOfTime/Tags.hpp"
 #include "Domain/StrahlkorperTransformations.hpp"
 #include "IO/Logging/Verbosity.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Strahlkorper.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/StrahlkorperFunctions.hpp"
-#include "NumericalAlgorithms/SphericalHarmonics/Tags.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Strahlkorper.hpp"
+#include "NumericalAlgorithms/Strahlkorper/StrahlkorperFunctions.hpp"
+#include "NumericalAlgorithms/Strahlkorper/Tags.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/FastFlow.hpp"
 #include "ParallelAlgorithms/ApparentHorizonFinder/HorizonAliases.hpp"
@@ -57,15 +57,16 @@ struct UpdatePreviousSurface {
  * 1. Restricts the final interpolated variables from the $L_\mathrm{mesh}$ used
  *    for the FastFlow algorithm, to the actual $L$ of the Strahlkorper.
  * 2. Adds the current Strahlkorper to the `ah::Tags::PreviousSurfaces`.
- * 3. Copies the Strahlkorper, its time derivative, and the \p dependency into
- *    the box. Also possibly computes the Inertial coordinates of the final
- *    Strahlkorper and stores them in the box if the `frame` of the
- *    \p HorizonMetavars isn't the Inertial frame.
+ * 3. Copies the Strahlkorper, its time derivative, and the dependency that
+ *    was received with the volume data for the current time (see
+ *    `ah::Storage::SingleTimeStorage::dependency`) into the box. Also possibly
+ *    computes the Inertial coordinates of the final Strahlkorper and stores
+ *    them in the box if the `frame` of the \p HorizonMetavars isn't the
+ *    Inertial frame.
  */
 template <typename HorizonMetavars, typename DbTags, typename Metavariables>
 void invoke_callbacks(const gsl::not_null<db::DataBox<DbTags>*> box,
                       Parallel::GlobalCache<Metavariables>& cache,
-                      const std::optional<std::string>& dependency,
                       const FastFlow::Status status) {
   using Fr = typename HorizonMetavars::frame;
 
@@ -146,7 +147,7 @@ void invoke_callbacks(const gsl::not_null<db::DataBox<DbTags>*> box,
         ylm::time_deriv_of_strahlkorper(time_deriv_of_horizon,
                                         previous_horizons);
 
-        *callback_dependency = dependency;
+        *callback_dependency = current_time_storage.dependency;
       },
       box);
 

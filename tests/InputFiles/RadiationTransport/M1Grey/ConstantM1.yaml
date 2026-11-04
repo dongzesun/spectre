@@ -19,13 +19,18 @@ ResourceInfo:
 
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.01
+  InitialTimeStep: &initial_time_step 0.01
+  InitialSlabSize: *initial_time_step
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
   TimeStepper:
     Rk3Kennedy:
   Imex:
     Mode: SemiImplicit
     SolveTolerance: 1.0e-5
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
 
 PhaseChangeAndTriggers:
 
@@ -56,14 +61,9 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
-
-Limiter:
-  Minmod:
-    Type: LambdaPiN
-    # The optimal value of the TVB constant is problem-dependent.
-    # This test uses 0 to favor robustness over accuracy.
-    TvbConstant: 0.0
-    DisableForDebugging: false
+    Filtering:
+      - None:
+          BlocksToFilter: All
 
 EventsAndTriggersAtCheckpoints:
 
@@ -83,12 +83,16 @@ EventsAndTriggersAtSlabs:
             - Name: Error(TildeS_ElectronNeutrinos1)
               NormType: L2Norm
               Components: Sum
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
   - Trigger:
       Slabs:
         Specified:
           Values: [10]
     Events:
       - Completion
+
+EventsAndTriggersAtSteps:
 
 EventsAndDenseTriggers:
 

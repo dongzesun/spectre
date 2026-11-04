@@ -24,6 +24,7 @@
 #include "Evolution/DiscontinuousGalerkin/DgElementArray.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/Mortars.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/QuadratureTag.hpp"
+#include "Evolution/DiscontinuousGalerkin/Initialization/SpectralFilters.hpp"
 #include "Evolution/Executables/GeneralizedHarmonic/Deadlock.hpp"
 #include "Evolution/Initialization/DgDomain.hpp"
 #include "Evolution/Initialization/Evolution.hpp"
@@ -47,13 +48,13 @@
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/Tags.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/Triggers/InsideHorizon.hpp"
 #include "Evolution/Systems/CurvedScalarWave/Worldtube/Triggers/OrbitRadius.hpp"
-#include "Evolution/Tags/Filter.hpp"
 #include "IO/Observer/Actions/RegisterEvents.hpp"
 #include "IO/Observer/Helpers.hpp"
 #include "IO/Observer/ObserverComponent.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags.hpp"
-#include "NumericalAlgorithms/LinearOperators/ExponentialFilter.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Factory.hpp"
+#include "NumericalAlgorithms/LinearOperators/Filters/Tag.hpp"
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
 #include "Parallel/Local.hpp"
@@ -66,10 +67,10 @@
 #include "Parallel/Reduction.hpp"
 #include "ParallelAlgorithms/Actions/AddComputeTags.hpp"
 #include "ParallelAlgorithms/Actions/AddSimpleTags.hpp"
-#include "ParallelAlgorithms/Actions/FilterAction.hpp"
 #include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/Actions/InitializeItems.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
+#include "ParallelAlgorithms/Actions/SpectralFilter.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
 #include "ParallelAlgorithms/Events/Completion.hpp"
 #include "ParallelAlgorithms/Events/Factory.hpp"
@@ -82,7 +83,6 @@
 #include "ParallelAlgorithms/EventsAndTriggers/Trigger.hpp"
 #include "ParallelAlgorithms/Interpolation/Actions/ElementInitInterpPoints.hpp"
 #include "ParallelAlgorithms/Interpolation/Actions/InitializeInterpolationTarget.hpp"
-#include "ParallelAlgorithms/Interpolation/Actions/InterpolatorRegisterElement.hpp"
 #include "ParallelAlgorithms/Interpolation/Callbacks/ObserveLineSegment.hpp"
 #include "ParallelAlgorithms/Interpolation/Callbacks/ObserveSurfaceData.hpp"
 #include "ParallelAlgorithms/Interpolation/Callbacks/ObserveTimeSeriesOnSurface.hpp"
@@ -113,13 +113,11 @@
 #include "Time/ChangeSlabSize/Action.hpp"
 #include "Time/CleanHistory.hpp"
 #include "Time/RecordTimeStepperData.hpp"
-#include "Time/StepChoosers/ByBlock.hpp"
 #include "Time/StepChoosers/Factory.hpp"
 #include "Time/StepChoosers/StepChooser.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStepId.hpp"
 #include "Time/TimeSteppers/Factory.hpp"
-#include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Time/Triggers/TimeTriggers.hpp"
 #include "Time/UpdateU.hpp"
@@ -152,11 +150,7 @@ struct EvolutionMetavars {
   using solutions_and_data = tmpl::list<InitialData>;
   using system = CurvedScalarWave::System<volume_dim>;
   using temporal_id = Tags::TimeStepId;
-  // LTS not implemented yet
-  using TimeStepperBase = TimeStepper;
 
-  static constexpr bool local_time_stepping =
-      TimeStepperBase::local_time_stepping;
   static constexpr bool use_dg_element_collection = false;
 
   using deriv_compute = ::Tags::DerivCompute<
@@ -211,7 +205,7 @@ struct EvolutionMetavars {
                 CurvedScalarWave::BoundaryConditions::Worldtube<volume_dim>>>>,
         tmpl::pair<DenseTrigger, DenseTriggers::standard_dense_triggers>,
         tmpl::pair<DomainCreator<volume_dim>,
-                   tmpl::list<domain::creators::BinaryCompactObject<true>>>,
+                   tmpl::list<domain::creators::BinaryCompactObject>>,
         tmpl::pair<
             Event,
             tmpl::flatten<tmpl::list<
@@ -230,10 +224,10 @@ struct EvolutionMetavars {
                    tmpl::list<PhaseControl::VisitAndReturn<
                                   Parallel::Phase::LoadBalancing>,
                               PhaseControl::CheckpointAndExitAfterWallclock>>,
+        tmpl::pair<StepChooser<StepChooserUse::LtsStep>,
+                   StepChoosers::standard_step_choosers<system>>,
         tmpl::pair<StepChooser<StepChooserUse::Slab>,
-                   tmpl::push_back<StepChoosers::standard_slab_choosers<
-                                       system, local_time_stepping>,
-                                   StepChoosers::ByBlock<volume_dim>>>,
+                   StepChoosers::standard_slab_choosers<system>>,
         tmpl::pair<TimeSequence<double>,
                    TimeSequences::all_time_sequences<double>>,
         tmpl::pair<TimeSequence<std::uint64_t>,
@@ -242,11 +236,14 @@ struct EvolutionMetavars {
         tmpl::pair<Trigger,
                    tmpl::flatten<tmpl::list<
                        Triggers::logical_triggers, Triggers::time_triggers,
-                       Triggers::OrbitRadius, Triggers::InsideHorizon>>>>;
+                       Triggers::OrbitRadius, Triggers::InsideHorizon>>>,
+        tmpl::pair<Filters::Filter<volume_dim,
+                                   typename system::variables_tag::tags_list>,
+                   Filters::all_filters<
+                       volume_dim, typename system::variables_tag::tags_list>>>;
   };
   using observed_reduction_data_tags = observers::collect_reduction_data_tags<
       tmpl::at<typename factory_creation::factory_classes, Event>>;
-  static constexpr bool use_filtering = true;
 
   using step_actions = tmpl::flatten<tmpl::list<
       CurvedScalarWave::Actions::CalculateGrVars<system, true>,
@@ -254,31 +251,22 @@ struct EvolutionMetavars {
       CurvedScalarWave::Worldtube::Actions::IteratePunctureField,
       CurvedScalarWave::Worldtube::Actions::ReceiveWorldtubeData,
       evolution::dg::Actions::ComputeTimeDerivative<
-          volume_dim, system, AllStepChoosers, local_time_stepping,
-          use_dg_element_collection>,
+          volume_dim, system, AllStepChoosers, use_dg_element_collection>,
       evolution::dg::Actions::ApplyBoundaryCorrectionsToTimeDerivative<
           volume_dim, use_dg_element_collection>,
       Actions::MutateApply<RecordTimeStepperData<system>>,
       evolution::Actions::RunEventsAndDenseTriggers<tmpl::list<>>,
-      Actions::MutateApply<UpdateU<system, local_time_stepping>>,
+      Actions::MutateApply<UpdateU<system>>,
       Actions::MutateApply<CleanHistory<system>>,
-      tmpl::conditional_t<
-          local_time_stepping,
-          Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
-          tmpl::list<>>,
-      tmpl::conditional_t<
-          use_filtering,
-          dg::Actions::Filter<
-              Filters::Exponential<0>,
-              tmpl::list<CurvedScalarWave::Tags::Psi,
-                         CurvedScalarWave::Tags::Pi,
-                         CurvedScalarWave::Tags::Phi<volume_dim>>>,
-          tmpl::list<>>>>;
+      Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
+      dg::Actions::SpectralFilter<volume_dim,
+                                  typename system::variables_tag::tags_list>>>;
 
   using const_global_cache_tags = tmpl::list<
       CurvedScalarWave::Tags::BackgroundSpacetime<BackgroundSpacetime>,
       evolution::initial_data::Tags::InitialData,
       CurvedScalarWave::Worldtube::Tags::ExcisionSphere<volume_dim>,
+      CurvedScalarWave::Worldtube::Tags::PunctureFieldConfig,
       CurvedScalarWave::Worldtube::Tags::ExpansionOrder,
       CurvedScalarWave::Worldtube::Tags::WorldtubeRadiusParameters,
       CurvedScalarWave::Worldtube::Tags::BlackHoleRadiusParameters,
@@ -295,10 +283,12 @@ struct EvolutionMetavars {
 
   using initialization_actions = tmpl::list<
       Initialization::Actions::InitializeItems<
-          Initialization::TimeStepping<EvolutionMetavars, TimeStepperBase>,
-          evolution::dg::Initialization::Domain<EvolutionMetavars>,
-          Initialization::TimeStepperHistory<EvolutionMetavars>>,
+          Initialization::TimeStepping<EvolutionMetavars, TimeStepper, false,
+                                       false>,
+          evolution::dg::Initialization::Domain<EvolutionMetavars>>,
       Initialization::Actions::NonconservativeSystem<system>,
+      Initialization::Actions::InitializeItems<
+          Initialization::TimeStepperHistory<system>>,
       CurvedScalarWave::Actions::CalculateGrVars<system, false>,
       Initialization::Actions::AddSimpleTags<
           CurvedScalarWave::Worldtube::Initialization::
@@ -306,8 +296,7 @@ struct EvolutionMetavars {
           CurvedScalarWave::Initialization::InitializeEvolvedVariables<
               volume_dim, solutions_and_data>>,
       Initialization::Actions::AddComputeTags<
-          StepChoosers::step_chooser_compute_tags<EvolutionMetavars,
-                                                  local_time_stepping>>,
+          StepChoosers::step_chooser_compute_tags<EvolutionMetavars>>,
       Initialization::Actions::AddComputeTags<tmpl::list<
           CurvedScalarWave::Worldtube::Tags::ParticlePositionVelocityCompute<
               volume_dim>,
@@ -318,13 +307,17 @@ struct EvolutionMetavars {
           CurvedScalarWave::Worldtube::Tags::FaceCoordinatesCompute<
               volume_dim, Frame::Inertial, true>,
           CurvedScalarWave::Worldtube::Tags::GeodesicAccelerationCompute<3>,
-          CurvedScalarWave::Worldtube::Tags::PunctureFieldCompute<volume_dim>,
+          CurvedScalarWave::Worldtube::Tags::GeodesicPunctureFieldCompute<
+              volume_dim>,
           CurvedScalarWave::Worldtube::Tags::FaceQuantitiesCompute,
           ::domain::Tags::GridToInertialInverseJacobian<volume_dim>>>,
       ::evolution::dg::Initialization::Mortars<volume_dim>,
       intrp::Actions::ElementInitInterpPoints<volume_dim,
                                               interpolation_target_tags>,
       evolution::Actions::InitializeRunEventsAndDenseTriggers,
+      Initialization::Actions::InitializeItems<
+          evolution::dg::Initialization::SpectralFilters<
+              volume_dim, typename system::variables_tag::tags_list>>,
       Parallel::Actions::TerminatePhase>;
 
   using dg_element_array = DgElementArray<
@@ -350,10 +343,8 @@ struct EvolutionMetavars {
               Parallel::Phase::Evolve,
               tmpl::flatten<tmpl::list<
                   domain::Actions::CheckFunctionsOfTimeAreReady<volume_dim>,
-                  std::conditional_t<local_time_stepping,
-                                     evolution::Actions::RunEventsAndTriggers<
-                                         Triggers::WhenToCheck::AtSteps>,
-                                     tmpl::list<>>,
+                  evolution::Actions::RunEventsAndTriggers<
+                      Triggers::WhenToCheck::AtSteps>,
                   evolution::Actions::RunEventsAndTriggers<
                       Triggers::WhenToCheck::AtSlabs>,
                   Actions::ChangeSlabSize, step_actions,
@@ -370,8 +361,8 @@ struct EvolutionMetavars {
       Parallel::GlobalCache<EvolutionMetavars>& cache,
       const std::vector<std::string>& deadlocked_components) {
     gh::deadlock::run_deadlock_analysis_simple_actions<
-        dg_element_array, tmpl::list<>, interpolation_target_tags, tmpl::list<>,
-        false>(cache, deadlocked_components);
+        dg_element_array, tmpl::list<>, interpolation_target_tags,
+        tmpl::list<>>(cache, deadlocked_components);
   }
 
   using component_list = tmpl::flatten<tmpl::list<

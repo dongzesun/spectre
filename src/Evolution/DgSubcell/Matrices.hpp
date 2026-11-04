@@ -14,6 +14,7 @@ template <size_t Dim>
 class Mesh;
 enum class Side : uint8_t;
 namespace Spectral {
+enum class Parity : uint8_t;
 enum class Quadrature : uint8_t;
 }  // namespace Spectral
 /// \endcond
@@ -23,9 +24,13 @@ namespace evolution::dg::subcell::fd {
  * \ingroup DgSubcellGroup
  * \brief Computes the projection matrix in 1 dimension going from a DG
  * mesh to a conservative finite difference subcell mesh.
+ *
+ * The parity parameter is required for ZernikeB1 bases, and is ignored for
+ * others.
  */
 const Matrix& projection_matrix(const Mesh<1>& dg_mesh, size_t subcell_extents,
-                                const Spectral::Quadrature& subcell_quadrature);
+                                const Spectral::Quadrature& subcell_quadrature,
+                                Spectral::Parity parity);
 
 /*!
  * \ingroup DgSubcellGroup
@@ -82,6 +87,24 @@ const Matrix& reconstruction_matrix(const Mesh<Dim>& dg_mesh,
 
 /*!
  * \ingroup DgSubcellGroup
+ * \brief Computes the 1D reconstruction matrix for a ZernikeB1 DG mesh.
+ *
+ * Uses the same constrained least-squares formula as the Legendre overload,
+ * but with the parity-aware ZernikeB1 interpolation matrix and GaussRadauUpper
+ * quadrature weights, notably only for even parity. For odd parity, the
+ * collocation points are inconsistent with the constraint equation, so we opt
+ * to directly use the pseduo-inverse. Only `DimByDim` reconstruction is
+ * supported for ZernikeB1  meshes; this overload is called per-dimension for
+ * the radial direction.
+ *
+ * The `parity` parameter must be `Even` or `Odd` (not `Uninitialized`).
+ */
+const Matrix& reconstruction_matrix(const Mesh<1>& dg_mesh,
+                                    size_t subcell_extents,
+                                    Spectral::Parity parity);
+
+/*!
+ * \ingroup DgSubcellGroup
  * \brief Computes the projection matrix in 1 dimension going from a DG
  * mesh to a conservative finite difference subcell mesh for only the ghost
  * zones.
@@ -90,9 +113,13 @@ const Matrix& reconstruction_matrix(const Mesh<Dim>& dg_mesh,
  * FD. In this case we need to project the DG volume data onto the ghost zone
  * cells.
  *
+ * The parity parameter is required for ZernikeB1 bases, and is ignored for
+ * others.
+ *
  * \note Currently assumes a max ghost zone size of `5` and a minimum ghost zone
  * size of 2.
  */
 const Matrix& projection_matrix(const Mesh<1>& dg_mesh, size_t subcell_extents,
-                                size_t ghost_zone_size, Side side);
-}  // namespace evolution::dg::subcellfd
+                                size_t ghost_zone_size, Side side,
+                                Spectral::Parity parity);
+}  // namespace evolution::dg::subcell::fd

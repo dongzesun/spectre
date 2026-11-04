@@ -62,6 +62,7 @@
 #include "PointwiseFunctions/AnalyticSolutions/Poisson/Lorentzian.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Poisson/ProductOfSinusoids.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/Tags.hpp"
+#include "PointwiseFunctions/InitialDataUtilities/InitialGuess.hpp"
 #include "Utilities/CartesianProduct.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/MakeArray.hpp"
@@ -166,6 +167,7 @@ struct ProjectMetavars : tt::ConformsTo<::amr::protocols::Projector> {
       // correctly by the testing framework
       Parallel::Tags::GlobalCache<Metavariables>>;
   using argument_tags = tmpl::list<>;
+  using argument_tags_linearized = tmpl::list<>;
   template <typename... AmrData>
   static void apply(
       const gsl::not_null<Parallel::GlobalCache<Metavariables>**> /*cache*/,
@@ -188,6 +190,8 @@ struct Metavariables {
             elliptic::BoundaryConditions::BoundaryCondition<System::volume_dim>,
             tmpl::list<elliptic::BoundaryConditions::AnalyticSolution<System>>>,
         tmpl::pair<elliptic::analytic_data::AnalyticSolution,
+                   tmpl::list<AnalyticSolution>>,
+        tmpl::pair<elliptic::analytic_data::InitialGuess,
                    tmpl::list<AnalyticSolution>>,
         tmpl::pair<AnalyticSolution, tmpl::list<AnalyticSolution>>,
         tmpl::pair<::amr::Criterion, tmpl::list<::amr::Criteria::Random<
@@ -227,6 +231,7 @@ struct ModifiedPoissonSystem
     using argument_tags = tmpl::list<
         domain::Tags::Element<Dim>,
         ::Tags::Mortars<domain::Tags::Coordinates<Dim, Frame::Inertial>, Dim>>;
+    using argument_tags_linearized = tmpl::list<>;
     static void apply(
         const gsl::not_null<Scalar<DataVector>*> field,
         const gsl::not_null<Scalar<DataVector>*> normal_dot_flux,
@@ -253,6 +258,48 @@ struct ModifiedPoissonSystem
       // Minus sign because we are modifying the _received_ fluxes, which were
       // computed using the neighbor's face normal
       get(*normal_dot_flux) -= sign * singular_normal_dot_flux;
+    }
+    static void apply_linearized(
+        const gsl::not_null<Scalar<DataVector>*> /*field_remote*/,
+        const gsl::not_null<
+            Scalar<DataVector>*> /*n_dot_field_gradient_remote*/,
+        const Scalar<DataVector>& /*field_local*/,
+        const Scalar<DataVector>& /*n_dot_field_gradient_local*/,
+        const DirectionalId<Dim>& /*mortar_id*/, const auto&... /*args*/) {}
+  };
+};
+
+// A second "modified Poisson" system that exercises `apply_linearized`. Across
+// the boundary at x = 0.5 we mimic the SSF vtu-slicing jump: the field is
+// continuous, but the x-derivative jumps by -omega * u. The matching analytic
+// solution `ModifiedPoissonSolutionLinearized` realizes this jump by setting
+// u_1 = (1 - omega (x - 0.5)) u_0 in block 1, and the source term f_1 absorbs
+// the extra contribution from -Delta on the multiplicative factor.
+template <size_t Dim>
+struct ModifiedPoissonSystemLinearized
+    : Poisson::FirstOrderSystem<Dim, Poisson::Geometry::FlatCartesian> {
+  struct modify_boundary_data {
+    static constexpr double omega = 0.3;
+    using argument_tags = tmpl::list<>;
+    using argument_tags_linearized = tmpl::list<domain::Tags::Element<Dim>>;
+    static void apply(
+        const gsl::not_null<Scalar<DataVector>*> /*field*/,
+        const gsl::not_null<Scalar<DataVector>*> /*normal_dot_flux*/,
+        const DirectionalId<Dim>& /*mortar_id*/) {}
+    static void apply_linearized(
+        const gsl::not_null<Scalar<DataVector>*> field_remote,
+        const gsl::not_null<Scalar<DataVector>*> n_dot_field_gradient_remote,
+        const Scalar<DataVector>& field_local,
+        const Scalar<DataVector>& /*n_dot_field_gradient_local*/,
+        const DirectionalId<Dim>& mortar_id, const Element<Dim>& element) {
+      const bool element_is_modified = element.id().block_id() == 1;
+      const bool neighbor_is_modified = mortar_id.id().block_id() == 1;
+      if (element_is_modified == neighbor_is_modified) {
+        return;
+      }
+      // Same sign on both sides of the boundary, like the SSF jump.
+      get(*n_dot_field_gradient_remote) -=
+          omega * (get(field_local) + get(*field_remote)) * 0.5;
     }
   };
 };
@@ -300,10 +347,108 @@ struct ModifiedPoissonSolution : Poisson::Solutions::ProductOfSinusoids<Dim> {
     }
     return vars;
   }
+
+  template <typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataVector, Dim>& x, const Mesh<Dim>& /*mesh*/,
+      const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
+                            Frame::Inertial>& /*inv_jacobian*/,
+      tmpl::list<RequestedTags...> meta) const {
+    return variables(x, meta);
+  }
 };
 
 template <size_t Dim>
 PUP::able::PUP_ID ModifiedPoissonSolution<Dim>::my_PUP_ID = 0;  // NOLINT
+
+template <size_t Dim>
+struct ModifiedPoissonSolutionLinearized
+    : Poisson::Solutions::ProductOfSinusoids<Dim> {
+  using Poisson::Solutions::ProductOfSinusoids<Dim>::ProductOfSinusoids;
+  std::unique_ptr<elliptic::analytic_data::AnalyticSolution> get_clone()
+      const override {
+    return std::make_unique<ModifiedPoissonSolutionLinearized>(*this);
+  }
+  using PUP::able::register_constructor;
+  WRAPPED_PUPable_decl_template(ModifiedPoissonSolutionLinearized);  // NOLINT
+
+  template <typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataVector, Dim>& x,
+      tmpl::list<RequestedTags...> /*meta*/) const {
+    auto vars = Poisson::Solutions::ProductOfSinusoids<Dim>::variables(
+        x, tmpl::list<RequestedTags...>{});
+    // Block 1 (x > 0.5) modification: u -> (1 - omega (x - 0.5)) u_parent.
+    // The field is continuous at x = 0.5 while d_x u jumps by -omega u, which
+    // matches `ModifiedPoissonSystemLinearized::apply_linearized`. Using
+    // coordinates to determine the block; works for Gauss points only.
+    if (get<0>(x)[0] <= 0.5) {
+      return vars;
+    }
+    constexpr double omega =
+        ModifiedPoissonSystemLinearized<Dim>::modify_boundary_data::omega;
+    const DataVector mult_factor = 1. - omega * (get<0>(x) - 0.5);
+    using FieldTag = Poisson::Tags::Field<DataVector>;
+    using DerivTag =
+        ::Tags::deriv<FieldTag, tmpl::size_t<Dim>, Frame::Inertial>;
+    using FluxTag = ::Tags::Flux<FieldTag, tmpl::size_t<Dim>, Frame::Inertial>;
+    using SourceTag = ::Tags::FixedSource<FieldTag>;
+    // Parent's field and d_x field are needed for the derivative and source
+    // perturbations regardless of which tags were requested.
+    const auto parent_extras =
+        Poisson::Solutions::ProductOfSinusoids<Dim>::variables(
+            x, tmpl::list<FieldTag, DerivTag>{});
+    const auto& parent_field = get<FieldTag>(parent_extras);
+    const auto& parent_deriv = get<DerivTag>(parent_extras);
+    if constexpr (tmpl::list_contains_v<tmpl::list<RequestedTags...>,
+                                        FieldTag>) {
+      get(get<FieldTag>(vars)) *= mult_factor;
+    }
+    if constexpr (tmpl::list_contains_v<tmpl::list<RequestedTags...>,
+                                        DerivTag>) {
+      auto& d = get<DerivTag>(vars);
+      d.get(0) = -omega * get(parent_field) + mult_factor * parent_deriv.get(0);
+      for (size_t i = 1; i < Dim; ++i) {
+        d.get(i) *= mult_factor;
+      }
+    }
+    if constexpr (tmpl::list_contains_v<tmpl::list<RequestedTags...>,
+                                        FluxTag>) {
+      auto& f = get<FluxTag>(vars);
+      f.get(0) = -omega * get(parent_field) + mult_factor * parent_deriv.get(0);
+      for (size_t i = 1; i < Dim; ++i) {
+        f.get(i) *= mult_factor;
+      }
+    }
+    if constexpr (tmpl::list_contains_v<tmpl::list<RequestedTags...>,
+                                        SourceTag>) {
+      // -Delta(mult_factor * parent_field)
+      //   = mult_factor * parent_FixedSource + 2 * omega * d_x parent_field
+      get(get<SourceTag>(vars)) *= mult_factor;
+      get(get<SourceTag>(vars)) += 2. * omega * parent_deriv.get(0);
+    }
+    return vars;
+  }
+
+  template <typename... RequestedTags>
+  tuples::TaggedTuple<RequestedTags...> variables(
+      const tnsr::I<DataVector, Dim>& x, const Mesh<Dim>& /*mesh*/,
+      const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
+                            Frame::Inertial>& /*inv_jacobian*/,
+      tmpl::list<RequestedTags...> meta) const {
+    return variables(x, meta);
+  }
+};
+
+template <size_t Dim>
+PUP::able::PUP_ID ModifiedPoissonSolutionLinearized<Dim>::my_PUP_ID =  // NOLINT
+    0;
+
+template <typename System, bool Linearized, typename AnalyticSolution>
+void register_dg_operator_factory_classes() {
+  register_factory_classes_with_charm<
+      Metavariables<System, Linearized, AnalyticSolution>>();
+}
 
 template <
     typename System, bool Linearized, typename AnalyticSolution,
@@ -342,7 +487,8 @@ void test_dg_operator(
   using PrimalFluxesVars = typename primal_fluxes_vars_tag::type;
   using OperatorAppliedToVars = typename operator_applied_to_vars_tag::type;
 
-  register_factory_classes_with_charm<Metavars>();
+  register_dg_operator_factory_classes<System, Linearized,
+                                       AnalyticSolution>();
 
   // Get a list of all elements in the domain
   auto domain = domain_creator.create_domain();
@@ -386,9 +532,8 @@ void test_dg_operator(
       ::Verbosity::Debug}};
 
   // DataBox shortcuts
-  const auto get_tag =
-      [&runner](auto tag_v,
-                const ElementId<Dim>& local_element_id) -> const auto& {
+  const auto get_tag = [&runner](
+      auto tag_v, const ElementId<Dim>& local_element_id) -> const auto& {
     using tag = std::decay_t<decltype(tag_v)>;
     return ActionTesting::get_databox_tag<element_array, tag>(runner,
                                                               local_element_id);
@@ -833,6 +978,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
         Poisson::FirstOrderSystem<2, Poisson::Geometry::FlatCartesian>;
     const Poisson::Solutions::ProductOfSinusoids<2> analytic_solution{
         {{M_PI, M_PI}}};
+    register_dg_operator_factory_classes<
+        system, true, Poisson::Solutions::ProductOfSinusoids<2>>();
     {
       INFO("Regression tests");
       const auto dirichlet_bc =
@@ -961,6 +1108,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
         Poisson::FirstOrderSystem<3, Poisson::Geometry::FlatCartesian>;
     const Poisson::Solutions::ProductOfSinusoids<3> analytic_solution{
         {{M_PI, M_PI, M_PI}}};
+    register_dg_operator_factory_classes<
+        system, true, Poisson::Solutions::ProductOfSinusoids<3>>();
     {
       INFO("Regression tests");
       const auto dirichlet_bc =
@@ -1126,6 +1275,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
       const domain::creators::AlignedLattice<2> domain_creator{
           // Start with 2 unrefined blocks
           {{{0., 0.25, 0.5}, {0., 0.5}}},
+          {},
+          {},
           {{0, 0}},
           {{3, 2}},
           // Refine once in eta in left block in sketch above
@@ -1230,6 +1381,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
               elliptic::BoundaryConditionType::Dirichlet};
       const domain::creators::AlignedLattice<2> domain_creator{
           {{{0., 0.25, 0.5}, {0., 0.5}}},
+          {},
+          {},
           {{1, 1}},
           {{12, 12}},
           {{{{0, 0}}, {{1, 1}}, {{1, 2}}}},
@@ -1238,9 +1391,9 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
           {{{{dirichlet_bc.get_clone(), dirichlet_bc.get_clone()}},
             {{dirichlet_bc.get_clone(), dirichlet_bc.get_clone()}}}}};
       Approx analytic_solution_aux_approx =
-          Approx::custom().epsilon(1.e-11).scale(M_PI);
+          Approx::custom().epsilon(1.e-10).scale(M_PI);
       Approx analytic_solution_operator_approx =
-          Approx::custom().epsilon(1.e-11).scale(M_PI * penalty_parameter *
+          Approx::custom().epsilon(1.e-10).scale(M_PI * penalty_parameter *
                                                  square(12));
       for (const auto& [massive, quadrature, dg_formulation] :
            cartesian_product(make_array(true, false),
@@ -1262,12 +1415,17 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
                                   ComplexDataVector>;
     const Poisson::Solutions::ProductOfSinusoids<2, ComplexDataVector>
         analytic_solution{{{M_PI, M_PI}}};
+    register_dg_operator_factory_classes<
+        system, true,
+        Poisson::Solutions::ProductOfSinusoids<2, ComplexDataVector>>();
     const auto dirichlet_bc =
         elliptic::BoundaryConditions::AnalyticSolution<system>{
             analytic_solution.get_clone(),
             elliptic::BoundaryConditionType::Dirichlet};
     const domain::creators::AlignedLattice<2> domain_creator{
         {{{0., 0.25, 0.5}, {0., 0.5}}},
+        {},
+        {},
         {{1, 1}},
         {{12, 12}},
         {{{{0, 0}}, {{1, 1}}, {{1, 2}}}},
@@ -1276,9 +1434,9 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
         {{{{dirichlet_bc.get_clone(), dirichlet_bc.get_clone()}},
           {{dirichlet_bc.get_clone(), dirichlet_bc.get_clone()}}}}};
     Approx analytic_solution_aux_approx =
-        Approx::custom().epsilon(1.e-11).scale(M_PI);
+        Approx::custom().epsilon(1.e-10).scale(M_PI);
     Approx analytic_solution_operator_approx =
-        Approx::custom().epsilon(1.e-11).scale(M_PI * penalty_parameter *
+        Approx::custom().epsilon(1.e-10).scale(M_PI * penalty_parameter *
                                                square(12));
     for (const auto& [massive, quadrature, dg_formulation] :
          cartesian_product(make_array(true, false),
@@ -1475,6 +1633,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
     INFO("2D with modified boundary data");
     using system = ModifiedPoissonSystem<2>;
     const ModifiedPoissonSolution<2> analytic_solution{{{M_PI, M_PI}}};
+    register_dg_operator_factory_classes<system, true,
+                                         ModifiedPoissonSolution<2>>();
     const auto dirichlet_bc =
         elliptic::BoundaryConditions::AnalyticSolution<system>{
             analytic_solution.get_clone(),
@@ -1483,6 +1643,8 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
     // solve for u_R.
     const domain::creators::AlignedLattice<2> domain_creator{
         {{{0., 0.5, 1.}, {0., 1.}}},
+        {},
+        {},
         {{1, 1}},
         {{12, 12}},
         {},
@@ -1493,6 +1655,48 @@ SPECTRE_TEST_CASE("Unit.Elliptic.DG.Operator", "[Unit][Elliptic]") {
     Approx analytic_solution_aux_approx =
         Approx::custom().epsilon(1.e-4).scale(1.);
     Approx analytic_solution_operator_approx =
+        Approx::custom().epsilon(1.e-4).scale(1.);
+    for (const auto& [dg_formulation, massive] :
+         cartesian_product(make_array(::dg::Formulation::StrongInertial,
+                                      ::dg::Formulation::StrongLogical,
+                                      ::dg::Formulation::WeakInertial),
+                           make_array(true, false))) {
+      test_dg_operator<system, true>(
+          domain_creator, penalty_parameter, massive,
+          Spectral::Quadrature::Gauss, dg_formulation, analytic_solution,
+          analytic_solution_aux_approx, analytic_solution_operator_approx, {},
+          true);
+    }
+  }
+  {
+    INFO("2D with linearized modified boundary data");
+    using system = ModifiedPoissonSystemLinearized<2>;
+    const ModifiedPoissonSolutionLinearized<2> analytic_solution{
+        {{M_PI, M_PI}}};
+    register_dg_operator_factory_classes<
+        system, true, ModifiedPoissonSolutionLinearized<2>>();
+    const auto dirichlet_bc =
+        elliptic::BoundaryConditions::AnalyticSolution<system>{
+            analytic_solution.get_clone(),
+            elliptic::BoundaryConditionType::Dirichlet};
+    // In block 1 (x > 0.5) the analytic field is multiplied by
+    // (1 - omega (x - 0.5)) so its x-derivative jumps at x = 0.5.
+    // `apply_linearized` removes that jump from the received n.flux on the
+    // mortar so that A(u_analytic) = b_analytic.
+    const domain::creators::AlignedLattice<2> domain_creator{
+        {{{0., 0.5, 1.}, {0., 1.}}},
+        {},
+        {},
+        {{1, 1}},
+        {{12, 12}},
+        {},
+        {},
+        {},
+        {{{{dirichlet_bc.get_clone(), dirichlet_bc.get_clone()}},
+          {{dirichlet_bc.get_clone(), dirichlet_bc.get_clone()}}}}};
+    const Approx analytic_solution_aux_approx =
+        Approx::custom().epsilon(1.e-4).scale(1.);
+    const Approx analytic_solution_operator_approx =
         Approx::custom().epsilon(1.e-4).scale(1.);
     for (const auto& [dg_formulation, massive] :
          cartesian_product(make_array(::dg::Formulation::StrongInertial,

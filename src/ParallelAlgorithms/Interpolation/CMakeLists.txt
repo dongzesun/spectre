@@ -9,11 +9,10 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
-  Interpolate.hpp
-  InterpolatedVars.hpp
+  ComputeExcisionBoundaryVolumeQuantities.hpp
+  ComputeExcisionBoundaryVolumeQuantities.tpp
   InterpolationTarget.hpp
   InterpolationTargetDetail.hpp
-  Interpolator.hpp
   Intrp.hpp
   IntrpOptionHolders.hpp
   PointInfoTag.hpp
@@ -43,7 +42,8 @@ target_link_libraries(
   Serialization
   Spectral
   SphericalHarmonics
-  SphericalHarmonicsIO
+  Strahlkorper
+  StrahlkorperIO
   Utilities
   INTERFACE
   Actions

@@ -10,6 +10,7 @@
 #include <type_traits>
 
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/GaugeSourceFunctions/Gauges.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
@@ -89,12 +90,16 @@ class AnalyticChristoffel final : public GaugeCondition {
       const InverseJacobian<DataVector, SpatialDim, Frame::ElementLogical,
                             Frame::Inertial>& inverse_jacobian,
       const AllSolutionsForChristoffelAnalytic /*meta*/) const {
-    ASSERT(analytic_prescription_ != nullptr,
+    // Use .get() to avoid Clang-13 bug: with -Og in C++20 mode, the compiler
+    // rewrites unique_ptr != nullptr via std::operator== but fails to emit the
+    // out-of-line instantiation, causing a linker error.
+    ASSERT(analytic_prescription_.get() != nullptr,
            "The analytic prescription cannot be nullptr.");
+    // Unwrap wrapper types (e.g. WithNoise) to reach inner analytic solution
     const auto solution_vars = call_with_dynamic_type<
         tuples::tagged_tuple_from_typelist<solution_tags<SpatialDim>>,
         AllSolutionsForChristoffelAnalytic>(
-        analytic_prescription_.get(),
+        &analytic_prescription_->unwrap(),
         [&inertial_coords, &time](const auto* const analytic_solution_or_data) {
           if constexpr (is_analytic_solution_v<std::decay_t<
                             decltype(*analytic_solution_or_data)>>) {
@@ -108,7 +113,8 @@ class AnalyticChristoffel final : public GaugeCondition {
           }
         });
     gauge_and_spacetime_derivative_impl(gauge_h, d4_gauge_h, mesh,
-                                        inverse_jacobian, solution_vars);
+                                        inverse_jacobian, inertial_coords,
+                                        solution_vars);
   }
 
   // NOLINTNEXTLINE(google-runtime-references)
@@ -125,6 +131,7 @@ class AnalyticChristoffel final : public GaugeCondition {
       const Mesh<SpatialDim>& mesh,
       const InverseJacobian<DataVector, SpatialDim, Frame::ElementLogical,
                             Frame::Inertial>& inverse_jacobian,
+      const tnsr::I<DataVector, SpatialDim, Frame::Inertial>& inertial_coords,
       const tuples::tagged_tuple_from_typelist<solution_tags<SpatialDim>>&
           solution_vars) const;
 

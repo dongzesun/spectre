@@ -10,7 +10,8 @@ Testing:
 ---
 
 Parallelization:
-  ElementDistribution: NumGridPoints
+  ElementDistribution: NumGridPointsAndGridSpacing
+  UseSubcellGridPointsForDistribution: False
 
 ResourceInfo:
   AvoidGlobalProc0: false
@@ -23,22 +24,38 @@ InitialData: &InitialData
 
 Evolution:
   InitialTime: 0.0
+  InitialSlabSize: 0.01
   InitialTimeStep: 0.001
   MinimumTimeStep: 1e-7
+  LocalTimeStepping: Conservative
   TimeStepper:
     AdamsBashforth:
       Order: 3
+  VariableOrderAlgorithm:
+    GoalOrder: 3
+  LtsStepChoosers:
+    - Cfl:
+        SafetyFactor: 0.5
+    - LimitIncrease:
+        Factor: 2.0
 
 PhaseChangeAndTriggers:
 
 DomainCreator:
-  Interval:
-    LowerBound: [-1.0]
-    UpperBound: [1.0]
-    Distribution: [Linear]
-    InitialRefinement: [2]
+  AlignedLattice:
+    # These bounds are chosen so the large DG-only element on the left
+    # takes bigger steps than the subcell-allowed elements in the
+    # middle, and the small DG-only element on the right takes smaller
+    # steps.  (The speeds are larger on the left, so the element size
+    # differences have to be exagerated more than expected.)
+    BlockBounds: [[-1.0, 0.3, 0.5, 0.7, 0.9, 1.0]]
+    Distributions: [[]]
+    SingularityPositions: [[]]
+    InitialLevels: [0]
     InitialGridPoints: [7]
-    TimeDependence: None
+    RefinedLevels:
+    RefinedGridPoints:
+    BlocksToExclude:
     BoundaryConditions:
       - DirichletAnalytic:
           AnalyticPrescription: *InitialData
@@ -49,6 +66,10 @@ SpatialDiscretization:
   DiscontinuousGalerkin:
     Formulation: StrongInertial
     Quadrature: GaussLobatto
+    Filtering:
+      - None:
+          BlocksToFilter: All
+    OnlyDgBlocksAndGroups: [Block(0), Block(4)]
     Subcell:
       TroubledCellIndicator:
         PerssonTci:
@@ -64,7 +85,6 @@ SpatialDiscretization:
         AlwaysUseSubcells: false
         EnableExtensionDirections: false
         UseHalo: false
-        OnlyDgBlocksAndGroups: None
       SubcellToDgReconstructionMethod: DimByDim
       FiniteDifferenceDerivativeOrder: 2
       FdInterpolationOrder: 1
@@ -77,12 +97,17 @@ EventsAndTriggersAtSlabs:
   - Trigger: Always
     Events:
       - ChangeSlabSize:
-          DelayChange: 5
+          DelayChange: 0
           StepChoosers:
-            - Cfl:
-                SafetyFactor: 0.5
+            - FixedLtsRatio:
+                Regions: All
+                StepChoosers:
+                  - Cfl:
+                      SafetyFactor: 0.5
             - LimitIncrease:
                 Factor: 2.0
+
+EventsAndTriggersAtSteps:
 
 EventsAndDenseTriggers:
   - Trigger:

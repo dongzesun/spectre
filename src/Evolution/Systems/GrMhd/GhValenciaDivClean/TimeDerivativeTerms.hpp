@@ -11,6 +11,7 @@
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/TaggedContainers.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/DiscontinuousGalerkin/TimeDerivativeDecisions.hpp"
 #include "Evolution/PassVariables.hpp"
@@ -25,15 +26,12 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/TimeDerivativeTerms.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "Evolution/VariableFixing/Tags.hpp"
-#include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
-// Tag obtained from gh::TimeDerivative needs to be complete here to
-// be used in TemporaryReference.
+#include "PointwiseFunctions/GeneralRelativity/Tags.hpp" // For reference tag
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/TMPL.hpp"
-#include "Utilities/TaggedTuple.hpp"
 
 namespace grmhd::GhValenciaDivClean {
 namespace detail {
@@ -82,7 +80,7 @@ struct TimeDerivativeTermsImpl {
 
   using trace_reversed_stress_result_tags =
       tmpl::list<Tags::TraceReversedStressEnergy, Tags::FourVelocityOneForm,
-                 Tags::ComovingMagneticFieldOneForm>;
+                 grmhd::ValenciaDivClean::Tags::ComovingMagneticFieldOneForm>;
   using trace_reversed_stress_argument_tags = tmpl::list<
       hydro::Tags::RestMassDensity<DataVector>,
       hydro::Tags::SpatialVelocityOneForm<DataVector, 3_st, Frame::Inertial>,
@@ -375,7 +373,7 @@ struct TimeDerivativeTerms : evolution::PassVariables {
 
   using trace_reversed_stress_result_tags =
       tmpl::list<Tags::TraceReversedStressEnergy, Tags::FourVelocityOneForm,
-                 Tags::ComovingMagneticFieldOneForm>;
+                 grmhd::ValenciaDivClean::Tags::ComovingMagneticFieldOneForm>;
   using extra_temp_tags = tmpl::list<gr::Tags::SpatialMetric<DataVector, 3>>;
 
   using temporary_tags = tmpl::remove<

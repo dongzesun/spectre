@@ -1,6 +1,8 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
+add_subdirectory(Python)
+
 set(LIBRARY Test_ScalarWave)
 
 set(LIBRARY_SOURCES
@@ -9,11 +11,15 @@ set(LIBRARY_SOURCES
   BoundaryConditions/Test_Periodic.cpp
   BoundaryConditions/Test_SphericalRadiation.cpp
   BoundaryCorrections/Test_UpwindPenalty.cpp
+  Test_ApplyTensorYlmFilter.cpp
   Test_Characteristics.cpp
   Test_Constraints.cpp
   Test_EnergyDensity.cpp
   Test_Equations.cpp
+  Test_FilledSpherePowerMonitor.cpp
   Test_MomentumDensity.cpp
+  Test_SphericalShellPowerMonitor.cpp
+  Test_System.cpp
   Test_Tags.cpp
   Test_TimeDerivative.cpp
   )
@@ -24,8 +30,13 @@ target_link_libraries(
   ${LIBRARY}
   PRIVATE
   DataStructures
+  Domain
+  InitialDataUtilities
+  LinearOperators
   MathFunctions
   ScalarWave
+  Spectral
+  SphericalHarmonics
   Time
   Utilities
   WaveEquationSolutions

@@ -27,7 +27,9 @@ Amr:
     Isotropy: Anisotropic
     Limits:
       RefinementLevel: [0, 4]
-      NumGridPoints: Auto
+      NumPolynomialModes: Auto
+      FourierM: Auto
+      SphericalHarmonicL: Auto
       ErrorBeyondLimits: False
     AllowCoarsening: True
   Verbosity: Verbose
@@ -62,9 +64,13 @@ EventsAndTriggersAtSlabs:
     Events:
       - Completion
 
+EventsAndTriggersAtSteps:
+
 Evolution:
   InitialTime: 0.0
-  InitialTimeStep: 0.1
+  InitialTimeStep: &initial_time_step 0.1
+  InitialSlabSize: *initial_time_step
+  LocalTimeStepping: Off
   TimeStepper:
     AdamsBashforth:
       Order: 1

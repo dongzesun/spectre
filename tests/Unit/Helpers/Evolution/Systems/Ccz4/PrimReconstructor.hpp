@@ -24,6 +24,7 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Neighbors.hpp"
+#include "Domain/Structure/Topology.hpp"
 #include "Evolution/DgSubcell/GhostData.hpp"
 #include "Evolution/DgSubcell/SliceData.hpp"
 #include "Evolution/Systems/Ccz4/ATilde.hpp"
@@ -179,7 +180,7 @@ compute_prim_solution_for_second_deriv(
   get(get<ConformalFactor>(vars)) += 2.0;
   get(get<TraceExtrinsicCurvature>(vars)) += 15.0;
   get(get<Theta>(vars)) += 30.0;
-  get(get<Lapse>(vars)) += 50.0;
+  get(get<Lapse>(vars)) += 50.0 + coords.get(0) * coords.get(2);
   for (size_t j = 0; j < 3; ++j) {
     get<GammaHat>(vars).get(j) += 1.0e-2 * static_cast<double>((j + 2) + 10);
     get<Shift>(vars).get(j) += 1.0e-2 * static_cast<double>((j + 2) + 60);
@@ -217,7 +218,8 @@ inline Element<3> set_element(const bool skip_last = false) {
     neighbors[gsl::at(Direction<3>::all_directions(), i)] = Neighbors<3>{
         {ElementId<3>{i + 1, {}}}, OrientationMap<3>::create_aligned()};
   }
-  return Element<3>{ElementId<3>{0, {}}, neighbors};
+  return Element<3>{ElementId<3>{0, {}}, neighbors,
+                    domain::topologies::hypercube<3>};
 }
 
 inline tnsr::I<DataVector, 3, Frame::ElementLogical> set_logical_coordinates(
