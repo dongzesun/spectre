@@ -193,8 +193,15 @@ class HorizonRobin
       tmpl::list<domain::Tags::Coordinates<Dim, Frame::Inertial>,
                  ::Tags::Normalized<domain::Tags::UnnormalizedFaceNormal<
                      Dim, Frame::Inertial>>,
-                 domain::Tags::Direction<Dim>, domain::Tags::Mesh<Dim>>;
-  using volume_tags = tmpl::list<domain::Tags::Mesh<Dim>>;
+                 domain::Tags::Direction<Dim>, domain::Tags::Mesh<Dim>,
+                 DQ::Tags::ImportedGaugeH<DataVector, Dim>,
+                 DQ::Tags::ImportedSpacetimeMetric<DataVector, Dim>,
+                 DQ::Tags::ImportedDtXi<DataVector, Dim>>;
+  using volume_tags =
+      tmpl::list<domain::Tags::Mesh<Dim>,
+                 DQ::Tags::ImportedGaugeH<DataVector, Dim>,
+                 DQ::Tags::ImportedSpacetimeMetric<DataVector, Dim>,
+                 DQ::Tags::ImportedDtXi<DataVector, Dim>>;
 
   void apply(
       gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> xi,
@@ -202,7 +209,10 @@ class HorizonRobin
       const tnsr::ia<DataVector, Dim, Frame::Inertial>& /*deriv_xi*/,
       const tnsr::I<DataVector, Dim, Frame::Inertial>& face_inertial_coords,
       const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
-      const Direction<Dim>& direction, const Mesh<Dim>& volume_mesh) const;
+      const Direction<Dim>& direction, const Mesh<Dim>& volume_mesh,
+      const tnsr::a<DataVector, Dim, Frame::Inertial>& imported_gauge_h,
+      const tnsr::aa<DataVector, Dim, Frame::Inertial>& imported_metric,
+      const tnsr::a<DataVector, Dim, Frame::Inertial>& imported_dtxi) const;
 
   void apply(
       gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> xi,
@@ -211,7 +221,13 @@ class HorizonRobin
       const tnsr::I<DataVector, Dim, Frame::Inertial>& face_inertial_coords,
       const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
       const Direction<Dim>& direction,
-      const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes) const;
+      const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes,
+      const DirectionalIdMap<Dim, tnsr::a<DataVector, Dim, Frame::Inertial>>&
+          imported_gauge_h,
+      const DirectionalIdMap<Dim, tnsr::aa<DataVector, Dim, Frame::Inertial>>&
+          imported_metric,
+      const DirectionalIdMap<Dim, tnsr::a<DataVector, Dim, Frame::Inertial>>&
+          imported_dtxi) const;
 
   using argument_tags_linearized =
       tmpl::list<domain::Tags::Coordinates<Dim, Frame::Inertial>,
@@ -244,9 +260,6 @@ class HorizonRobin
  private:
   tnsr::A<DataVector, Dim, Frame::Inertial> gauge_h(
       const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) const;
-  tnsr::a<DataVector, Dim, Frame::Inertial> dtxi(
-      const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) const;
-
   double mass_ = std::numeric_limits<double>::signaling_NaN();
   ::NumericData numeric_data_{};
   bool use_gauge_h_{false};

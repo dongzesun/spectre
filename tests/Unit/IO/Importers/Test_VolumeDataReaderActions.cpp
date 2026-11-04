@@ -4,6 +4,7 @@
 #include "Framework/TestingFramework.hpp"
 
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -105,11 +106,22 @@ struct Metavariables {
                                     MockVolumeDataReader<Metavariables>>;
 };
 
+enum class StrictFailure {
+  None,
+  Coordinates,
+  NonfiniteField,
+  Duplicate,
+  DuplicateAfterCompletion,
+  CoincidentCoordinates
+};
+
 template <bool AddSubcell>
 void test_actions(const std::variant<double, importers::ObservationSelector>&
                       observation_selection,
                   const bool p_refine, const bool subcell_is_active,
-                  const bool single_precision = false) {
+                  const bool single_precision = false,
+                  const bool strict_import = false,
+                  const StrictFailure failure = StrictFailure::None) {
   CAPTURE(AddSubcell);
   CAPTURE(subcell_is_active);
   if (subcell_is_active) {
@@ -160,6 +172,10 @@ void test_actions(const std::variant<double, importers::ObservationSelector>&
                                 3.4 * hashed_id, 5.6 * hashed_id};
     get<1>(coords) = DataVector{8.9 * hashed_id, 1.3 * hashed_id,
                                 2.4 * hashed_id, 6.7 * hashed_id};
+    if (failure == StrictFailure::CoincidentCoordinates) {
+      get<0>(coords) = DataVector{1.0, 2.0, 3.0, 4.0};
+      get<1>(coords) = DataVector{4.0, 3.0, 2.0, 1.0};
+    }
     tnsr::I<DataVector, 2> vector{num_points};
     get<0>(vector) = DataVector{0.5 * hashed_id, 1.0 * hashed_id,
                                 3.0 * hashed_id, -2.0 * hashed_id};
@@ -243,7 +259,26 @@ void test_actions(const std::variant<double, importers::ObservationSelector>&
     const auto& coords = all_coords.at(id);
     tensor_data[6] = TensorComponent("InertialCoordinates_x"s, get<0>(coords));
     tensor_data[7] = TensorComponent("InertialCoordinates_y"s, get<1>(coords));
+    if (failure == StrictFailure::Coordinates) {
+      auto shifted = get<1>(coords);
+      shifted[0] += 1.0e10;
+      tensor_data[7] = TensorComponent("InertialCoordinates_y"s, shifted);
+    } else if (failure == StrictFailure::NonfiniteField) {
+      auto nonfinite = get<0>(vector);
+      nonfinite[0] = std::numeric_limits<double>::quiet_NaN();
+      tensor_data[0] = TensorComponent("V_x"s, nonfinite);
+    }
     all_element_data[id.block_id()].emplace_back(id, tensor_data, source_mesh);
+  }
+  if (failure == StrictFailure::Duplicate) {
+    all_element_data[1].push_back(all_element_data[0].front());
+  }
+  if (failure == StrictFailure::DuplicateAfterCompletion) {
+    all_element_data[0].insert(all_element_data[0].end(),
+                               all_element_data[1].begin(),
+                               all_element_data[1].end());
+    all_element_data[1].clear();
+    all_element_data[1].push_back(all_element_data[0].front());
   }
   // Write the sample data into an H5 file
   for (size_t i = 0; i < all_element_data.size(); ++i) {
@@ -271,6 +306,22 @@ void test_actions(const std::variant<double, importers::ObservationSelector>&
           (first_invocation ? 0 : 1));
     // Invoke the simple_action `ReadAllVolumeDataAndDistribute` that was called
     // on the reader component by the `ReadVolumeData` action.
+    if (strict_import and first_invocation) {
+      // Exercise the real strict reader before the ordinary queued call. The
+      // latter must then recognize the volume-data ID and do no additional IO.
+      runner.template simple_action<
+          reader_component, importers::Actions::ReadAllVolumeDataAndDistribute<
+                                2, import_tags_list, element_array>>(
+          0,
+          importers::ImporterOptions{"TestVolumeData*.h5", "element_data",
+                                     observation_selection,
+                                     Options::Auto<double>{}, true, false,
+                                     Options::Auto<size_t>{size_t{1}}},
+          0_st,
+          tuples::TaggedTuple<importers::Tags::Selected<VectorTag>,
+                              importers::Tags::Selected<TensorTag>>{"V", "T"},
+          true);
+    }
     runner.template invoke_queued_simple_action<reader_component>(0);
     CAPTURE(get_reader_tag(importers::Tags::ElementDataAlreadyRead{}));
     CHECK(get_reader_tag(importers::Tags::ElementDataAlreadyRead{}).size() ==
@@ -325,4 +376,72 @@ SPECTRE_TEST_CASE("Unit.IO.Importers.VolumeDataReaderActions", "[Unit][IO]") {
       test_actions<true>(0., true, true),
       Catch::Matchers::ContainsSubstring(
           "Cannot do barycentric interpolation with Basis::FiniteDifference"));
+}
+
+// [[TimeOut, 30]]
+SPECTRE_TEST_CASE("Unit.IO.Importers.StrictVolumeData", "[Unit][IO]") {
+  // Distinct element values at coincident coordinates retain their owner.
+  test_actions<false>(0., false, false, false, true,
+                      StrictFailure::CoincidentCoordinates);
+  test_actions<false>(0., false, false, false, true);
+  test_actions<false>(importers::ObservationSelector::First, false, false,
+                      false, true);
+  test_actions<false>(importers::ObservationSelector::Last, false, false, false,
+                      true);
+  for (const bool subcell_is_active : {false, true}) {
+    test_actions<true>(0., false, subcell_is_active, false, true);
+  }
+  CHECK_THROWS_WITH(
+      test_actions<false>(0., true, false, false, true),
+      Catch::Matchers::ContainsSubstring("prohibits p-mesh interpolation"));
+  CHECK_THROWS_WITH(test_actions<false>(0., false, false, false, true,
+                                        StrictFailure::Coordinates),
+                    Catch::Matchers::ContainsSubstring("roundoff-equivalent"));
+  CHECK_THROWS_WITH(test_actions<false>(0., false, false, false, true,
+                                        StrictFailure::NonfiniteField),
+                    Catch::Matchers::ContainsSubstring("non-finite data"));
+  CHECK_THROWS_WITH(test_actions<false>(0., false, false, false, true,
+                                        StrictFailure::Duplicate),
+                    Catch::Matchers::ContainsSubstring("duplicate element"));
+
+  // Strict mode checks later files even after every target has been filled.
+  CHECK_THROWS_WITH(
+      test_actions<false>(0., false, false, false, true,
+                          StrictFailure::DuplicateAfterCompletion),
+      Catch::Matchers::ContainsSubstring("duplicate element"));
+
+  const ElementId<2> id{0};
+  const tnsr::I<DataVector, 2> target{size_t{2}, 1.0};
+  auto source = target;
+  source.get(0)[0] += std::numeric_limits<double>::epsilon();
+  importers::detail::verify_inertial_coordinates_exact(source, target, id);
+  source.get(1).destructive_resize(1);
+  CHECK_THROWS_WITH(
+      importers::detail::verify_inertial_coordinates_exact(source, target, id),
+      Catch::Matchers::ContainsSubstring("component sizes"));
+  source = tnsr::I<DataVector, 2>{size_t{1}, 1.0};
+  CHECK_THROWS_WITH(
+      importers::detail::verify_inertial_coordinates_exact(source, target, id),
+      Catch::Matchers::ContainsSubstring("coordinate-size mismatch"));
+  source = target;
+  source.get(1)[0] = std::numeric_limits<double>::infinity();
+  CHECK_THROWS_WITH(
+      importers::detail::verify_inertial_coordinates_exact(source, target, id),
+      Catch::Matchers::ContainsSubstring("requires finite"));
+  // Deselected tensors may be empty or nonfinite and must not be inspected.
+  tuples::TaggedTuple<VectorTag, TensorTag> fields{};
+  get<VectorTag>(fields) = target;
+  get<VectorTag>(fields).get(0)[0] = std::numeric_limits<double>::quiet_NaN();
+  const tuples::TaggedTuple<importers::Tags::Selected<VectorTag>,
+                            importers::Tags::Selected<TensorTag>>
+      selected{std::nullopt, std::nullopt};
+  importers::detail::verify_selected_fields_are_finite<2, import_tags_list>(
+      fields, selected, id);
+
+  for (size_t i = 0; i < 2; ++i) {
+    const std::string file_name = "TestVolumeData" + std::to_string(i) + ".h5";
+    if (file_system::check_if_file_exists(file_name)) {
+      file_system::rm(file_name, true);
+    }
+  }
 }

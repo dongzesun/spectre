@@ -8,8 +8,11 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <iostream>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -19,6 +22,7 @@
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
 #include "NumericalAlgorithms/Strahlkorper/StrahlkorperFunctions.hpp"
 #include "Options/ParseError.hpp"
+#include "Parallel/Printf/Printf.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
@@ -28,6 +32,42 @@
 namespace DQ::BoundaryConditions {
 
 namespace {
+template <typename Tags, size_t Dim>
+tuples::tagged_tuple_from_typelist<Tags> cached_numeric_variables(
+    const NumericData& numeric_data,
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) {
+  using Interpolator =
+      spectre::Exporter::PointwiseInterpolator<Dim, Frame::Inertial>;
+  const std::string key = numeric_data.file_glob() + '\0' +
+                          numeric_data.subgroup() + '\0' +
+                          std::to_string(numeric_data.observation_step());
+  static std::unordered_map<std::string, std::shared_ptr<const Interpolator>>
+      interpolators{};
+
+  // Input files must remain immutable for the lifetime of this cache.
+  // The interpolator owns shared H5-derived state and is not documented as
+  // thread-safe. Serialize both cache construction and interpolation across
+  // Charm PEs, matching NumericData's existing synchronization policy.
+  const std::lock_guard lock(numeric_data_detail::hdf5_interpolation_mutex());
+  auto iter = interpolators.find(key);
+  if (iter == interpolators.end()) {
+    iter =
+        interpolators
+            .emplace(key, std::make_shared<const Interpolator>(
+                              numeric_data.file_glob(), numeric_data.subgroup(),
+                              spectre::Exporter::ObservationStep{
+                                  numeric_data.observation_step()},
+                              spectre::Exporter::get_tensor_components<Tags>()))
+            .first;
+  }
+  std::vector<DataVector> interpolated_data{};
+  iter->second->interpolate_to_points(
+      make_not_null(&interpolated_data), coords,
+      numeric_data.extrapolate_into_excisions());
+  return spectre::Exporter::make_tagged_tuple<Tags>(
+      std::move(interpolated_data));
+}
+
 template <size_t Dim>
 std::array<DataVector, 2> theta_phi_of(
     const tnsr::I<DataVector, Dim, Frame::Inertial>& coords,
@@ -44,9 +84,8 @@ std::array<DataVector, 2> theta_phi_of(
   return theta_phi;
 }
 
-std::array<double, 3> solve_3x3(
-    std::array<std::array<double, 3>, 3> matrix,
-    std::array<double, 3> rhs) {
+std::array<double, 3> solve_3x3(std::array<std::array<double, 3>, 3> matrix,
+                                std::array<double, 3> rhs) {
   for (size_t pivot = 0; pivot < 3; ++pivot) {
     size_t pivot_row = pivot;
     double pivot_abs = std::abs(matrix[pivot][pivot]);
@@ -91,16 +130,16 @@ std::array<DataVector, 3> relabeled_directions(
     const tnsr::i<DataVector, 3, Frame::Inertial>& direction,
     const std::array<double, 3>& alpha, const double sign) {
   const size_t size = get_size(direction.get(0));
-  std::array<DataVector, 3> result{
-      DataVector{size}, DataVector{size}, DataVector{size}};
+  std::array<DataVector, 3> result{DataVector{size}, DataVector{size},
+                                   DataVector{size}};
   const DataVector alpha_dot_n = alpha[0] * direction.get(0) +
                                  alpha[1] * direction.get(1) +
                                  alpha[2] * direction.get(2);
   DataVector norm_trial{size, 0.0};
   for (size_t i = 0; i < 3; ++i) {
     gsl::at(result, i) =
-        direction.get(i) + sign * (gsl::at(alpha, i) -
-                                   alpha_dot_n * direction.get(i));
+        direction.get(i) +
+        sign * (gsl::at(alpha, i) - alpha_dot_n * direction.get(i));
     norm_trial += gsl::at(result, i) * gsl::at(result, i);
   }
   norm_trial = sqrt(norm_trial);
@@ -115,7 +154,8 @@ tnsr::a<DataVector, Dim, Frame::Inertial> interpolate_xi(
     const NumericData& xi_data,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) {
   const auto xi_vars =
-      xi_data.variables(coords, tmpl::list<DQ::Tags::Xi<DataVector, Dim>>{});
+      cached_numeric_variables<tmpl::list<DQ::Tags::Xi<DataVector, Dim>>>(
+          xi_data, coords);
   return tuples::get<DQ::Tags::Xi<DataVector, Dim>>(xi_vars);
 }
 
@@ -138,30 +178,27 @@ tnsr::ia<DataVector, Dim, Frame::Inertial> outer_face_xi_gradient(
   }
   radius = sqrt(radius);
 
-  std::array<DataVector, 3> normal{
-      face_coords.get(0) / radius, face_coords.get(1) / radius,
-      face_coords.get(2) / radius};
+  std::array<DataVector, 3> normal{face_coords.get(0) / radius,
+                                   face_coords.get(1) / radius,
+                                   face_coords.get(2) / radius};
   std::array<DataVector, 3> tangent_one{
       DataVector{num_points}, DataVector{num_points}, DataVector{num_points}};
   std::array<DataVector, 3> tangent_two{
       DataVector{num_points}, DataVector{num_points}, DataVector{num_points}};
   for (size_t p = 0; p < num_points; ++p) {
     const bool use_z_axis = std::abs(normal[2][p]) < 0.9;
-    const std::array<double, 3> axis{
-        use_z_axis ? 0.0 : 1.0, 0.0, use_z_axis ? 1.0 : 0.0};
-    std::array<double, 3> t1{
-        axis[1] * normal[2][p] - axis[2] * normal[1][p],
-        axis[2] * normal[0][p] - axis[0] * normal[2][p],
-        axis[0] * normal[1][p] - axis[1] * normal[0][p]};
-    const double t1_norm =
-        sqrt(t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]);
+    const std::array<double, 3> axis{use_z_axis ? 0.0 : 1.0, 0.0,
+                                     use_z_axis ? 1.0 : 0.0};
+    std::array<double, 3> t1{axis[1] * normal[2][p] - axis[2] * normal[1][p],
+                             axis[2] * normal[0][p] - axis[0] * normal[2][p],
+                             axis[0] * normal[1][p] - axis[1] * normal[0][p]};
+    const double t1_norm = sqrt(t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]);
     for (size_t i = 0; i < Dim; ++i) {
       t1[i] /= t1_norm;
     }
-    const std::array<double, 3> t2{
-        normal[1][p] * t1[2] - normal[2][p] * t1[1],
-        normal[2][p] * t1[0] - normal[0][p] * t1[2],
-        normal[0][p] * t1[1] - normal[1][p] * t1[0]};
+    const std::array<double, 3> t2{normal[1][p] * t1[2] - normal[2][p] * t1[1],
+                                   normal[2][p] * t1[0] - normal[0][p] * t1[2],
+                                   normal[0][p] * t1[1] - normal[1][p] * t1[0]};
     for (size_t i = 0; i < Dim; ++i) {
       tangent_one[i][p] = t1[i];
       tangent_two[i][p] = t2[i];
@@ -180,12 +217,11 @@ tnsr::ia<DataVector, Dim, Frame::Inertial> outer_face_xi_gradient(
   const auto xi_radial_two = interpolate_xi(xi_data, radial_two);
 
   const auto tangent_derivative =
-      [&xi_data, &face_coords, &radius, step, num_points](
-          const std::array<DataVector, 3>& tangent) {
+      [&xi_data, &face_coords, &radius, step,
+       num_points](const std::array<DataVector, 3>& tangent) {
         tnsr::I<DataVector, Dim, Frame::Inertial> plus_coords{num_points};
         tnsr::I<DataVector, Dim, Frame::Inertial> minus_coords{num_points};
-        const DataVector projected_radius =
-            radius * (1.0 - 1.0e-12);
+        const DataVector projected_radius = radius * (1.0 - 1.0e-12);
         for (size_t i = 0; i < Dim; ++i) {
           plus_coords.get(i) = face_coords.get(i) + step * tangent[i];
           minus_coords.get(i) = face_coords.get(i) - step * tangent[i];
@@ -217,10 +253,9 @@ tnsr::ia<DataVector, Dim, Frame::Inertial> outer_face_xi_gradient(
          xi_radial_two.get(a)) /
         (2.0 * step);
     for (size_t j = 0; j < Dim; ++j) {
-      deriv_xi.get(j, a) =
-          normal[j] * radial_derivative +
-          tangent_one[j] * xi_tangent_one.get(a) +
-          tangent_two[j] * xi_tangent_two.get(a);
+      deriv_xi.get(j, a) = normal[j] * radial_derivative +
+                           tangent_one[j] * xi_tangent_one.get(a) +
+                           tangent_two[j] * xi_tangent_two.get(a);
     }
   }
   return deriv_xi;
@@ -253,13 +288,12 @@ std::array<double, 3> relabeled_area_dipole(
       make_not_null(&relabeled_radius), surface.coefficients(),
       interpolation_info);
 
-  std::array<DataVector, 3> embedding{
-      DataVector{relabeled_radius.size()}, DataVector{relabeled_radius.size()},
-      DataVector{relabeled_radius.size()}};
+  std::array<DataVector, 3> embedding{DataVector{relabeled_radius.size()},
+                                      DataVector{relabeled_radius.size()},
+                                      DataVector{relabeled_radius.size()}};
   for (size_t i = 0; i < 3; ++i) {
-    gsl::at(embedding, i) =
-        gsl::at(surface.expansion_center(), i) +
-        relabeled_radius * gsl::at(relabeled_direction, i);
+    gsl::at(embedding, i) = gsl::at(surface.expansion_center(), i) +
+                            relabeled_radius * gsl::at(relabeled_direction, i);
   }
 
   std::array<tnsr::i<DataVector, 2, Frame::ElementLogical>, 3>
@@ -300,14 +334,12 @@ SingleBhOuterBoundary<Dim>::SingleBhOuterBoundary(
     const bool check_frame, std::string affine_map_file,
     std::string area_gauge_relabeling,
     std::optional<std::array<double, 3>> area_gauge_alpha,
-    std::string boundary_data, const double mass,
-    std::string metric_file_glob, std::string metric_subgroup,
-    const int metric_observation_step,
+    std::string boundary_data, const double mass, std::string metric_file_glob,
+    std::string metric_subgroup, const int metric_observation_step,
     const bool metric_extrapolate_into_excisions,
     std::string metric_affine_map_file, std::string xi_file_glob,
     std::string xi_subgroup, const int xi_observation_step,
-    const bool xi_extrapolate_into_excisions,
-    const double xi_derivative_step,
+    const bool xi_extrapolate_into_excisions, const double xi_derivative_step,
     const Options::Context& context)
     : surface_h5_file_(std::move(surface_h5_file)),
       surface_subfile_(std::move(surface_subfile)),
@@ -320,8 +352,7 @@ SingleBhOuterBoundary<Dim>::SingleBhOuterBoundary(
       boundary_data_(std::move(boundary_data)),
       mass_(mass),
       metric_data_(std::move(metric_file_glob), std::move(metric_subgroup),
-                   metric_observation_step,
-                   metric_extrapolate_into_excisions),
+                   metric_observation_step, metric_extrapolate_into_excisions),
       metric_affine_map_file_(std::move(metric_affine_map_file)),
       metric_affine_map_(
           DQ::detail::BbhAffineMap::from_file(metric_affine_map_file_)),
@@ -343,15 +374,13 @@ SingleBhOuterBoundary<Dim>::SingleBhOuterBoundary(
   }
   if (area_gauge_relabeling_ != "StoredPlus" and
       area_gauge_relabeling_ != "StoredMinus" and
-      area_gauge_relabeling_ != "DqPlus" and
-      area_gauge_relabeling_ != "None") {
+      area_gauge_relabeling_ != "DqPlus" and area_gauge_relabeling_ != "None") {
     PARSE_ERROR(context,
                 "AreaGaugeRelabeling must be one of 'StoredPlus', "
                 "'StoredMinus', 'DqPlus', or 'None', not '"
                     << area_gauge_relabeling_ << "'.");
   }
-  if (boundary_data_ != "XiSurface" and
-      boundary_data_ != "DtXiTimeJacobian") {
+  if (boundary_data_ != "XiSurface" and boundary_data_ != "DtXiTimeJacobian") {
     PARSE_ERROR(context,
                 "BoundaryData must be 'XiSurface' or 'DtXiTimeJacobian', not '"
                     << boundary_data_ << "'.");
@@ -383,8 +412,7 @@ void SingleBhOuterBoundary<Dim>::initialize_area_gauge_relabeling(
   const auto radius = ylm::radius(surface_);
   const auto theta_phi = ylm::theta_phi(surface_);
   const auto direction = ylm::rhat(theta_phi);
-  const auto radius_gradient =
-      surface_.ylm_spherepack().gradient(get(radius));
+  const auto radius_gradient = surface_.ylm_spherepack().gradient(get(radius));
 
   const DataVector area_density =
       get(radius) * sqrt(get(radius) * get(radius) +
@@ -428,20 +456,16 @@ void SingleBhOuterBoundary<Dim>::initialize_area_gauge_relabeling(
     area_gauge_sign_flipped_ = false;
   }
 
-  std::cout << "DQ SingleBhOuterBoundary area-gauge relabeling: alpha = ("
-            << area_gauge_alpha_[0] << ", " << area_gauge_alpha_[1] << ", "
-            << area_gauge_alpha_[2] << "), dipole before = ("
-            << area_gauge_dipole_before_[0] << ", "
-            << area_gauge_dipole_before_[1] << ", "
-            << area_gauge_dipole_before_[2] << "), dipole after = ("
-            << area_gauge_dipole_after_[0] << ", "
-            << area_gauge_dipole_after_[1] << ", "
-            << area_gauge_dipole_after_[2] << "), sign flipped = "
-            << (area_gauge_sign_flipped_ ? "true" : "false")
-            << ", convention = " << area_gauge_relabeling_
-            << ", alpha override = "
-            << (area_gauge_alpha_override_.has_value() ? "true" : "false")
-            << std::endl;
+  Parallel::printf(
+      "DQ SingleBhOuterBoundary area-gauge relabeling: alpha = (%g, %g, %g), "
+      "dipole before = (%g, %g, %g), dipole after = (%g, %g, %g), "
+      "sign flipped = %s, convention = %s, alpha override = %s\n",
+      area_gauge_alpha_[0], area_gauge_alpha_[1], area_gauge_alpha_[2],
+      area_gauge_dipole_before_[0], area_gauge_dipole_before_[1],
+      area_gauge_dipole_before_[2], area_gauge_dipole_after_[0],
+      area_gauge_dipole_after_[1], area_gauge_dipole_after_[2],
+      area_gauge_sign_flipped_ ? "true" : "false", area_gauge_relabeling_,
+      area_gauge_alpha_override_.has_value() ? "true" : "false");
 }
 
 template <size_t Dim>
@@ -460,9 +484,8 @@ void SingleBhOuterBoundary<Dim>::apply(
     }
 
     const auto xi_solution = interpolate_xi(xi_data_, face_inertial_coords);
-    const auto deriv_xi_solution =
-        outer_face_xi_gradient(xi_data_, face_inertial_coords, xi_solution,
-                               xi_derivative_step_);
+    const auto deriv_xi_solution = outer_face_xi_gradient(
+        xi_data_, face_inertial_coords, xi_solution, xi_derivative_step_);
 
     tnsr::I<DataVector, Dim, Frame::Inertial> metric_coords{num_points};
     for (size_t i = 0; i < Dim; ++i) {
@@ -471,13 +494,12 @@ void SingleBhOuterBoundary<Dim>::apply(
     }
     const auto metric_source_coords =
         metric_affine_map_.map_point(metric_coords);
-    const auto metric_vars = metric_data_.variables(
-        metric_source_coords,
-        tmpl::list<gr::Tags::SpacetimeMetric<DataVector, Dim,
-                                             Frame::Inertial>>{});
-    const auto spacetime_metric =
-        tuples::get<gr::Tags::SpacetimeMetric<DataVector, Dim,
-                                             Frame::Inertial>>(metric_vars);
+    const auto metric_vars = cached_numeric_variables<tmpl::list<
+        gr::Tags::SpacetimeMetric<DataVector, Dim, Frame::Inertial>>>(
+        metric_data_, metric_source_coords);
+    const auto spacetime_metric = tuples::get<
+        gr::Tags::SpacetimeMetric<DataVector, Dim, Frame::Inertial>>(
+        metric_vars);
 
     const DataVector radius =
         sqrt(face_inertial_coords.get(0) * face_inertial_coords.get(0) +
@@ -501,8 +523,7 @@ void SingleBhOuterBoundary<Dim>::apply(
           for (size_t a = 0; a < Dim + 1; ++a) {
             for (size_t b = 0; b < Dim + 1; ++b) {
               spatial_metric[i][j] += spacetime_metric.get(a, b)[p] *
-                                      dx_comoving[i][a] *
-                                      dx_comoving[j][b];
+                                      dx_comoving[i][a] * dx_comoving[j][b];
             }
           }
         }
@@ -529,14 +550,14 @@ void SingleBhOuterBoundary<Dim>::apply(
         for (size_t j = 0; j < Dim; ++j) {
           normal_matrix[i][j] = 0.0;
           for (size_t b = 0; b < Dim + 1; ++b) {
-            normal_matrix[i][j] += spacetime_metric.get(j + 1, b)[p] *
-                                   dx_comoving[i][b];
+            normal_matrix[i][j] +=
+                spacetime_metric.get(j + 1, b)[p] * dx_comoving[i][b];
           }
         }
       }
       const auto normal_spatial = solve_3x3(normal_matrix, normal_rhs);
-      std::array<double, 4> normal{{1.0, normal_spatial[0],
-                                    normal_spatial[1], normal_spatial[2]}};
+      std::array<double, 4> normal{
+          {1.0, normal_spatial[0], normal_spatial[1], normal_spatial[2]}};
       double normal_norm = 0.0;
       for (size_t a = 0; a < Dim + 1; ++a) {
         for (size_t b = 0; b < Dim + 1; ++b) {
@@ -544,9 +565,10 @@ void SingleBhOuterBoundary<Dim>::apply(
         }
       }
       if (not(normal_norm < 0.0)) {
-        ERROR("DtXi outer boundary failed to construct a timelike normal. "
-              "G_ab N^a N^b = "
-              << normal_norm << " at boundary point " << p << ".");
+        ERROR(
+            "DtXi outer boundary failed to construct a timelike normal. "
+            "G_ab N^a N^b = "
+            << normal_norm << " at boundary point " << p << ".");
       }
       const double normal_scale = 1.0 / sqrt(-normal_norm);
       for (double& component : normal) {
@@ -560,9 +582,8 @@ void SingleBhOuterBoundary<Dim>::apply(
 
       std::array<double, 3> target_g_ti{};
       for (size_t i = 0; i < Dim; ++i) {
-        target_g_ti[i] =
-            2.0 * mass_ * face_inertial_coords.get(i)[p] /
-            (radius[p] * radius[p]);
+        target_g_ti[i] = 2.0 * mass_ * face_inertial_coords.get(i)[p] /
+                         (radius[p] * radius[p]);
       }
       std::array<double, 3> target_shift{};
       double shift_norm = 0.0;
@@ -578,9 +599,8 @@ void SingleBhOuterBoundary<Dim>::apply(
       const double lapse_squared = shift_norm - target_g_tt;
       if (not(lapse_squared > 0.0)) {
         ERROR("DtXi outer boundary has non-positive target lapse squared: "
-              << lapse_squared << " at boundary point " << p
-              << ", shift_norm=" << shift_norm
-              << ", target_g_tt=" << target_g_tt << ".");
+              << lapse_squared << " at boundary point " << p << ", shift_norm="
+              << shift_norm << ", target_g_tt=" << target_g_tt << ".");
       }
       const double normal_coefficient = sqrt(lapse_squared);
       std::array<double, 4> dt_x_target{};
@@ -610,9 +630,9 @@ void SingleBhOuterBoundary<Dim>::apply(
   inertial_direction.get(1) = dy / inertial_radius;
   inertial_direction.get(2) = dz / inertial_radius;
 
-  std::array<DataVector, 3> relabeled_direction{
-      inertial_direction.get(0), inertial_direction.get(1),
-      inertial_direction.get(2)};
+  std::array<DataVector, 3> relabeled_direction{inertial_direction.get(0),
+                                                inertial_direction.get(1),
+                                                inertial_direction.get(2)};
   if (area_gauge_relabeling_ == "StoredPlus" or
       area_gauge_relabeling_ == "StoredMinus") {
     relabeled_direction = relabeled_directions(
@@ -644,9 +664,9 @@ void SingleBhOuterBoundary<Dim>::apply(
         relabeled_inertial_coords.get(1) - center[1];
     const DataVector relabeled_dz =
         relabeled_inertial_coords.get(2) - center[2];
-    const DataVector relabeled_radius = sqrt(relabeled_dx * relabeled_dx +
-                                             relabeled_dy * relabeled_dy +
-                                             relabeled_dz * relabeled_dz);
+    const DataVector relabeled_radius =
+        sqrt(relabeled_dx * relabeled_dx + relabeled_dy * relabeled_dy +
+             relabeled_dz * relabeled_dz);
     relabeled_direction[0] = relabeled_dx / relabeled_radius;
     relabeled_direction[1] = relabeled_dy / relabeled_radius;
     relabeled_direction[2] = relabeled_dz / relabeled_radius;

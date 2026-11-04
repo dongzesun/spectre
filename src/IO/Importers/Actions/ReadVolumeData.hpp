@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <set>
@@ -226,6 +227,75 @@ void verify_inertial_coordinates(
   }
 }
 
+// The strict path is intended for DG data whose element identity and nodal
+// ordering are part of the meaning of the field. Coordinates must agree up to
+// serialization roundoff; tensor data are still copied without interpolation.
+template <size_t Dim>
+void verify_inertial_coordinates_exact(
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& source_coords,
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& target_coords,
+    const ElementId<Dim>& element_id) {
+  const size_t num_points = target_coords.begin()->size();
+  if (source_coords.begin()->size() != num_points) {
+    ERROR_NO_TRACE(
+        "Strict element import found a coordinate-size mismatch "
+        "for element "
+        << element_id << ": source has " << source_coords.begin()->size()
+        << " points but target has " << target_coords.begin()->size() << ".");
+  }
+  for (size_t d = 0; d < Dim; ++d) {
+    if (source_coords.get(d).size() != num_points or
+        target_coords.get(d).size() != num_points) {
+      ERROR_NO_TRACE(
+          "Strict element import found inconsistent coordinate "
+          "component sizes for element "
+          << element_id << ".");
+    }
+    for (size_t i = 0; i < num_points; ++i) {
+      const double source = source_coords.get(d)[i];
+      const double target = target_coords.get(d)[i];
+      const double tolerance = 100.0 * std::numeric_limits<double>::epsilon() *
+                               std::max(1.0, std::abs(target));
+      if (not std::isfinite(source) or not std::isfinite(target) or
+          std::abs(source - target) > tolerance) {
+        ERROR_NO_TRACE(
+            "Strict element import requires finite, roundoff-equivalent "
+            "current-shell coordinates. Element "
+            << element_id << ", dimension " << d << ", node " << i
+            << " has source=" << source << " and target=" << target
+            << ", exceeding tolerance " << tolerance << ".");
+      }
+    }
+  }
+}
+
+template <size_t Dim, typename FieldTagsList>
+void verify_selected_fields_are_finite(
+    const tuples::tagged_tuple_from_typelist<FieldTagsList>& element_data,
+    const tuples::tagged_tuple_from_typelist<
+        db::wrap_tags_in<Tags::Selected, FieldTagsList>>& selected_fields,
+    const ElementId<Dim>& element_id) {
+  tmpl::for_each<FieldTagsList>(
+      [&element_data, &selected_fields, &element_id](auto field_tag_v) {
+        using field_tag = tmpl::type_from<decltype(field_tag_v)>;
+        if (not get<Tags::Selected<field_tag>>(selected_fields).has_value()) {
+          return;
+        }
+        const auto& tensor = get<field_tag>(element_data);
+        for (size_t component = 0; component < tensor.size(); ++component) {
+          for (size_t node = 0; node < tensor[component].size(); ++node) {
+            if (not std::isfinite(tensor[component][node])) {
+              ERROR_NO_TRACE(
+                  "Strict element import found non-finite data in "
+                  "element "
+                  << element_id << ", field " << db::tag_name<field_tag>()
+                  << ", component " << component << ", node " << node << ".");
+            }
+          }
+        }
+      });
+}
+
 // Interpolate only the `selected_fields` in `source_element_data` to the
 // `target_mesh` (used when elements differ only by p-refinement)
 template <typename FieldTagsList, size_t Dim>
@@ -402,6 +472,11 @@ struct ReadVolumeData {
  * is held in memory at once, so memory consumption scales with the number of
  * elements on this node.
  *
+ * With `require_exact_element_and_mesh`, require matching element IDs,
+ * meshes, finite selected fields and roundoff-equivalent stored coordinates.
+ * No interpolation is permitted. All source files are checked for duplicate
+ * elements, including files after the last target element has been filled.
+ *
  * \see Dev guide on \ref dev_guide_importing
  */
 template <size_t Dim, typename FieldTagsList, typename ReceiveComponent>
@@ -413,9 +488,16 @@ struct ReadAllVolumeDataAndDistribute {
                     const ImporterOptions& options, const size_t volume_data_id,
                     tuples::tagged_tuple_from_typelist<
                         db::wrap_tags_in<Tags::Selected, FieldTagsList>>
-                        selected_fields = select_all_fields(FieldTagsList{})) {
+                        selected_fields = select_all_fields(FieldTagsList{}),
+                    const bool require_exact_element_and_mesh = false) {
     const bool elements_are_identical =
         get<OptionTags::ElementsAreIdentical>(options);
+
+    if (require_exact_element_and_mesh and not elements_are_identical) {
+      ERROR_NO_TRACE(
+          "Strict element import requires 'ElementsAreIdentical: True'. "
+          "Cross-element interpolation is prohibited.");
+    }
 
     // Only read and distribute the volume data once
     // This action will be invoked by `importers::Actions::ReadVolumeData` from
@@ -576,6 +658,7 @@ struct ReadAllVolumeDataAndDistribute {
     double observation_value = std::numeric_limits<double>::signaling_NaN();
     std::optional<Domain<Dim>> source_domain{};
     domain::FunctionsOfTimeMap source_domain_functions_of_time{};
+    std::unordered_set<ElementId<Dim>> strict_source_element_ids{};
     for (const std::string& file_name : file_paths) {
       // Open the volume data file
       h5::H5File<h5::AccessType::ReadOnly> h5file(file_name);
@@ -601,6 +684,9 @@ struct ReadAllVolumeDataAndDistribute {
       std::optional<tuples::tagged_tuple_from_typelist<FieldTagsList>>
           all_tensor_data{};
 
+      std::optional<tnsr::I<DataVector, Dim, Frame::Inertial>>
+          all_source_inertial_coords{};
+
       // Retrieve the information needed to reconstruct which element the data
       // belongs to
       const auto source_grid_names = volume_file.get_grid_names(observation_id);
@@ -608,51 +694,67 @@ struct ReadAllVolumeDataAndDistribute {
       const auto source_bases = volume_file.get_bases(observation_id);
       const auto source_quadratures =
           volume_file.get_quadratures(observation_id);
-      // Reconstruct domain from volume data file
-      const std::optional<std::vector<char>> serialized_domain =
-          volume_file.get_domain();
-      if (serialized_domain.has_value()) {
-        if (source_domain.has_value()) {
-#ifdef SPECTRE_DEBUG
-          // Check that the domain is the same in all files (only in debug
-          // mode)
-          const auto deserialized_domain =
-              deserialize<Domain<Dim>>(serialized_domain->data());
-          if (*source_domain != deserialized_domain) {
-            ERROR_NO_TRACE(
-                "The domain in all volume files must be the same. Domain in "
-                "file '"
-                << file_name << volume_file.subfile_path()
-                << "' differs from a previously read file.");
+      if (require_exact_element_and_mesh) {
+        for (const auto& grid_name : source_grid_names) {
+          const ElementId<Dim> id{grid_name};
+          if (not strict_source_element_ids.insert(id).second) {
+            ERROR_NO_TRACE("Strict element import found duplicate element "
+                           << id << " in file '" << file_name
+                           << volume_file.subfile_path() << "'.");
           }
+        }
+      }
+      // Strict imports verify the stored nodal coordinates directly and do
+      // not depend on an optional serialized domain or functions of time.
+      if (not require_exact_element_and_mesh) {
+        // Reconstruct domain from volume data file
+        const std::optional<std::vector<char>> serialized_domain =
+            volume_file.get_domain();
+        if (serialized_domain.has_value()) {
+          if (source_domain.has_value()) {
+#ifdef SPECTRE_DEBUG
+            // Check that the domain is the same in all files (only in debug
+            // mode)
+            const auto deserialized_domain =
+                deserialize<Domain<Dim>>(serialized_domain->data());
+            if (*source_domain != deserialized_domain) {
+              ERROR_NO_TRACE(
+                  "The domain in all volume files must be the same. Domain in "
+                  "file '"
+                  << file_name << volume_file.subfile_path()
+                  << "' differs from a previously read file.");
+            }
 #endif
+          } else {
+            source_domain = deserialize<Domain<Dim>>(serialized_domain->data());
+          }
         } else {
-          source_domain = deserialize<Domain<Dim>>(serialized_domain->data());
+          Parallel::printf(
+              "WARNING: No serialized domain found in file. "
+              "Verification that elements in the source and target domain "
+              "match will be skipped.\n");
         }
-      } else {
-        Parallel::printf(
-            "WARNING: No serialized domain found in file. "
-            "Verification that elements in the source and target domain "
-            "match will be skipped.\n");
-      }
-      // Reconstruct functions of time from volume data file
-      if (source_domain_functions_of_time.empty() and
-          source_domain.has_value() and
-          alg::any_of(source_domain->blocks(), [](const auto& block) {
-            return block.is_time_dependent();
-          })) {
-        const std::optional<std::vector<char>> serialized_functions_of_time =
-            volume_file.get_functions_of_time(observation_id);
-        if (not serialized_functions_of_time.has_value()) {
-          ERROR_NO_TRACE("No domain functions of time found in file '"
-                         << file_name << volume_file.subfile_path()
-                         << "'. The functions of time are needed to verify the "
-                            "inertial coordinates with time-dependent maps.");
+        // Reconstruct functions of time from volume data file
+        if (source_domain_functions_of_time.empty() and
+            source_domain.has_value() and
+            alg::any_of(source_domain->blocks(), [](const auto& block) {
+              return block.is_time_dependent();
+            })) {
+          const std::optional<std::vector<char>> serialized_functions_of_time =
+              volume_file.get_functions_of_time(observation_id);
+          if (not serialized_functions_of_time.has_value()) {
+            ERROR_NO_TRACE(
+                "No domain functions of time found in file '"
+                << file_name << volume_file.subfile_path()
+                << "'. The functions of time are needed to verify the "
+                   "inertial coordinates with time-dependent maps.");
+          }
+          source_domain_functions_of_time =
+              deserialize<domain::FunctionsOfTimeMap>(
+                  serialized_functions_of_time->data());
         }
-        source_domain_functions_of_time =
-            deserialize<domain::FunctionsOfTimeMap>(
-                serialized_functions_of_time->data());
-      }
+
+      }  // not require_exact_element_and_mesh
 
       // Transfer the data to the target elements contained in this file. We
       // erase target elements when they are complete, so subsequent files only
@@ -674,6 +776,12 @@ struct ReadAllVolumeDataAndDistribute {
         if (not all_tensor_data.has_value()) {
           all_tensor_data = detail::read_tensor_data<FieldTagsList>(
               volume_file, observation_id, selected_fields);
+          if (require_exact_element_and_mesh) {
+            all_source_inertial_coords.emplace();
+            detail::read_tensor_data(
+                make_not_null(&all_source_inertial_coords.value()),
+                "InertialCoordinates", volume_file, observation_id);
+          }
         }
 
         const auto source_mesh = h5::mesh_for_grid<Dim>(
@@ -685,8 +793,34 @@ struct ReadAllVolumeDataAndDistribute {
         auto source_element_data = detail::extract_element_data<FieldTagsList>(
             element_data_offset_and_length, *all_tensor_data, selected_fields);
 
-        // Verify that the source and target elements really are the same
-        if (source_domain.has_value()) {
+        // Strict mode preserves the exact DG element, mesh, and nodal trace.
+        if (require_exact_element_and_mesh) {
+          if (source_mesh != target_mesh) {
+            ERROR_NO_TRACE(
+                "Strict element import prohibits p-mesh interpolation. Element "
+                << target_element_id << " has source mesh " << source_mesh
+                << " and target mesh " << target_mesh << ".");
+          }
+          detail::verify_selected_fields_are_finite<Dim, FieldTagsList>(
+              source_element_data, selected_fields, target_element_id);
+          const auto [offset, count] = element_data_offset_and_length;
+          tnsr::I<DataVector, Dim, Frame::Inertial> source_coords{count};
+          for (size_t d = 0; d < Dim; ++d) {
+            const auto& component = all_source_inertial_coords->get(d);
+            if (offset > component.size() or
+                count > component.size() - offset) {
+              ERROR_NO_TRACE(
+                  "Strict element import found truncated coordinates for "
+                  "element "
+                  << target_element_id << ".");
+            }
+            for (size_t i = 0; i < count; ++i) {
+              source_coords.get(d)[i] = component[offset + i];
+            }
+          }
+          detail::verify_inertial_coordinates_exact(
+              source_coords, target_points, target_element_id);
+        } else if (source_domain.has_value()) {
           detail::verify_inertial_coordinates(*source_domain, observation_value,
                                               source_domain_functions_of_time,
                                               target_element_id, target_mesh,
@@ -717,7 +851,7 @@ struct ReadAllVolumeDataAndDistribute {
         target_element_ids.erase(completed_element_id);
       }
       // Stop early when all target elements are complete
-      if (target_element_ids.empty()) {
+      if (target_element_ids.empty() and not require_exact_element_and_mesh) {
         break;
       }
     }  // loop over volume files

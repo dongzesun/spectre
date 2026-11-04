@@ -5,9 +5,13 @@
 
 #include <cmath>
 #include <cstddef>
+#include <utility>
+
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/SliceVariables.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Domain/Structure/IndexToSliceAt.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
@@ -83,17 +87,37 @@ void sanitize_gauge_h_and_metric(
   }
 }
 
-template <size_t Dim>
-const Mesh<Dim>& extract_volume_mesh(const Mesh<Dim>& volume_mesh) {
-  return volume_mesh;
+template <size_t Dim, typename T>
+const T& extract_directional_volume_data(
+    const DirectionalIdMap<Dim, T>& volume_data,
+    const Direction<Dim>& requested_direction, const char* const label) {
+  const T* result = nullptr;
+  size_t matches = 0;
+  for (const auto& [directional_id, data] : volume_data) {
+    if (directional_id.direction() == requested_direction) {
+      result = &data;
+      ++matches;
+    }
+  }
+  if (matches != 1) {
+    ERROR_NO_TRACE("HorizonRobin requires exactly one "
+                   << label << " entry for face direction "
+                   << requested_direction << ", but found " << matches
+                   << " among " << volume_data.size() << " entries.");
+  }
+  return *result;
 }
 
-template <size_t Dim>
-const Mesh<Dim>& extract_volume_mesh(
-    const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes) {
-  ASSERT(not volume_meshes.empty(),
-         "No volume mesh is available for the horizon boundary condition.");
-  return volume_meshes.begin()->second;
+template <size_t Dim, typename TensorType>
+TensorType slice_to_face(const TensorType& volume_data,
+                         const Mesh<Dim>& volume_mesh,
+                         const Direction<Dim>& direction) {
+  TensorType face_data{
+      volume_mesh.slice_away(direction.dimension()).number_of_grid_points()};
+  data_on_slice(make_not_null(&face_data), volume_data, volume_mesh.extents(),
+                direction.dimension(),
+                index_to_slice_at(volume_mesh.extents(), direction));
+  return face_data;
 }
 
 template <size_t Dim>
@@ -232,6 +256,33 @@ void apply_linearized_impl(
   }
 }
 
+template <size_t Dim>
+tnsr::A<DataVector, Dim, Frame::Inertial> raised_and_mapped_gauge_h(
+    tnsr::a<DataVector, Dim, Frame::Inertial> gauge_h_cov,
+    tnsr::aa<DataVector, Dim, Frame::Inertial> spacetime_metric,
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& coords,
+    const DQ::detail::BbhAffineMap& affine_map) {
+  sanitize_gauge_h_and_metric(make_not_null(&gauge_h_cov),
+                              make_not_null(&spacetime_metric));
+  const auto det_and_inverse = determinant_and_inverse(spacetime_metric);
+  const auto& inverse_spacetime_metric = det_and_inverse.second;
+  tnsr::A<DataVector, Dim, Frame::Inertial> gauge_h_raised{
+      get_size(coords.get(0)), 0.0};
+  for (size_t a = 0; a < Dim + 1; ++a) {
+    for (size_t b = 0; b < Dim + 1; ++b) {
+      gauge_h_raised.get(a) +=
+          inverse_spacetime_metric.get(a, b) * gauge_h_cov.get(b);
+    }
+  }
+  auto mapped_result = affine_map.map_vector(gauge_h_raised, coords);
+  const auto wave_map_correction =
+      affine_map.wave_map_correction(inverse_spacetime_metric, coords);
+  for (size_t a = 0; a < Dim + 1; ++a) {
+    mapped_result.get(a) += wave_map_correction.get(a);
+  }
+  return mapped_result;
+}
+
 }  // namespace
 
 template <size_t Dim>
@@ -253,34 +304,8 @@ tnsr::A<DataVector, Dim, Frame::Inertial> HorizonRobin<Dim>::gauge_h(
   auto spacetime_metric =
       tuples::get<gr::Tags::SpacetimeMetric<DataVector, Dim, Frame::Inertial>>(
           gauge_h_vars);
-  sanitize_gauge_h_and_metric(make_not_null(&gauge_h_cov),
-                              make_not_null(&spacetime_metric));
-  const auto det_and_inverse = determinant_and_inverse(spacetime_metric);
-  const auto& inverse_spacetime_metric = det_and_inverse.second;
-  for (size_t a = 0; a < Dim + 1; ++a) {
-    for (size_t b = 0; b < Dim + 1; ++b) {
-      result.get(a) += inverse_spacetime_metric.get(a, b) * gauge_h_cov.get(b);
-    }
-  }
-  auto mapped_result = affine_map_.map_vector(result, coords);
-  const auto wave_map_correction =
-      affine_map_.wave_map_correction(inverse_spacetime_metric, coords);
-  for (size_t a = 0; a < Dim + 1; ++a) {
-    mapped_result.get(a) += wave_map_correction.get(a);
-  }
-  return mapped_result;
-}
-
-template <size_t Dim>
-tnsr::a<DataVector, Dim, Frame::Inertial> HorizonRobin<Dim>::dtxi(
-    const tnsr::I<DataVector, Dim, Frame::Inertial>& coords) const {
-  tnsr::a<DataVector, Dim, Frame::Inertial> result{get_size(coords.get(0)),
-                                                   0.0};
-  if (not use_dtxi_) {
-    return result;
-  }
-  return tuples::get<DQ::Tags::Xi<DataVector, Dim>>(dtxi_data_.variables(
-      coords, tmpl::list<DQ::Tags::Xi<DataVector, Dim>>{}));
+  return raised_and_mapped_gauge_h(
+      std::move(gauge_h_cov), std::move(spacetime_metric), coords, affine_map_);
 }
 
 template <size_t Dim>
@@ -291,15 +316,38 @@ void HorizonRobin<Dim>::apply(
     const tnsr::ia<DataVector, Dim, Frame::Inertial>& /*deriv_xi*/,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& face_inertial_coords,
     const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
-    const Direction<Dim>& direction, const Mesh<Dim>& volume_mesh) const {
+    const Direction<Dim>& direction, const Mesh<Dim>& volume_mesh,
+    const tnsr::a<DataVector, Dim, Frame::Inertial>& imported_gauge_h,
+    const tnsr::aa<DataVector, Dim, Frame::Inertial>& imported_metric,
+    const tnsr::a<DataVector, Dim, Frame::Inertial>& imported_dtxi) const {
   if (zero_source_) {
-    apply_linearized_impl(xi, n_dot_flux_xi, face_inertial_coords,
-                          face_normal, direction, volume_mesh, mass_);
+    apply_linearized_impl(xi, n_dot_flux_xi, face_inertial_coords, face_normal,
+                          direction, volume_mesh, mass_);
     return;
   }
+  const bool imported_source_is_available =
+      use_gauge_h_ and get_size(imported_gauge_h.get(0)) != 0;
+  const bool imported_dtxi_is_available =
+      use_dtxi_ and get_size(imported_dtxi.get(0)) != 0;
+  const auto face_gauge_h =
+      imported_source_is_available
+          ? raised_and_mapped_gauge_h(
+                slice_to_face(imported_gauge_h, volume_mesh, direction),
+                slice_to_face(imported_metric, volume_mesh, direction),
+                face_inertial_coords, affine_map_)
+          : gauge_h(face_inertial_coords);
+  if (use_dtxi_ and not imported_dtxi_is_available) {
+    ERROR_NO_TRACE(
+        "UseDtXi is enabled, but HorizonRobin did not receive element-local "
+        "imported dtXi. Global NumericData fallback is prohibited.");
+  }
+  const auto face_dtxi =
+      imported_dtxi_is_available
+          ? slice_to_face(imported_dtxi, volume_mesh, direction)
+          : tnsr::a<DataVector, Dim, Frame::Inertial>{
+                get_size(face_inertial_coords.get(0)), 0.0};
   apply_impl(xi, n_dot_flux_xi, face_inertial_coords, face_normal, direction,
-             volume_mesh, mass_, gauge_h(face_inertial_coords),
-             dtxi(face_inertial_coords));
+             volume_mesh, mass_, face_gauge_h, face_dtxi);
 }
 
 template <size_t Dim>
@@ -307,20 +355,27 @@ void HorizonRobin<Dim>::apply(
     const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*> xi,
     const gsl::not_null<tnsr::a<DataVector, Dim, Frame::Inertial>*>
         n_dot_flux_xi,
-    const tnsr::ia<DataVector, Dim, Frame::Inertial>& /*deriv_xi*/,
+    const tnsr::ia<DataVector, Dim, Frame::Inertial>& deriv_xi,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& face_inertial_coords,
     const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
     const Direction<Dim>& direction,
-    const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes) const {
-  const auto& volume_mesh = extract_volume_mesh(volume_meshes);
-  if (zero_source_) {
-    apply_linearized_impl(xi, n_dot_flux_xi, face_inertial_coords,
-                          face_normal, direction, volume_mesh, mass_);
-    return;
-  }
-  apply_impl(xi, n_dot_flux_xi, face_inertial_coords, face_normal, direction,
-             volume_mesh, mass_, gauge_h(face_inertial_coords),
-             dtxi(face_inertial_coords));
+    const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes,
+    const DirectionalIdMap<Dim, tnsr::a<DataVector, Dim, Frame::Inertial>>&
+        imported_gauge_h,
+    const DirectionalIdMap<Dim, tnsr::aa<DataVector, Dim, Frame::Inertial>>&
+        imported_metric,
+    const DirectionalIdMap<Dim, tnsr::a<DataVector, Dim, Frame::Inertial>>&
+        imported_dtxi) const {
+  const auto& volume_mesh =
+      extract_directional_volume_data(volume_meshes, direction, "volume mesh");
+  apply(xi, n_dot_flux_xi, deriv_xi, face_inertial_coords, face_normal,
+        direction, volume_mesh,
+        extract_directional_volume_data(imported_gauge_h, direction,
+                                        "imported GaugeH"),
+        extract_directional_volume_data(imported_metric, direction,
+                                        "imported spacetime metric"),
+        extract_directional_volume_data(imported_dtxi, direction,
+                                        "imported dtXi"));
 }
 
 template <size_t Dim>
@@ -349,9 +404,11 @@ void HorizonRobin<Dim>::apply_linearized(
     const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
     const Direction<Dim>& direction,
     const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes) const {
-  apply_linearized_impl(xi_correction, n_dot_flux_xi_correction,
-                        face_inertial_coords, face_normal, direction,
-                        extract_volume_mesh(volume_meshes), mass_);
+  apply_linearized_impl(
+      xi_correction, n_dot_flux_xi_correction, face_inertial_coords,
+      face_normal, direction,
+      extract_directional_volume_data(volume_meshes, direction, "volume mesh"),
+      mass_);
 }
 
 template <size_t Dim>
