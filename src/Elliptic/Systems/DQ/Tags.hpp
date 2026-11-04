@@ -68,6 +68,41 @@ struct ObservedSource : db::SimpleTag {
   static std::string name() { return "PhysicalSource(Xi)"; }
 };
 
+/*!
+ * \brief Gauge source imported once per node and distributed to DQ elements.
+ */
+template <typename DataType, size_t Dim>
+struct ImportedGaugeH : db::SimpleTag {
+  using type = tnsr::a<DataType, Dim, Frame::Inertial>;
+};
+
+/*!
+ * \brief Spacetime metric imported with `ImportedGaugeH`.
+ */
+template <typename DataType, size_t Dim>
+struct ImportedSpacetimeMetric : db::SimpleTag {
+  using type = tnsr::aa<DataType, Dim, Frame::Inertial>;
+};
+
+/*!
+ * \brief Previous dtXi imported onto the current DQ element.
+ */
+template <typename DataType, size_t Dim>
+struct ImportedDtXi : db::SimpleTag {
+  using type = tnsr::a<DataType, Dim, Frame::Inertial>;
+};
+
+/*!
+ * \brief Whether the node-level numeric source importer is active.
+ */
+struct ImportNumericSource : db::SimpleTag {
+  using type = bool;
+};
+
+struct ImportGaugeSource : db::SimpleTag {
+  using type = bool;
+};
+
 struct Mass : db::SimpleTag {
   using type = double;
   using option_tags = tmpl::list<OptionTags::Mass>;

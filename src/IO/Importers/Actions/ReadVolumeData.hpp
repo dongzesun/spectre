@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -157,14 +158,11 @@ tuples::tagged_tuple_from_typelist<FieldTagsList> extract_element_data(
   return element_data;
 }
 
-// Check that the inertial coordinates computed with the given domain are the
-// same as the ones passed to this function.
-// This is important to avoid hard-to-find bugs where data is loaded
-// to the wrong coordinates. For example, if the evolution domain deforms the
-// excision surfaces a bit but the initial data doesn't, then it would be wrong
-// to load the initial data to the evolution grid without an interpolation.
+// Check that coordinates computed from the serialized source domain match the
+// coordinates registered by the target element. This is the historical,
+// interpolation-capable path.
 template <size_t Dim>
-void verify_inertial_coordinates(
+void verify_inertial_coordinates_from_domain(
     const Domain<Dim>& domain, const double time,
     const domain::FunctionsOfTimeMap& functions_of_time,
     const ElementId<Dim>& element_id, const Mesh<Dim>& mesh,
@@ -178,20 +176,104 @@ void verify_inertial_coordinates(
   if (not equal_within_roundoff(mapped_inertial_coords, inertial_coords,
                                 std::numeric_limits<double>::epsilon() * 100.0,
                                 scale)) {
-    DataVector diff =
-        square(get<0>(inertial_coords) - get<0>(mapped_inertial_coords));
-    for (size_t d = 1; d < Dim; ++d) {
-      diff += square(inertial_coords.get(d) - mapped_inertial_coords.get(d));
-    }
-    diff = sqrt(diff);
-    const double max_coord_distance = blaze::max(diff);
     CAPTURE_FOR_ERROR(element_id);
-    CAPTURE_FOR_ERROR(max_coord_distance);
-    CAPTURE_FOR_ERROR(scale);
     ERROR_NO_TRACE(
         "The source and target domain don't match. Set 'ElementsAreIdentical: "
         "False' to enable interpolation between the grids.");
   }
+}
+
+// Check that the inertial coordinates stored in the source volume data are the
+// same as the target coordinates.
+// This is important to avoid hard-to-find bugs where data is loaded
+// to the wrong coordinates. For example, if the evolution domain deforms the
+// excision surfaces a bit but the initial data doesn't, then it would be wrong
+// to load the initial data to the evolution grid without an interpolation.
+template <size_t Dim>
+void verify_inertial_coordinates(
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& source_coords,
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& target_coords,
+    const ElementId<Dim>& element_id, const double absolute_tolerance) {
+  DataVector distance = square(source_coords.get(0) - target_coords.get(0));
+  for (size_t d = 1; d < Dim; ++d) {
+    distance += square(source_coords.get(d) - target_coords.get(d));
+  }
+  const double max_coord_distance = blaze::max(sqrt(distance));
+  const double scale = blaze::max(get(magnitude(target_coords)));
+  const double tolerance =
+      std::max(absolute_tolerance,
+               std::numeric_limits<double>::epsilon() * 100.0 * scale);
+  if (max_coord_distance > tolerance) {
+    CAPTURE_FOR_ERROR(element_id);
+    CAPTURE_FOR_ERROR(max_coord_distance);
+    CAPTURE_FOR_ERROR(scale);
+    CAPTURE_FOR_ERROR(tolerance);
+    ERROR_NO_TRACE(
+        "The source and target coordinates don't match. Set "
+        "'ElementsAreIdentical: False' to enable interpolation between the "
+        "grids.");
+  }
+}
+
+// The strict path is intended for DG data whose element identity and nodal
+// ordering are part of the meaning of the field. Coordinates must agree up to
+// serialization roundoff; tensor data are still copied without interpolation.
+template <size_t Dim>
+void verify_inertial_coordinates_exact(
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& source_coords,
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& target_coords,
+    const ElementId<Dim>& element_id) {
+  if (source_coords.begin()->size() != target_coords.begin()->size()) {
+    ERROR_NO_TRACE("Strict element import found a coordinate-size mismatch "
+                   "for element "
+                   << element_id << ": source has "
+                   << source_coords.begin()->size() << " points but target has "
+                   << target_coords.begin()->size() << ".");
+  }
+  for (size_t d = 0; d < Dim; ++d) {
+    for (size_t i = 0; i < source_coords.get(d).size(); ++i) {
+      const double source = source_coords.get(d)[i];
+      const double target = target_coords.get(d)[i];
+      const double tolerance = 100.0 * std::numeric_limits<double>::epsilon() *
+                               std::max(1.0, std::abs(target));
+      if (not std::isfinite(source) or not std::isfinite(target) or
+          std::abs(source - target) > tolerance) {
+        ERROR_NO_TRACE(
+            "Strict element import requires finite, roundoff-equivalent "
+            "current-shell coordinates. Element "
+            << element_id << ", dimension " << d << ", node " << i
+            << " has source=" << source << " and target=" << target
+            << ", exceeding tolerance " << tolerance << ".");
+      }
+    }
+  }
+}
+
+template <size_t Dim, typename FieldTagsList>
+void verify_selected_fields_are_finite(
+    const tuples::tagged_tuple_from_typelist<FieldTagsList>& element_data,
+    const tuples::tagged_tuple_from_typelist<
+        db::wrap_tags_in<Tags::Selected, FieldTagsList>>& selected_fields,
+    const ElementId<Dim>& element_id) {
+  tmpl::for_each<FieldTagsList>(
+      [&element_data, &selected_fields, &element_id](auto field_tag_v) {
+        using field_tag = tmpl::type_from<decltype(field_tag_v)>;
+        if (not get<Tags::Selected<field_tag>>(selected_fields).has_value()) {
+          return;
+        }
+        const auto& tensor = get<field_tag>(element_data);
+        for (size_t component = 0; component < tensor.size(); ++component) {
+          for (size_t node = 0; node < tensor[component].size(); ++node) {
+            if (not std::isfinite(tensor[component][node])) {
+              ERROR_NO_TRACE("Strict element import found non-finite data in "
+                             "element "
+                             << element_id << ", field "
+                             << db::tag_name<field_tag>() << ", component "
+                             << component << ", node " << node << ".");
+            }
+          }
+        }
+      });
 }
 
 // Interpolate only the `selected_fields` in `source_element_data` to the
@@ -403,9 +485,17 @@ struct ReadAllVolumeDataAndDistribute {
                     const ImporterOptions& options, const size_t volume_data_id,
                     tuples::tagged_tuple_from_typelist<
                         db::wrap_tags_in<Tags::Selected, FieldTagsList>>
-                        selected_fields = select_all_fields(FieldTagsList{})) {
+                        selected_fields = select_all_fields(FieldTagsList{}),
+                    const double coordinate_match_absolute_tolerance =
+                        std::numeric_limits<double>::epsilon() * 100.0,
+                    const bool require_exact_element_and_mesh = false) {
     const bool elements_are_identical =
         get<OptionTags::ElementsAreIdentical>(options);
+    if (require_exact_element_and_mesh and not elements_are_identical) {
+      ERROR_NO_TRACE(
+          "Strict element import requires 'ElementsAreIdentical: True'. "
+          "Cross-element interpolation is prohibited.");
+    }
 
     // Only read and distribute the volume data once
     // This action will be invoked by `importers::Actions::ReadVolumeData` from
@@ -477,6 +567,7 @@ struct ReadAllVolumeDataAndDistribute {
     double observation_value = std::numeric_limits<double>::signaling_NaN();
     std::optional<Domain<Dim>> source_domain{};
     domain::FunctionsOfTimeMap source_domain_functions_of_time{};
+    std::unordered_set<ElementId<Dim>> strict_source_element_ids{};
     for (const std::string& file_name : file_paths) {
       // Open the volume data file
       h5::H5File<h5::AccessType::ReadOnly> h5file(file_name);
@@ -523,6 +614,9 @@ struct ReadAllVolumeDataAndDistribute {
       std::optional<tuples::tagged_tuple_from_typelist<FieldTagsList>>
           all_tensor_data{};
 
+      std::optional<tnsr::I<DataVector, Dim, Frame::Inertial>>
+          all_source_inertial_coords{};
+
       // Retrieve the information needed to reconstruct which element the data
       // belongs to
       const auto source_grid_names = volume_file.get_grid_names(observation_id);
@@ -530,6 +624,16 @@ struct ReadAllVolumeDataAndDistribute {
       const auto source_bases = volume_file.get_bases(observation_id);
       const auto source_quadratures =
           volume_file.get_quadratures(observation_id);
+      if (require_exact_element_and_mesh) {
+        for (const auto& grid_name : source_grid_names) {
+          const ElementId<Dim> source_element_id{grid_name};
+          if (not strict_source_element_ids.insert(source_element_id).second) {
+            ERROR_NO_TRACE("Strict element import found duplicate element "
+                           << source_element_id << " in file '" << file_name
+                           << volume_file.subfile_path() << "'.");
+          }
+        }
+      }
       std::vector<ElementId<Dim>> source_element_ids{};
       if (not elements_are_identical) {
         // Need to parse all source grid names to element IDs
@@ -641,6 +745,12 @@ struct ReadAllVolumeDataAndDistribute {
             not all_tensor_data.has_value()) {
           all_tensor_data = detail::read_tensor_data<FieldTagsList>(
               volume_file, observation_id, selected_fields);
+          if (require_exact_element_and_mesh) {
+            all_source_inertial_coords.emplace();
+            detail::read_tensor_data(
+                make_not_null(&all_source_inertial_coords.value()),
+                "InertialCoordinates", volume_file, observation_id);
+          }
         }
 
         // Iterate over the source elements in this volume file that overlap
@@ -659,6 +769,10 @@ struct ReadAllVolumeDataAndDistribute {
               detail::extract_element_data<FieldTagsList>(
                   element_data_offset_and_length, *all_tensor_data,
                   selected_fields);
+          if (require_exact_element_and_mesh) {
+            detail::verify_selected_fields_are_finite<Dim, FieldTagsList>(
+                source_element_data, selected_fields, target_element_id);
+          }
 
           if (not elements_are_identical) {
             const size_t target_num_points = target_points.begin()->size();
@@ -714,9 +828,31 @@ struct ReadAllVolumeDataAndDistribute {
             // Source and target element are the same (matching domains and
             // same h-refinement), so no interpolation across elements is
             // needed. We still may have to interpolate between different
-            // meshes (p-refinement). First, verify this assumption:
-            if (source_domain.has_value()) {
-              detail::verify_inertial_coordinates(
+            // meshes (p-refinement). Strict imports prohibit it. The default
+            // path retains the historical interpolation behavior.
+            if (require_exact_element_and_mesh and source_mesh != target_mesh) {
+              ERROR_NO_TRACE(
+                  "Strict element import prohibits p-mesh interpolation. "
+                  "Element "
+                  << target_element_id << " has source mesh " << source_mesh
+                  << " and target mesh " << target_mesh << ".");
+            }
+            if (require_exact_element_and_mesh) {
+              ASSERT(all_source_inertial_coords.has_value(),
+                     "Source coordinates were not loaded.");
+              tnsr::I<DataVector, Dim, Frame::Inertial> source_coords{
+                  element_data_offset_and_length.second};
+              for (size_t d = 0; d < Dim; ++d) {
+                for (size_t i = 0; i < element_data_offset_and_length.second;
+                     ++i) {
+                  source_coords.get(d)[i] = all_source_inertial_coords->get(
+                      d)[element_data_offset_and_length.first + i];
+                }
+              }
+              detail::verify_inertial_coordinates_exact(
+                  source_coords, target_points, target_element_id);
+            } else if (source_domain.has_value()) {
+              detail::verify_inertial_coordinates_from_domain(
                   *source_domain, observation_value,
                   source_domain_functions_of_time, target_element_id,
                   target_mesh, target_points);
@@ -743,7 +879,7 @@ struct ReadAllVolumeDataAndDistribute {
             completed_target_elements.insert(target_element_id);
           }
         }  // loop over overlapping source elements
-      }  // loop over registered elements
+      }    // loop over registered elements
       for (const auto& completed_element_id : completed_target_elements) {
         target_element_ids.erase(completed_element_id);
       }
