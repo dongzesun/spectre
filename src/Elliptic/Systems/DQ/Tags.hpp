@@ -99,6 +99,7 @@ struct ImportNumericSource : db::SimpleTag {
   using type = bool;
 };
 
+/// Whether GaugeH and the spacetime metric use the node-level importer.
 struct ImportGaugeSource : db::SimpleTag {
   using type = bool;
 };

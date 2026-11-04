@@ -5,6 +5,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <utility>
+
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/SliceVariables.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
@@ -83,11 +85,6 @@ void sanitize_gauge_h_and_metric(
       metric->get(3, 3)[s] = 1.0;
     }
   }
-}
-
-template <size_t Dim>
-const Mesh<Dim>& extract_volume_mesh(const Mesh<Dim>& volume_mesh) {
-  return volume_mesh;
 }
 
 template <size_t Dim, typename T>
@@ -369,8 +366,8 @@ void HorizonRobin<Dim>::apply(
         imported_metric,
     const DirectionalIdMap<Dim, tnsr::a<DataVector, Dim, Frame::Inertial>>&
         imported_dtxi) const {
-  const auto& volume_mesh = extract_directional_volume_data(
-      volume_meshes, direction, "volume mesh");
+  const auto& volume_mesh =
+      extract_directional_volume_data(volume_meshes, direction, "volume mesh");
   apply(xi, n_dot_flux_xi, deriv_xi, face_inertial_coords, face_normal,
         direction, volume_mesh,
         extract_directional_volume_data(imported_gauge_h, direction,
@@ -407,11 +404,11 @@ void HorizonRobin<Dim>::apply_linearized(
     const tnsr::i<DataVector, Dim, Frame::Inertial>& face_normal,
     const Direction<Dim>& direction,
     const DirectionalIdMap<Dim, Mesh<Dim>>& volume_meshes) const {
-  apply_linearized_impl(xi_correction, n_dot_flux_xi_correction,
-                        face_inertial_coords, face_normal, direction,
-                        extract_directional_volume_data(
-                            volume_meshes, direction, "volume mesh"),
-                        mass_);
+  apply_linearized_impl(
+      xi_correction, n_dot_flux_xi_correction, face_inertial_coords,
+      face_normal, direction,
+      extract_directional_volume_data(volume_meshes, direction, "volume mesh"),
+      mass_);
 }
 
 template <size_t Dim>

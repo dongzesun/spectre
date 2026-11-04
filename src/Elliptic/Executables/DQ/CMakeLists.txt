@@ -16,6 +16,7 @@ set(LIBS_TO_LINK
   EventsAndTriggers
   FunctionsOfTime
   Informer
+  Importers
   InitialDataUtilities
   LinearOperators
   MathFunctions
@@ -35,7 +36,7 @@ set(LIBS_TO_LINK
   )
 
 function(add_DQ_executable DIM)
-set(EXECUTABLE "DQ${DIM}D")
+  set(EXECUTABLE "DQ${DIM}D")
   add_spectre_executable(
     ${EXECUTABLE}
     EXCLUDE_FROM_ALL

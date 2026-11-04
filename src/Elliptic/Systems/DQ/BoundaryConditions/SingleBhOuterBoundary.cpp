@@ -8,7 +8,6 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -23,6 +22,7 @@
 #include "NumericalAlgorithms/SphericalHarmonics/Spherepack.hpp"
 #include "NumericalAlgorithms/SphericalHarmonics/StrahlkorperFunctions.hpp"
 #include "Options/ParseError.hpp"
+#include "Parallel/Printf/Printf.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
@@ -44,6 +44,7 @@ tuples::tagged_tuple_from_typelist<Tags> cached_numeric_variables(
   static std::unordered_map<std::string, std::shared_ptr<const Interpolator>>
       interpolators{};
 
+  // Input files must remain immutable for the lifetime of this cache.
   // The interpolator owns shared H5-derived state and is not documented as
   // thread-safe. Serialize both cache construction and interpolation across
   // Charm PEs, matching NumericData's existing synchronization policy.
@@ -455,20 +456,16 @@ void SingleBhOuterBoundary<Dim>::initialize_area_gauge_relabeling(
     area_gauge_sign_flipped_ = false;
   }
 
-  std::cout << "DQ SingleBhOuterBoundary area-gauge relabeling: alpha = ("
-            << area_gauge_alpha_[0] << ", " << area_gauge_alpha_[1] << ", "
-            << area_gauge_alpha_[2] << "), dipole before = ("
-            << area_gauge_dipole_before_[0] << ", "
-            << area_gauge_dipole_before_[1] << ", "
-            << area_gauge_dipole_before_[2] << "), dipole after = ("
-            << area_gauge_dipole_after_[0] << ", "
-            << area_gauge_dipole_after_[1] << ", "
-            << area_gauge_dipole_after_[2] << "), sign flipped = "
-            << (area_gauge_sign_flipped_ ? "true" : "false")
-            << ", convention = " << area_gauge_relabeling_
-            << ", alpha override = "
-            << (area_gauge_alpha_override_.has_value() ? "true" : "false")
-            << std::endl;
+  Parallel::printf(
+      "DQ SingleBhOuterBoundary area-gauge relabeling: alpha = (%g, %g, %g), "
+      "dipole before = (%g, %g, %g), dipole after = (%g, %g, %g), "
+      "sign flipped = %s, convention = %s, alpha override = %s\n",
+      area_gauge_alpha_[0], area_gauge_alpha_[1], area_gauge_alpha_[2],
+      area_gauge_dipole_before_[0], area_gauge_dipole_before_[1],
+      area_gauge_dipole_before_[2], area_gauge_dipole_after_[0],
+      area_gauge_dipole_after_[1], area_gauge_dipole_after_[2],
+      area_gauge_sign_flipped_ ? "true" : "false", area_gauge_relabeling_,
+      area_gauge_alpha_override_.has_value() ? "true" : "false");
 }
 
 template <size_t Dim>

@@ -3,11 +3,15 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <string>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -158,11 +162,14 @@ tuples::tagged_tuple_from_typelist<FieldTagsList> extract_element_data(
   return element_data;
 }
 
-// Check that coordinates computed from the serialized source domain match the
-// coordinates registered by the target element. This is the historical,
-// interpolation-capable path.
+// Check that the inertial coordinates computed with the given domain are the
+// same as the ones passed to this function.
+// This is important to avoid hard-to-find bugs where data is loaded
+// to the wrong coordinates. For example, if the evolution domain deforms the
+// excision surfaces a bit but the initial data doesn't, then it would be wrong
+// to load the initial data to the evolution grid without an interpolation.
 template <size_t Dim>
-void verify_inertial_coordinates_from_domain(
+void verify_inertial_coordinates(
     const Domain<Dim>& domain, const double time,
     const domain::FunctionsOfTimeMap& functions_of_time,
     const ElementId<Dim>& element_id, const Mesh<Dim>& mesh,
@@ -176,42 +183,19 @@ void verify_inertial_coordinates_from_domain(
   if (not equal_within_roundoff(mapped_inertial_coords, inertial_coords,
                                 std::numeric_limits<double>::epsilon() * 100.0,
                                 scale)) {
-    CAPTURE_FOR_ERROR(element_id);
-    ERROR_NO_TRACE(
-        "The source and target domain don't match. Set 'ElementsAreIdentical: "
-        "False' to enable interpolation between the grids.");
-  }
-}
-
-// Check that the inertial coordinates stored in the source volume data are the
-// same as the target coordinates.
-// This is important to avoid hard-to-find bugs where data is loaded
-// to the wrong coordinates. For example, if the evolution domain deforms the
-// excision surfaces a bit but the initial data doesn't, then it would be wrong
-// to load the initial data to the evolution grid without an interpolation.
-template <size_t Dim>
-void verify_inertial_coordinates(
-    const tnsr::I<DataVector, Dim, Frame::Inertial>& source_coords,
-    const tnsr::I<DataVector, Dim, Frame::Inertial>& target_coords,
-    const ElementId<Dim>& element_id, const double absolute_tolerance) {
-  DataVector distance = square(source_coords.get(0) - target_coords.get(0));
-  for (size_t d = 1; d < Dim; ++d) {
-    distance += square(source_coords.get(d) - target_coords.get(d));
-  }
-  const double max_coord_distance = blaze::max(sqrt(distance));
-  const double scale = blaze::max(get(magnitude(target_coords)));
-  const double tolerance =
-      std::max(absolute_tolerance,
-               std::numeric_limits<double>::epsilon() * 100.0 * scale);
-  if (max_coord_distance > tolerance) {
+    DataVector diff =
+        square(get<0>(inertial_coords) - get<0>(mapped_inertial_coords));
+    for (size_t d = 1; d < Dim; ++d) {
+      diff += square(inertial_coords.get(d) - mapped_inertial_coords.get(d));
+    }
+    diff = sqrt(diff);
+    const double max_coord_distance = blaze::max(diff);
     CAPTURE_FOR_ERROR(element_id);
     CAPTURE_FOR_ERROR(max_coord_distance);
     CAPTURE_FOR_ERROR(scale);
-    CAPTURE_FOR_ERROR(tolerance);
     ERROR_NO_TRACE(
-        "The source and target coordinates don't match. Set "
-        "'ElementsAreIdentical: False' to enable interpolation between the "
-        "grids.");
+        "The source and target domain don't match. Set 'ElementsAreIdentical: "
+        "False' to enable interpolation between the grids.");
   }
 }
 
@@ -223,15 +207,23 @@ void verify_inertial_coordinates_exact(
     const tnsr::I<DataVector, Dim, Frame::Inertial>& source_coords,
     const tnsr::I<DataVector, Dim, Frame::Inertial>& target_coords,
     const ElementId<Dim>& element_id) {
-  if (source_coords.begin()->size() != target_coords.begin()->size()) {
-    ERROR_NO_TRACE("Strict element import found a coordinate-size mismatch "
-                   "for element "
-                   << element_id << ": source has "
-                   << source_coords.begin()->size() << " points but target has "
-                   << target_coords.begin()->size() << ".");
+  const size_t num_points = target_coords.begin()->size();
+  if (source_coords.begin()->size() != num_points) {
+    ERROR_NO_TRACE(
+        "Strict element import found a coordinate-size mismatch "
+        "for element "
+        << element_id << ": source has " << source_coords.begin()->size()
+        << " points but target has " << target_coords.begin()->size() << ".");
   }
   for (size_t d = 0; d < Dim; ++d) {
-    for (size_t i = 0; i < source_coords.get(d).size(); ++i) {
+    if (source_coords.get(d).size() != num_points or
+        target_coords.get(d).size() != num_points) {
+      ERROR_NO_TRACE(
+          "Strict element import found inconsistent coordinate "
+          "component sizes for element "
+          << element_id << ".");
+    }
+    for (size_t i = 0; i < num_points; ++i) {
       const double source = source_coords.get(d)[i];
       const double target = target_coords.get(d)[i];
       const double tolerance = 100.0 * std::numeric_limits<double>::epsilon() *
@@ -265,11 +257,11 @@ void verify_selected_fields_are_finite(
         for (size_t component = 0; component < tensor.size(); ++component) {
           for (size_t node = 0; node < tensor[component].size(); ++node) {
             if (not std::isfinite(tensor[component][node])) {
-              ERROR_NO_TRACE("Strict element import found non-finite data in "
-                             "element "
-                             << element_id << ", field "
-                             << db::tag_name<field_tag>() << ", component "
-                             << component << ", node " << node << ".");
+              ERROR_NO_TRACE(
+                  "Strict element import found non-finite data in "
+                  "element "
+                  << element_id << ", field " << db::tag_name<field_tag>()
+                  << ", component " << component << ", node " << node << ".");
             }
           }
         }
@@ -387,6 +379,12 @@ namespace Actions {
  * directly into the DataBox. You can also implement a specialized action that
  * might verify and post-process the data before populating the DataBox.
  *
+ * Set `require_exact_element_and_mesh` to prohibit h- and p-interpolation,
+ * require finite selected fields, reject duplicate source elements, and verify
+ * stored source coordinates against the registered target nodes. This mode
+ * requires `ElementsAreIdentical: True` and double-precision coordinates in
+ * the volume file. The default preserves the interpolation-capable path.
+ *
  * \see Dev guide on \ref dev_guide_importing
  */
 template <typename ImporterOptionsGroup, typename FieldTagsList>
@@ -474,6 +472,12 @@ struct ReadVolumeData {
  *   is complete (and sent to the target element), so the memory consumption
  *   should remain much lower in practice.
  *
+ * Set `require_exact_element_and_mesh` to prohibit h- and p-interpolation,
+ * require finite selected fields, reject duplicate source elements, and verify
+ * stored source coordinates against the registered target nodes. This mode
+ * requires `ElementsAreIdentical: True` and double-precision coordinates in
+ * the volume file. The default preserves the interpolation-capable path.
+ *
  * \see Dev guide on \ref dev_guide_importing
  */
 template <size_t Dim, typename FieldTagsList, typename ReceiveComponent>
@@ -486,8 +490,6 @@ struct ReadAllVolumeDataAndDistribute {
                     tuples::tagged_tuple_from_typelist<
                         db::wrap_tags_in<Tags::Selected, FieldTagsList>>
                         selected_fields = select_all_fields(FieldTagsList{}),
-                    const double coordinate_match_absolute_tolerance =
-                        std::numeric_limits<double>::epsilon() * 100.0,
                     const bool require_exact_element_and_mesh = false) {
     const bool elements_are_identical =
         get<OptionTags::ElementsAreIdentical>(options);
@@ -852,7 +854,7 @@ struct ReadAllVolumeDataAndDistribute {
               detail::verify_inertial_coordinates_exact(
                   source_coords, target_points, target_element_id);
             } else if (source_domain.has_value()) {
-              detail::verify_inertial_coordinates_from_domain(
+              detail::verify_inertial_coordinates(
                   *source_domain, observation_value,
                   source_domain_functions_of_time, target_element_id,
                   target_mesh, target_points);

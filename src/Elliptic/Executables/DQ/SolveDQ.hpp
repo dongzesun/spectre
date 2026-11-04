@@ -492,9 +492,8 @@ struct ImportNumericSource {
       tmpl::list<DQ::Tags::ImportedGaugeH<DataVector, Dim>,
                  DQ::Tags::ImportedSpacetimeMetric<DataVector, Dim>,
                  DQ::Tags::ImportedDtXi<DataVector, Dim>,
-                 DQ::Tags::ImportNumericSource,
-                 DQ::Tags::ImportGaugeSource, FixedSourcesTag,
-                 DQ::Tags::ObservedSource<DataVector, Dim>>;
+                 DQ::Tags::ImportNumericSource, DQ::Tags::ImportGaugeSource,
+                 FixedSourcesTag, DQ::Tags::ObservedSource<DataVector, Dim>>;
 
   template <typename DbTagsList, typename... InboxTags, typename Metavariables,
             typename ActionList, typename ParallelComponent>
@@ -514,14 +513,14 @@ struct ImportNumericSource {
         numeric_background->affine_map_file().empty() and
         (numeric_background->observation_step() == 0 or
          numeric_background->observation_step() == -1);
-    const bool import_dtxi =
-        is_finest_grid<Dim>(box) and numeric_background != nullptr and
-        numeric_background->use_dtxi();
+    const bool import_dtxi = is_finest_grid<Dim>(box) and
+                             numeric_background != nullptr and
+                             numeric_background->use_dtxi();
     const bool use_importer = import_gauge_source or import_dtxi;
     db::mutate<DQ::Tags::ImportNumericSource, DQ::Tags::ImportGaugeSource>(
-        [use_importer, import_gauge_source](const gsl::not_null<bool*> value,
-                                            const gsl::not_null<bool*>
-                                                gauge_value) {
+        [use_importer, import_gauge_source](
+            const gsl::not_null<bool*> value,
+            const gsl::not_null<bool*> gauge_value) {
           *value = use_importer;
           *gauge_value = import_gauge_source;
         },
@@ -549,7 +548,7 @@ struct ImportNumericSource {
               numeric_background->file_glob(), numeric_background->subgroup(),
               observation_selector(numeric_background->observation_step()),
               Options::Auto<double>{}, true},
-          0_st, std::move(selected_fields), 1.0e-7);
+          0_st, std::move(selected_fields));
     }
     if (import_dtxi) {
       tuples::tagged_tuple_from_typelist<
@@ -566,7 +565,7 @@ struct ImportNumericSource {
               numeric_background->dtxi_subgroup(),
               observation_selector(numeric_background->dtxi_observation_step()),
               Options::Auto<double>{}, true},
-          1_st, std::move(selected_fields), 0.0, true);
+          1_st, std::move(selected_fields), true);
     }
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};
   }
@@ -615,8 +614,7 @@ struct ReceiveNumericSource {
       auto& dtxi_inbox =
           tuples::get<importers::Tags::VolumeData<imported_dtxi_tags<Dim>>>(
               inboxes);
-      const bool need_source =
-          db::get<DQ::Tags::ImportGaugeSource>(box);
+      const bool need_source = db::get<DQ::Tags::ImportGaugeSource>(box);
       const bool need_dtxi = numeric_background->use_dtxi();
       const auto source_data = source_inbox.find(0_st);
       const auto dtxi_data = dtxi_inbox.find(1_st);
@@ -670,10 +668,9 @@ struct ReceiveNumericSource {
                         box))
               : numeric_background->gauge_h_and_metric(coords);
       const auto dtxi_for_source =
-          need_dtxi
-              ? db::get<DQ::Tags::ImportedDtXi<DataVector, Dim>>(box)
-              : tnsr::a<DataVector, Dim, Frame::Inertial>{
-                    get_size(coords.get(0)), 0.0};
+          need_dtxi ? db::get<DQ::Tags::ImportedDtXi<DataVector, Dim>>(box)
+                    : tnsr::a<DataVector, Dim, Frame::Inertial>{
+                          get_size(coords.get(0)), 0.0};
       auto fixed_source = numeric_background->fixed_source_from_imported(
           coords, std::move(gauge_and_metric.first),
           std::move(gauge_and_metric.second), dtxi_for_source);
@@ -907,8 +904,7 @@ struct Metavariables {
             DQ::Tags::ImportedGaugeH<DataVector, volume_dim>,
             DQ::Tags::ImportedSpacetimeMetric<DataVector, volume_dim>,
             DQ::Tags::ImportedDtXi<DataVector, volume_dim>,
-            DQ::Tags::ImportNumericSource,
-            DQ::Tags::ImportGaugeSource>>>;
+            DQ::Tags::ImportNumericSource, DQ::Tags::ImportGaugeSource>>>;
     static constexpr bool keep_coarse_grids = true;
     static constexpr bool p_refine_only_in_event = false;
   };
